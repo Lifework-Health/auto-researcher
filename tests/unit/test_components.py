@@ -5,19 +5,23 @@ from auto_researcher.contracts.enums import EvidenceStatus, ProvenanceKind, Sear
 from auto_researcher.contracts.models import ExperimentSpec, SearchRequest
 from auto_researcher.evaluation.mock import MockEvaluator
 from auto_researcher.graph.nodes.search_router import search_router
+from auto_researcher.tasks.models import TaskRuntimeContext
+from auto_researcher.tasks.synthetic.task import SyntheticTask
+from auto_researcher.tasks.synthetic.verification import SyntheticVerificationPolicy
 from auto_researcher.verification.verifier import DeterministicVerifier
 
 
 def _experiment(configuration: dict) -> ExperimentSpec:
+    metadata = SyntheticTask().experiment_metadata(TaskRuntimeContext())
     return ExperimentSpec(
         experiment_id="exp-1",
         hypothesis_id="hyp-1",
         search_request_id="request-1",
         configuration=configuration,
-        evaluator_id="mock-evaluator",
-        code_version="test",
-        dataset_version="mock-v1",
-        provenance=ProvenanceKind.MOCK,
+        evaluator_id=metadata.evaluator_id,
+        code_version=metadata.code_version,
+        dataset_version=metadata.dataset_version,
+        provenance=metadata.provenance,
     )
 
 
@@ -79,29 +83,35 @@ def test_search_router_rejects_type_not_allowed(contract_factory):
 
 def test_evaluator_stamps_mock_and_has_known_good_configuration(contract_factory):
     result = MockEvaluator().evaluate(
-        _experiment({"model_depth": 3, "learning_rate": 0.1, "regularization": 0.0}),
+        _experiment(
+            {"model_family": "tree", "complexity": 4, "learning_rate": 0.05}
+        ),
         contract_factory(),
     )
-    assert result.provenance == ProvenanceKind.MOCK
-    assert result.primary_score == 0.82
+    assert result.provenance == ProvenanceKind.SIMULATED
+    assert result.primary_score == 0.84
     assert all(result.constraint_results.values())
 
 
 def test_evaluator_has_constraint_violating_configuration(contract_factory):
     result = MockEvaluator().evaluate(
-        _experiment({"model_depth": 12, "learning_rate": 0.1, "regularization": 0.0}),
+        _experiment(
+            {"model_family": "tree", "complexity": 9, "learning_rate": 0.05}
+        ),
         contract_factory(),
     )
-    assert result.constraint_results["model_depth_in_range"] is False
+    assert result.constraint_results["complexity_within_task_limit"] is False
 
 
 def test_verifier_blocks_supported_from_mock(contract_factory):
     contract = contract_factory()
     experiment = _experiment(
-        {"model_depth": 3, "learning_rate": 0.1, "regularization": 0.0}
+        {"model_family": "tree", "complexity": 4, "learning_rate": 0.05}
     )
     evaluation = MockEvaluator().evaluate(experiment, contract)
-    result = DeterministicVerifier().verify(experiment, evaluation, contract)
+    result = DeterministicVerifier(SyntheticVerificationPolicy()).verify(
+        experiment, evaluation, contract
+    )
     assert result.verified is True
     assert result.evidence_status == EvidenceStatus.INCONCLUSIVE
     assert "synthetic_evidence_cannot_support" in result.reasons
@@ -110,10 +120,10 @@ def test_verifier_blocks_supported_from_mock(contract_factory):
 def test_verifier_catches_score_mismatch(contract_factory):
     contract = contract_factory()
     experiment = _experiment(
-        {"model_depth": 3, "learning_rate": 0.1, "regularization": 0.0}
+        {"model_family": "tree", "complexity": 4, "learning_rate": 0.05}
     )
     evaluation = MockEvaluator().evaluate(experiment, contract)
-    result = DeterministicVerifier().verify(
+    result = DeterministicVerifier(SyntheticVerificationPolicy()).verify(
         experiment,
         evaluation,
         contract,

@@ -1,73 +1,116 @@
 # Auto Researcher v2.1 architecture
 
-## Scope
+## Core and plugin boundary
 
-PR 1 establishes a minimal, offline research workflow and the stable interfaces
-through which the v2 scientific evaluator and future search systems can connect.
-It does not implement live model calls, Optuna ask/tell, OpenEvolve, Neo4j, patient
-data ingestion, or the v2 scientific methods.
+The core platform owns research contracts, hypotheses, planning, search
+routing, lifecycle, budgets, execution orchestration, structural verification,
+approval, checkpointing, provenance, and safe artefact references. It sees only
+generic contracts such as `ExperimentSpec`, `EvaluationResult`, and
+`VerificationResult`.
 
-## Component types
+A `ResearchTask` plugin owns its identity and version, strict scientific
+configuration, readiness checks, evaluator construction, experiment metadata,
+dataset manifest, artefact policy, metrics, constraints, verification policy,
+and scientific execution. Runtime paths live in `TaskRuntimeContext`; that
+object never enters `ResearchState`.
 
-The hypothesis generator and planner are the only LLM-shaped nodes. They make
-scientific proposals through protocols; PR 1 injects deterministic mock
-implementations and makes no external calls.
+The instance-scoped `TaskRegistry` stores factories keyed by `(task_id,
+task_version)`. Duplicate versions fail, explicit version lookup is
+deterministic, and an absent task produces a typed error. Both built-ins are
+registered without importing `harness`; iCCA reports an actionable readiness
+failure if its optional package or data files are absent.
 
-Initialisation, the supervisor, approval routing, human approval, search routing,
-evaluation invocation, verification, provenance writing, and stop decisions are
-deterministic control nodes. They own lifecycle, budgets, routing, and truth.
-Agents cannot access the provenance store, change the contract, spend budgets, or
-skip verification.
+```mermaid
+flowchart TD
+    graph["LangGraph control plane<br/>unchanged across domains"]
+    registry["Task registry<br/>task ID + version"]
+    runtime["Generic runtime assembly"]
+    synthetic["Synthetic task<br/>implemented"]
+    icca["iCCA NBS task<br/>implemented adapter"]
+    mri["MRI segmentation task<br/>future"]
 
-DIRECT is the only installed search backend. It selects a single deterministic
-configuration and emits an `ExperimentSpec`; it never measures that experiment.
-OPTUNA and OPENEVOLVE are closed enum values with protocol boundaries only. A
-request for either produces a structured unavailable result and stops without
-substitution.
+    registry --> synthetic
+    registry --> icca
+    registry -. extension .-> mri
+    registry --> runtime
+    runtime --> graph
+    synthetic --> runtime
+    icca --> runtime
+    mri -. same protocol .-> runtime
+```
 
-## Why LangGraph is the control plane
+## Unchanged LangGraph control plane
 
-Major execution steps are explicit graph nodes and all branches are deterministic
-functions over typed state. LangGraph provides executable checkpoints, interrupts,
-and replay semantics. The compact `ResearchState` stores current domain objects,
-identifiers, budgets, errors, and stop state; it does not accumulate prompt or
-report history.
+`build_graph()` is called identically for every task. Runtime assembly injects
+the task evaluator, task verification policy, task metadata, and configuration
+normaliser. No graph node branches on `task_id`, and cross-task integration tests
+compare both the compiled Mermaid topology and executed node sequence.
 
-The graph invokes the evaluator and verifier on the DIRECT path in fixed order.
-No agent receives either component. Human approval uses `interrupt()` before any
-node side effect, allowing the node to safely restart when a `Command(resume=...)`
-is supplied.
+The normal DIRECT path is:
 
-## Scientific truth
+`initialise → prepare → hypothesis → plan → approval route → search route →
+DIRECT → evaluate → verify → provenance → decide`.
 
-Agents propose; they do not measure or adjudicate. The evaluator is the only
-source of measured scores and constraint outcomes. The verifier reconciles
-experiment identity, evaluator registration, required metrics, constraints, and
-claimed versus measured scores. Its schema and code make `SUPPORTED` structurally
-invalid for MOCK or SIMULATED evidence.
+The full edge diagram remains in [graph.mmd](graph.mmd).
 
-The `V2EvaluatorAdapter` is intentionally a skeleton. Its documentation defines
-how v2 selected metrics and eligibility outputs will map to v2.1 contracts, while
-leaving propagation, PAC, survival, clinical gates, and selection rules owned by
-the existing v2 repository.
+## Evaluation and verification
 
-## Checkpoints are not provenance
+`DirectSearchBackend` selects one deterministic value from each planned search
+dimension, delegates validation and canonicalisation to the active task, and
+stamps the resulting experiment with task-supplied evaluator, code, dataset,
+and provenance metadata. It has no scientific parameter knowledge.
 
-The LangGraph checkpointer persists executable state by `thread_id`; tests use
-`InMemorySaver`, while local runs use `langgraph-checkpoint-sqlite`. A runtime can
-be destroyed, rebuilt around the same checkpoint file, and resumed with the same
-thread.
+Verification has two ordered layers:
 
-Scientific provenance is a separate append-only SQLite store keyed by `run_id`.
-It records typed `DecisionEvent` objects for the hypothesis, plan, experiment,
-evaluation, and verification. Its protocol exposes append and read operations
-only. Runtime construction rejects a shared checkpoint/provenance file. This
-separation lets execution-state retention and scientific audit retention evolve
-independently.
+1. The core structural verifier checks identity, evaluator/verifier
+   registration, successful result presence, required metrics, score
+   reconciliation, and provenance.
+2. The task `VerificationPolicy` interprets task-owned constraints and recommends
+   an evidence status.
 
-## Implemented flow
+A policy cannot bypass structural failure or promote MOCK/SIMULATED evidence to
+`SUPPORTED`.
 
-The source of truth for edges is [`graph.mmd`](graph.mmd). A normal one-cycle mock
-run visits every non-approval node on the DIRECT path, records five scientific
-events, and ends because its cycle budget is reached. MOCK evidence remains
-`INCONCLUSIVE`, even when score reconciliation and constraints pass.
+## Reference tasks
+
+The synthetic task has its own bounded model configuration, deterministic score
+landscape, simulated dataset manifest, generic metrics, and policy. It is the
+offline CI default.
+
+The iCCA NBS task lazily imports the installed `auto_agent_v2` package through
+one bindings module. That repository remains the sole owner of cohort loading,
+propagation, consensus clustering, PAC, survival and clinical analysis,
+eligibility, numerical guards, and the stability objective. The adapter
+requests exactly one configured K and maps nested scientific output into generic
+`EvaluationResult.metrics`.
+
+The future MRI segmentation plugin would implement the same task protocol and
+supply a different evaluator, configuration, manifests, metrics, constraints,
+and policy. It requires no graph change; see
+[MRI_SEGMENTATION_EXAMPLE.md](../task_plugins/MRI_SEGMENTATION_EXAMPLE.md).
+
+## Data custody and persistence
+
+iCCA manifests contain only source filenames, sizes, SHA256 hashes, a combined
+fingerprint, loader/objective versions, and a timestamp. They contain no patient
+identifiers, values, credentials, or absolute paths.
+
+Task evaluators atomically write only:
+
+```text
+runs/<run_id>/<experiment_id>/
+├── experiment_spec.json
+├── evaluation_result.json
+├── dataset_manifest.json
+└── evaluator_manifest.json
+```
+
+The graph checkpointer stores resumable execution state by `thread_id`.
+Scientific provenance is a separate append-only store keyed by `run_id`.
+Neither store receives `TaskRuntimeContext`.
+
+## PR 2 non-goals
+
+PR 2 does not implement Optuna ask/tell, live LLM calls, OpenEvolve, Neo4j,
+MRI training, PyTorch/MONAI, distributed execution, patient-level artefacts, or
+changes to the iCCA objective.

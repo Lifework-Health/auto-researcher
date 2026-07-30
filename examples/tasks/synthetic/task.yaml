@@ -1,0 +1,11 @@
+task:
+  id: synthetic
+  version: "1.0"
+
+experiment:
+  model_family: tree
+  complexity: 4
+  learning_rate: 0.05
+
+runtime:
+  output_dir: .auto-researcher

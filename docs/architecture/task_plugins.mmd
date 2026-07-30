@@ -1,0 +1,24 @@
+flowchart TD
+    graph["LangGraph control plane"]
+    registry["Task registry"]
+    runtime["Task-driven RuntimeDependencies"]
+    synthetic["Synthetic task (implemented)"]
+    icca["iCCA NBS task (implemented)"]
+    mri["MRI segmentation task (future)"]
+
+    registry --> synthetic
+    registry --> icca
+    registry -.-> mri
+    registry --> runtime
+    synthetic --> runtime
+    icca --> runtime
+    mri -.-> runtime
+    runtime --> graph
+
+    classDef core fill:#e5f5e0,stroke:#3b7d23,color:#17310e
+    classDef task fill:#d9e8ff,stroke:#245aa5,color:#10233f
+    classDef future fill:#f4f4f4,stroke:#777,color:#333,stroke-dasharray:5 5
+
+    class graph,registry,runtime core
+    class synthetic,icca task
+    class mri future

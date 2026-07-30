@@ -73,7 +73,11 @@ FrozenJsonDict = Annotated[dict[str, JsonValue], AfterValidator(_freeze_json)]
 class ResearchContract(ImmutableDomainModel):
     contract_id: str = Field(min_length=1)
     schema_version: str = Field(pattern=r"^\d+\.\d+$")
+    task_id: str = Field(min_length=1)
+    task_version: str = Field(min_length=1)
     objective_version: str = Field(min_length=1)
+    primary_metric: str = Field(min_length=1)
+    task_constraints_version: str = Field(min_length=1)
     question: str = Field(min_length=1)
     objective: str = Field(min_length=1)
     constraints: FrozenJsonDict = Field(default_factory=dict)

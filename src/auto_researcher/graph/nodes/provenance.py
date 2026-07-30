@@ -7,7 +7,7 @@ from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
 
-CODE_VERSION = "auto-researcher-v2.1-pr1"
+CODE_VERSION = "auto-researcher-v2.1-pr2"
 
 
 def record_provenance(
@@ -81,12 +81,16 @@ def record_provenance(
             )
         )
     if evaluation:
+        evaluation_outputs = (
+            f"score:{evaluation.primary_score}",
+            *evaluation.artefact_references,
+        )
         rows.append(
             (
                 EventType.EVALUATION_OBSERVED,
                 "evaluator",
                 (evaluation.experiment_id,),
-                (f"score:{evaluation.primary_score}",),
+                evaluation_outputs,
                 "Recorded evaluator measurements and explicit constraint results.",
                 evaluation.provenance,
             )

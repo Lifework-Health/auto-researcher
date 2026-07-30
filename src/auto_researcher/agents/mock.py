@@ -25,17 +25,14 @@ class MockHypothesisAgent:
         )
         return Hypothesis(
             hypothesis_id=hypothesis_id,
-            statement=f"A bounded direct configuration can improve {contract.objective}.",
+            statement=f"A bounded task configuration can improve {contract.objective}.",
             rationale=(
-                "The offline reference landscape contains a smooth, deterministic "
-                "region suitable for testing the control-plane invariants."
+                "The active task exposes a bounded deterministic configuration "
+                "suitable for testing the control-plane invariants."
             ),
-            predicted_subspace={
-                "model_depth": {"minimum": 2, "maximum": 5},
-                "learning_rate": {"minimum": 0.05, "maximum": 0.2},
-            },
-            expected_observation="A valid configuration yields a primary score above 0.70.",
-            falsification_condition="No valid direct configuration yields a score above 0.70.",
+            predicted_subspace={"candidate_region": "task-defined bounded configuration"},
+            expected_observation="The task primary metric satisfies its registered policy.",
+            falsification_condition="The task verification policy rejects the observation.",
             evidence_references=(),
             prior_weight=0.5,
             status=HypothesisStatus.OPEN,
@@ -46,8 +43,17 @@ class MockHypothesisAgent:
 class MockPlannerAgent:
     """A deterministic DIRECT planner; a search type can be injected for routing tests."""
 
-    def __init__(self, search_type: SearchType = SearchType.DIRECT) -> None:
+    def __init__(
+        self,
+        search_type: SearchType = SearchType.DIRECT,
+        configuration: dict | None = None,
+    ) -> None:
         self.search_type = search_type
+        self.configuration = configuration or {
+            "model_family": "linear",
+            "complexity": 4,
+            "learning_rate": 0.05,
+        }
 
     def plan(
         self,
@@ -68,12 +74,15 @@ class MockPlannerAgent:
             hypothesis_id=hypothesis.hypothesis_id,
             search_type=self.search_type,
             target="maximise primary_score while satisfying all declared constraints",
-            search_space={
-                "model_depth": [3],
-                "learning_rate": [0.1],
-                "regularization": [0.0],
-            },
+            search_space=self.configuration,
             experiment_budget=1,
             rationale="Run one bounded, deterministic experiment for the proposed hypothesis.",
             requires_human_approval=self.search_type in contract.requires_approval_for,
         )
+
+
+class ConfiguredPlannerAgent(MockPlannerAgent):
+    """Deterministic planner fed a task-normalised DIRECT configuration."""
+
+    def __init__(self, configuration: dict, search_type: SearchType = SearchType.DIRECT) -> None:
+        super().__init__(search_type=search_type, configuration=configuration)

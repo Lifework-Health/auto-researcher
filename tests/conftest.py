@@ -35,18 +35,27 @@ def contract_factory():
         return ResearchContract(
             contract_id="contract-test",
             schema_version="1.0",
+            task_id="synthetic",
+            task_version="1.0",
             objective_version="objective-v1",
+            primary_metric="objective_score",
+            task_constraints_version="1.0",
             question="Which bounded configuration performs best?",
             objective="maximise the deterministic primary score",
-            constraints={"score_floor": 0.7, "nested": {"values": [1, 2]}},
+            constraints={
+                "support_threshold": 0.75,
+                "refute_threshold": 0.4,
+                "maximum_runtime": 3.0,
+                "nested": {"values": [1, 2]},
+            },
             allowed_search_types=allowed,
-            evaluator_id="mock-evaluator",
+            evaluator_id="synthetic-evaluator",
             verifier_id="deterministic-verifier",
             maximum_cycles=maximum_cycles,
             maximum_experiments=maximum_experiments,
             maximum_cost=maximum_cost,
             requires_approval_for=approval,
-            provenance=ProvenanceKind.MOCK,
+            provenance=ProvenanceKind.SIMULATED,
         )
 
     return make

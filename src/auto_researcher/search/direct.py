@@ -1,24 +1,33 @@
-"""The single installed PR 1 search backend."""
+"""Task-neutral implementation of the installed DIRECT search backend."""
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from typing import cast
 
-from auto_researcher.contracts.enums import ProvenanceKind, SearchType
+from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import (
     ExperimentSpec,
     JsonValue,
     ResearchContract,
     SearchRequest,
 )
+from auto_researcher.tasks.models import ExperimentMetadata
 
 
 class DirectSearchBackend:
-    """Select one deterministic configuration; evaluation remains a separate step."""
+    """Task-neutral deterministic selection; scientific validation stays in the plugin."""
 
-    code_version = "auto-researcher-v2.1-pr1"
-    dataset_version = "offline-mock-landscape-v1"
+    def __init__(
+        self,
+        metadata: ExperimentMetadata,
+        normalise_configuration: Callable[
+            [dict[str, JsonValue]], dict[str, JsonValue]
+        ],
+    ) -> None:
+        self.metadata = metadata
+        self.normalise_configuration = normalise_configuration
 
     def create_experiment(
         self,
@@ -32,15 +41,20 @@ class DirectSearchBackend:
         configuration: dict[str, JsonValue] = {}
         for name in sorted(request.search_space):
             values = request.search_space[name]
-            configuration[name] = cast(list[JsonValue], values)[0] if isinstance(values, list) else values
+            configuration[name] = (
+                cast(list[JsonValue], values)[0]
+                if isinstance(values, list)
+                else values
+            )
+        configuration = self.normalise_configuration(configuration)
         digest = hashlib.sha256(f"{run_id}\x1f{request.request_id}".encode()).hexdigest()[:16]
         return ExperimentSpec(
             experiment_id=f"experiment-{digest}",
             hypothesis_id=request.hypothesis_id,
             search_request_id=request.request_id,
             configuration=configuration,
-            evaluator_id=contract.evaluator_id,
-            code_version=self.code_version,
-            dataset_version=self.dataset_version,
-            provenance=ProvenanceKind.MOCK,
+            evaluator_id=self.metadata.evaluator_id,
+            code_version=self.metadata.code_version,
+            dataset_version=self.metadata.dataset_version,
+            provenance=self.metadata.provenance,
         )

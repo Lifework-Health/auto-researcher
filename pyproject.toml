@@ -12,6 +12,7 @@ dependencies = [
     "langgraph==1.2.10",
     "langgraph-checkpoint-sqlite==3.1.0",
     "pydantic==2.13.4",
+    "PyYAML==6.0.3",
     "typer==0.27.0",
 ]
 
@@ -32,4 +33,5 @@ pythonpath = ["src"]
 addopts = "-ra"
 markers = [
     "v2: optional contract tests requiring the auto_agent_v2 package",
+    "real_data: optional iCCA compatibility gate requiring explicit local data",
 ]
