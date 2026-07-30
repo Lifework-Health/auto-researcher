@@ -47,6 +47,9 @@ class ErrorThenSuccessClient(FakeStructuredModelClient):
                 self.code,
                 retryable=True,
                 input_tokens=10,
+                output_tokens=5,
+                cache_creation_input_tokens=3,
+                cache_read_input_tokens=2,
                 estimated_cost=0.00001,
             )
         return super().generate_structured(**kwargs)
@@ -112,6 +115,7 @@ def test_unfinished_reservation_becomes_indeterminate_and_requires_linked_retry(
     assert store.latest(original_call_id).status == AgentCallStatus.INDETERMINATE
 
     authorised = store.create_retry(original_call_id, created_at=NOW)
+    assert store.create_retry(original_call_id, created_at=NOW) == authorised
     working = FakeStructuredModelClient(_proposal(contract.contract_id), {})
     retrying_agent = LiveHypothesisAgent(
         client=working,
@@ -124,6 +128,27 @@ def test_unfinished_reservation_becomes_indeterminate_and_requires_linked_retry(
     assert hypothesis.agent_call_id == authorised.call_id
     assert store.latest(authorised.call_id).status == AgentCallStatus.COMPLETED
     assert len(working.calls) == 1
+    with pytest.raises(ValueError, match="completed"):
+        store.create_retry(original_call_id, created_at=NOW)
+
+    legacy_duplicate = authorised.model_copy(
+        update={
+            "record_id": "legacy-duplicate-retry:authorized",
+            "call_id": "legacy-duplicate-retry",
+        }
+    )
+    store.append(legacy_duplicate)
+    replay_client = FakeStructuredModelClient(_proposal(contract.contract_id), {})
+    replaying_agent = LiveHypothesisAgent(
+        client=replay_client,
+        call_config=_call_config(),
+        budget_policy=AgentBudgetPolicy(),
+        call_store=store,
+        clock=lambda: NOW,
+    )
+    replayed = replaying_agent.generate(context)
+    assert replayed.agent_call_id == authorised.call_id
+    assert replay_client.calls == []
 
 
 def test_completed_call_reuses_structured_output_without_second_provider_request():
@@ -206,6 +231,11 @@ def test_timeout_retries_once_but_rate_limit_does_not_auto_retry():
     timeout_telemetry = timeout_dependencies.hypothesis_agent.consume_telemetry()
     assert timeout_client.attempts == 2
     assert timeout_telemetry.provider_attempts == 2
+    assert timeout_telemetry.input_tokens == 110
+    assert timeout_telemetry.output_tokens == 55
+    assert timeout_telemetry.cache_creation_input_tokens == 3
+    assert timeout_telemetry.cache_read_input_tokens == 2
+    assert timeout_telemetry.estimated_cost > 0.00001
 
     rate_client = ErrorThenSuccessClient(
         _proposal(contract.contract_id),
@@ -225,3 +255,30 @@ def test_timeout_retries_once_but_rate_limit_does_not_auto_retry():
     with pytest.raises(LiveAgentExecutionError, match="RATE_LIMITED"):
         rate_dependencies.hypothesis_agent.generate(_context(rate_dependencies))
     assert rate_client.attempts == 1
+
+
+def test_billed_invalid_output_over_cost_limit_is_not_retried():
+    contract = default_synthetic_contract()
+    client = ErrorThenSuccessClient(
+        _proposal(contract.contract_id),
+        ProviderErrorCode.INVALID_STRUCTURED_OUTPUT,
+    )
+    low_cost_limit = _call_config().model_copy(
+        update={"maximum_cost_per_call": 0.000005}
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(manifest_created_at=NOW),
+        contract,
+        default_synthetic_configuration(),
+        model_client=client,
+        hypothesis_call_config=low_cost_limit,
+        planner_call_config=_call_config(),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(LiveAgentExecutionError, match="INVALID_STRUCTURED_OUTPUT"):
+        dependencies.hypothesis_agent.generate(_context(dependencies))
+    telemetry = dependencies.hypothesis_agent.consume_telemetry()
+    assert client.attempts == 1
+    assert telemetry.cost_limit_exceeded is True
+    assert telemetry.estimated_cost == 0.00001

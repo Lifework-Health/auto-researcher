@@ -277,6 +277,7 @@ class AgentCallTelemetry(AgentModel):
     provider_attempts: int = Field(default=0, ge=0)
     replayed: bool = False
     failed: bool = False
+    cost_limit_exceeded: bool = False
     error_code: ProviderErrorCode | None = None
 
 

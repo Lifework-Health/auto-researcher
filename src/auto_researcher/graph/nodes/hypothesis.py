@@ -36,8 +36,14 @@ def generate_hypothesis(
             "executed_nodes": ["generate_hypothesis"],
         }
     telemetry = consume_agent_telemetry(dependencies.hypothesis_agent)
-    return {
+    update = {
         "active_hypothesis": hypothesis,
         "budget": apply_agent_telemetry(state["budget"], telemetry),
         "executed_nodes": ["generate_hypothesis"],
     }
+    if telemetry is not None and telemetry.cost_limit_exceeded:
+        update.update(
+            status=RunStatus.STOPPED,
+            stop_reason="maximum_agent_call_cost_exceeded",
+        )
+    return update

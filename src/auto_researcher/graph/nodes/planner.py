@@ -15,7 +15,7 @@ def plan_search(
     dependencies: RuntimeDependencies,
 ) -> dict:
     hypothesis = state["active_hypothesis"]
-    if state["status"] == RunStatus.FAILED or hypothesis is None:
+    if state["status"] != RunStatus.RUNNING or hypothesis is None:
         return {
             "search_request": None,
             "executed_nodes": ["plan_search"],
@@ -48,9 +48,15 @@ def plan_search(
         errors.append("planner_hypothesis_mismatch")
     if request.experiment_budget > state["contract"].maximum_experiments:
         errors.append("planner_budget_exceeds_contract")
-    return {
+    update = {
         "search_request": request,
         "budget": apply_agent_telemetry(state["budget"], telemetry),
         "errors": errors,
         "executed_nodes": ["plan_search"],
     }
+    if telemetry is not None and telemetry.cost_limit_exceeded:
+        update.update(
+            status=RunStatus.STOPPED,
+            stop_reason="maximum_agent_call_cost_exceeded",
+        )
+    return update

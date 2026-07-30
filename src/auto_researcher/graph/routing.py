@@ -23,7 +23,10 @@ def route_after_prepare(
 def route_approval(
     state: ResearchState,
 ) -> Literal["human_approval", "search_router", "record_provenance"]:
-    if state["status"] == RunStatus.FAILED:
+    if state["status"] not in {
+        RunStatus.RUNNING,
+        RunStatus.WAITING_FOR_APPROVAL,
+    }:
         return "record_provenance"
     request = state["search_request"]
     contract = state["contract"]

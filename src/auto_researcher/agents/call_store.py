@@ -148,12 +148,33 @@ def _create_retry(
         raise KeyError(f"unknown agent call {call_id!r}")
     if original.status != AgentCallStatus.INDETERMINATE:
         raise ValueError("only an INDETERMINATE call may be explicitly retried")
-    siblings = [
-        item
-        for item in store.list_records(original.run_id)
-        if item.retry_of_call_id == call_id
+    child_ids = tuple(
+        dict.fromkeys(
+            item.call_id
+            for item in store.list_records(original.run_id)
+            if item.retry_of_call_id == call_id
+        )
+    )
+    children = tuple(
+        child
+        for child_id in child_ids
+        if (child := store.latest(child_id)) is not None
+    )
+    if any(child.status == AgentCallStatus.COMPLETED for child in children):
+        raise ValueError("the retry lineage already contains a completed call")
+    unused_authorisations = [
+        child
+        for child in children
+        if child.status == AgentCallStatus.RESERVED
+        and not child.provider_request_started
     ]
-    ordinal = len({item.call_id for item in siblings}) + 1
+    if len(children) == 1 and unused_authorisations:
+        return unused_authorisations[0]
+    if children:
+        raise ValueError(
+            "the retry lineage is already active; retry its indeterminate leaf"
+        )
+    ordinal = len(child_ids) + 1
     retry_call_id = (
         f"{call_id}-retry-"
         + hashlib.sha256(f"{call_id}:{ordinal}".encode()).hexdigest()[:8]

@@ -18,6 +18,8 @@ class ProviderCallError(RuntimeError):
         retryable: bool,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
         estimated_cost: float = 0,
         latency_ms: int = 0,
     ) -> None:
@@ -25,6 +27,8 @@ class ProviderCallError(RuntimeError):
         self.retryable = retryable
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.cache_creation_input_tokens = cache_creation_input_tokens
+        self.cache_read_input_tokens = cache_read_input_tokens
         self.estimated_cost = estimated_cost
         self.latency_ms = latency_ms
         super().__init__(code.value)

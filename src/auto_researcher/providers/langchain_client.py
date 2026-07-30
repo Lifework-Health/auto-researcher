@@ -14,6 +14,32 @@ from auto_researcher.contracts.enums import ProviderErrorCode
 from auto_researcher.providers.protocols import ProviderCallError
 
 
+def _usage_from_raw(raw: Any) -> tuple[int, int, int, int, dict[str, Any]]:
+    usage = getattr(raw, "usage_metadata", None) or {}
+    response_metadata = getattr(raw, "response_metadata", None) or {}
+    input_tokens = int(usage.get("input_tokens", 0) or 0)
+    output_tokens = int(usage.get("output_tokens", 0) or 0)
+    input_details = usage.get("input_token_details", {}) or {}
+    cache_creation = int(
+        input_details.get("cache_creation", 0)
+        or response_metadata.get("cache_creation_input_tokens", 0)
+        or 0
+    )
+    cache_read = int(
+        input_details.get("cache_read", 0)
+        or input_details.get("cache", 0)
+        or response_metadata.get("cache_read_input_tokens", 0)
+        or 0
+    )
+    return (
+        input_tokens,
+        output_tokens,
+        cache_creation,
+        cache_read,
+        response_metadata,
+    )
+
+
 def _classify_exception(exc: Exception) -> ProviderCallError:
     name = type(exc).__name__.casefold()
     text = str(exc).casefold()
@@ -78,10 +104,29 @@ class LangChainStructuredModelClient:
         parsed = result.get("parsed") if isinstance(result, dict) else None
         parsing_error = result.get("parsing_error") if isinstance(result, dict) else None
         raw = result.get("raw") if isinstance(result, dict) else None
+        (
+            input_tokens,
+            output_tokens,
+            cache_creation,
+            cache_read,
+            response_metadata,
+        ) = _usage_from_raw(raw)
+        estimated_cost = call_config.pricing.estimate(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation_input_tokens=cache_creation,
+            cache_read_input_tokens=cache_read,
+        )
         if parsing_error is not None or parsed is None:
             raise ProviderCallError(
                 ProviderErrorCode.INVALID_STRUCTURED_OUTPUT,
                 retryable=True,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_creation_input_tokens=cache_creation,
+                cache_read_input_tokens=cache_read,
+                estimated_cost=estimated_cost,
+                latency_ms=latency_ms,
             )
         try:
             parsed_model = (
@@ -93,29 +138,13 @@ class LangChainStructuredModelClient:
             raise ProviderCallError(
                 ProviderErrorCode.INVALID_STRUCTURED_OUTPUT,
                 retryable=True,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_creation_input_tokens=cache_creation,
+                cache_read_input_tokens=cache_read,
+                estimated_cost=estimated_cost,
+                latency_ms=latency_ms,
             ) from None
-        usage = getattr(raw, "usage_metadata", None) or {}
-        response_metadata = getattr(raw, "response_metadata", None) or {}
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
-        output_tokens = int(usage.get("output_tokens", 0) or 0)
-        input_details = usage.get("input_token_details", {}) or {}
-        cache_creation = int(
-            input_details.get("cache_creation", 0)
-            or response_metadata.get("cache_creation_input_tokens", 0)
-            or 0
-        )
-        cache_read = int(
-            input_details.get("cache_read", 0)
-            or input_details.get("cache", 0)
-            or response_metadata.get("cache_read_input_tokens", 0)
-            or 0
-        )
-        estimated_cost = call_config.pricing.estimate(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_creation_input_tokens=cache_creation,
-            cache_read_input_tokens=cache_read,
-        )
         output = parsed_model.model_dump(mode="json")
         encoded = json.dumps(output, sort_keys=True, separators=(",", ":")).encode()
         return StructuredModelResponse(

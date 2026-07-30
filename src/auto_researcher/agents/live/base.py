@@ -163,7 +163,11 @@ class BoundedStructuredCall:
                 result = reconcile(proposal, selected_call_id)
             except (ValidationError, ReconciliationError) as exc:
                 raise LiveAgentExecutionError("completed_call_reconciliation_conflict") from exc
-            return result, _telemetry_from_record(completed, replayed=True)
+            return result, _telemetry_from_record(
+                completed,
+                replayed=True,
+                maximum_cost_per_call=self.config.maximum_cost_per_call,
+            )
 
         reservation = self._record(
             call_id=selected_call_id,
@@ -242,7 +246,10 @@ class BoundedStructuredCall:
                     )
                     + ". Return a corrected structured proposal."
                 )
-                if attempt < attempts_allowed:
+                if (
+                    attempt < attempts_allowed
+                    and total_cost < self.config.maximum_cost_per_call
+                ):
                     self._backoff(attempt)
                     continue
                 break
@@ -250,6 +257,8 @@ class BoundedStructuredCall:
                 last_error = exc.code
                 total_input += exc.input_tokens
                 total_output += exc.output_tokens
+                total_cache_create += exc.cache_creation_input_tokens
+                total_cache_read += exc.cache_read_input_tokens
                 total_cost += exc.estimated_cost
                 total_latency += exc.latency_ms
                 if (
@@ -261,6 +270,7 @@ class BoundedStructuredCall:
                         ProviderErrorCode.INVALID_STRUCTURED_OUTPUT,
                     }
                     and attempt < attempts_allowed
+                    and total_cost < self.config.maximum_cost_per_call
                 ):
                     correction = (
                         f"Retry after safe provider error {exc.code.value}; "
@@ -268,9 +278,6 @@ class BoundedStructuredCall:
                     )
                     self._backoff(attempt)
                     continue
-                break
-            if total_cost > self.config.maximum_cost_per_call:
-                last_error = ProviderErrorCode.PERMANENT_PROVIDER_ERROR
                 break
             completed = self._record(
                 call_id=selected_call_id,
@@ -295,7 +302,10 @@ class BoundedStructuredCall:
                 provider_request_started=True,
             )
             self.store.append(completed)
-            return result, _telemetry_from_record(completed)
+            return result, _telemetry_from_record(
+                completed,
+                maximum_cost_per_call=self.config.maximum_cost_per_call,
+            )
 
         failed = self._record(
             call_id=selected_call_id,
@@ -322,7 +332,10 @@ class BoundedStructuredCall:
             provider_request_started=True,
         )
         self.store.append(failed)
-        telemetry = _telemetry_from_record(failed)
+        telemetry = _telemetry_from_record(
+            failed,
+            maximum_cost_per_call=self.config.maximum_cost_per_call,
+        )
         raise LiveAgentExecutionError(last_error.value, telemetry)
 
     def _backoff(self, failed_attempt: int) -> None:
@@ -357,21 +370,37 @@ class BoundedStructuredCall:
 
     def _resolve_retry(self, parent_call_id: str, run_id: str) -> str:
         children = []
+        seen_call_ids: set[str] = set()
         for item in self.store.list_records(run_id):
-            if item.retry_of_call_id == parent_call_id and item.call_id not in {
-                child.call_id for child in children
-            }:
+            if (
+                item.retry_of_call_id == parent_call_id
+                and item.call_id not in seen_call_ids
+            ):
                 child_latest = self.store.latest(item.call_id)
                 if child_latest is not None:
                     children.append(child_latest)
+                    seen_call_ids.add(item.call_id)
         if not children:
             raise LiveAgentExecutionError("model_call_indeterminate")
-        child = children[-1]
-        if self._completed_record(child.call_id) is not None:
-            return child.call_id
-        if child.status == AgentCallStatus.RESERVED and not child.provider_request_started:
-            return child.call_id
-        if child.status == AgentCallStatus.RESERVED and child.provider_request_started:
+        completed_children = [
+            child
+            for child in children
+            if self._completed_record(child.call_id) is not None
+        ]
+        if len(completed_children) > 1:
+            raise LiveAgentExecutionError("conflicting_completed_model_calls")
+        if completed_children:
+            return completed_children[0].call_id
+        started_children = [
+            child
+            for child in children
+            if child.status == AgentCallStatus.RESERVED
+            and child.provider_request_started
+        ]
+        if started_children:
+            if len(started_children) > 1:
+                raise LiveAgentExecutionError("multiple_started_model_call_retries")
+            child = started_children[0]
             indeterminate = child.model_copy(
                 update={
                     "record_id": stable_record_id(
@@ -385,8 +414,25 @@ class BoundedStructuredCall:
             )
             self.store.append(indeterminate)
             raise LiveAgentExecutionError("model_call_indeterminate")
-        if child.status == AgentCallStatus.INDETERMINATE:
-            return self._resolve_retry(child.call_id, run_id)
+        unused_children = [
+            child
+            for child in children
+            if child.status == AgentCallStatus.RESERVED
+            and not child.provider_request_started
+        ]
+        if len(unused_children) > 1:
+            raise LiveAgentExecutionError("multiple_authorized_model_call_retries")
+        if unused_children:
+            return unused_children[0].call_id
+        indeterminate_children = [
+            child
+            for child in children
+            if child.status == AgentCallStatus.INDETERMINATE
+        ]
+        if len(indeterminate_children) > 1:
+            raise LiveAgentExecutionError("multiple_indeterminate_model_call_retries")
+        if indeterminate_children:
+            return self._resolve_retry(indeterminate_children[0].call_id, run_id)
         raise LiveAgentExecutionError("model_call_previously_failed")
 
     def _completed_record(self, call_id: str) -> AgentCallRecord | None:
@@ -483,6 +529,7 @@ def _telemetry_from_record(
     record: AgentCallRecord,
     *,
     replayed: bool = False,
+    maximum_cost_per_call: float | None = None,
 ) -> AgentCallTelemetry:
     return AgentCallTelemetry(
         call_id=record.call_id,
@@ -499,5 +546,9 @@ def _telemetry_from_record(
         provider_attempts=record.attempt_count,
         replayed=replayed,
         failed=record.status != AgentCallStatus.COMPLETED,
+        cost_limit_exceeded=(
+            maximum_cost_per_call is not None
+            and record.estimated_cost > maximum_cost_per_call
+        ),
         error_code=record.error_code,
     )

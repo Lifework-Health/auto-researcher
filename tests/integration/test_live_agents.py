@@ -11,6 +11,7 @@ from auto_researcher.agents.models import (
 )
 from auto_researcher.agents.provenance import append_model_call_events
 from auto_researcher.contracts.enums import (
+    AgentCallStatus,
     EventType,
     ProposalSource,
     ProvenanceKind,
@@ -324,6 +325,93 @@ def test_live_budget_precheck_prevents_paid_call(tmp_path):
     assert final["errors"] == ["insufficient_remaining_cost_budget"]
     assert client.calls == []
     assert dependencies.agent_call_store.list_records("cost-precheck") == ()
+
+
+def test_valid_hypothesis_over_call_cost_limit_is_persisted_and_stops(tmp_path):
+    contract = default_synthetic_contract()
+    client = FakeStructuredModelClient(
+        {
+            "statement": "Complexity may change the objective.",
+            "rationale": "Bounded test.",
+            "predicted_subspace": {"complexity": [3, 6]},
+            "expected_observation": "objective_score changes",
+            "falsification_condition": "objective_score does not change",
+            "evidence_references": [],
+            "confidence": 0.2,
+        },
+        {},
+    )
+    low_cost_limit = _call_config().model_copy(
+        update={"maximum_cost_per_call": 0.0001}
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(run_id="hypothesis-cost-overrun", output_dir=tmp_path),
+        contract,
+        default_synthetic_configuration(),
+        model_client=client,
+        hypothesis_call_config=low_cost_limit,
+        planner_call_config=_call_config(),
+    )
+    final = _invoke(dependencies, contract, "hypothesis-cost-overrun")
+    assert final["status"] == RunStatus.STOPPED
+    assert final["stop_reason"] == "maximum_agent_call_cost_exceeded"
+    assert final["active_hypothesis"] is not None
+    assert final.get("search_request") is None
+    assert final.get("experiment_spec") is None
+    assert len(client.calls) == 1
+    assert final["budget"].model_cost_used == pytest.approx(0.0002)
+    records = dependencies.agent_call_store.list_records(
+        "hypothesis-cost-overrun"
+    )
+    assert records[-1].status == AgentCallStatus.COMPLETED
+
+
+def test_valid_plan_over_call_cost_limit_is_persisted_and_stops(tmp_path):
+    contract = default_synthetic_contract()
+    client = FakeStructuredModelClient(
+        {
+            "statement": "Complexity may change the objective.",
+            "rationale": "Bounded test.",
+            "predicted_subspace": {"complexity": [3, 6]},
+            "expected_observation": "objective_score changes",
+            "falsification_condition": "objective_score does not change",
+            "evidence_references": [],
+            "confidence": 0.2,
+        },
+        {
+            "search_type": "DIRECT",
+            "target": "objective_score",
+            "proposed_search_space": default_synthetic_configuration(),
+            "requested_experiment_budget": 1,
+            "rationale": "Valid but more expensive than the call ceiling.",
+            "recommends_human_approval": False,
+        },
+    )
+    low_cost_limit = _call_config().model_copy(
+        update={"maximum_cost_per_call": 0.0001}
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(run_id="planner-cost-overrun", output_dir=tmp_path),
+        contract,
+        default_synthetic_configuration(),
+        model_client=client,
+        hypothesis_call_config=_call_config(),
+        planner_call_config=low_cost_limit,
+    )
+    final = _invoke(dependencies, contract, "planner-cost-overrun")
+    assert final["status"] == RunStatus.STOPPED
+    assert final["stop_reason"] == "maximum_agent_call_cost_exceeded"
+    assert final["search_request"] is not None
+    assert final.get("experiment_spec") is None
+    assert len(client.calls) == 2
+    assert final["budget"].model_cost_used == pytest.approx(0.0004)
+    records = dependencies.agent_call_store.list_records("planner-cost-overrun")
+    completed = [
+        record for record in records if record.status == AgentCallStatus.COMPLETED
+    ]
+    assert len(completed) == 2
 
 
 def test_total_model_call_limit_stops_before_planner_provider_request(tmp_path):
