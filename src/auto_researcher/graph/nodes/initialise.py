@@ -10,6 +10,13 @@ def initialise_run(state: ResearchState) -> dict:
     if not state.get("run_id") or not state.get("thread_id"):
         return {
             "status": RunStatus.FAILED,
+            "cycle": 0,
+            "budget": BudgetState(
+                maximum_cycles=contract.maximum_cycles,
+                maximum_experiments=contract.maximum_experiments,
+                maximum_cost=contract.maximum_cost,
+            ),
+            "decision_event_ids": [],
             "errors": ["run_id_and_thread_id_are_required"],
             "stop_reason": "invalid_initial_state",
             "executed_nodes": ["initialise_run"],

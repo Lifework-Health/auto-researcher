@@ -22,6 +22,7 @@ from auto_researcher.graph.nodes.verify import verify_evidence
 from auto_researcher.graph.routing import (
     route_after_decision,
     route_after_human,
+    route_after_initialise,
     route_after_prepare,
     route_approval,
     route_search_backend,
@@ -60,7 +61,11 @@ def build_graph(
     graph.add_node("supervisor_decide", supervisor_decide)
 
     graph.add_edge(START, "initialise_run")
-    graph.add_edge("initialise_run", "supervisor_prepare")
+    graph.add_conditional_edges(
+        "initialise_run",
+        route_after_initialise,
+        {"supervisor_prepare": "supervisor_prepare", "__end__": END},
+    )
     graph.add_conditional_edges("supervisor_prepare", route_after_prepare)
     graph.add_edge("generate_hypothesis", "plan_search")
     graph.add_edge("plan_search", "approval_router")

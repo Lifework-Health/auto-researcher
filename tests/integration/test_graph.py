@@ -55,6 +55,25 @@ def test_complete_one_cycle_and_every_required_direct_node_executes(
     assert required.issubset(final["executed_nodes"])
 
 
+def test_invalid_initial_state_fails_cleanly_without_provenance(
+    contract_factory,
+    deterministic_dependencies,
+):
+    graph = build_graph(deterministic_dependencies)
+    final = _invoke(
+        graph,
+        contract_factory(),
+        run_id="",
+        thread_id="invalid-thread",
+    )
+    assert final["status"] == RunStatus.FAILED
+    assert final["stop_reason"] == "invalid_initial_state"
+    assert final["cycle"] == 0
+    assert final["errors"] == ["run_id_and_thread_id_are_required"]
+    assert final["executed_nodes"] == ["initialise_run"]
+    assert deterministic_dependencies.provenance_store.list_events("") == []
+
+
 def test_verifier_runs_automatically_and_provenance_is_complete(
     contract_factory,
     deterministic_dependencies,

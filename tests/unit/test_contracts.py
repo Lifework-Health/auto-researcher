@@ -130,6 +130,9 @@ def test_research_contract_is_deeply_immutable(contract_factory):
         contract.constraints["new"] = True
     with pytest.raises(TypeError):
         contract.constraints["nested"]["values"].append(3)
+    with pytest.raises(TypeError):
+        contract.constraints |= {"new": True}
+    assert "new" not in contract.constraints
 
 
 def test_synthetic_verification_cannot_claim_supported():

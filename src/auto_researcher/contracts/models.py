@@ -31,6 +31,7 @@ class FrozenDict(dict):
 
     __setitem__ = _immutable
     __delitem__ = _immutable
+    __ior__ = _immutable
     clear = _immutable
     pop = _immutable
     popitem = _immutable

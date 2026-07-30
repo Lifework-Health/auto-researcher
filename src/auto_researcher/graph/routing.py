@@ -8,6 +8,12 @@ from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.graph.state import ResearchState
 
 
+def route_after_initialise(
+    state: ResearchState,
+) -> Literal["supervisor_prepare", "__end__"]:
+    return "supervisor_prepare" if state["status"] == RunStatus.RUNNING else "__end__"
+
+
 def route_after_prepare(
     state: ResearchState,
 ) -> Literal["generate_hypothesis", "record_provenance"]:

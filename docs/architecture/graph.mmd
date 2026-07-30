@@ -1,6 +1,7 @@
 flowchart TD
     START((START)) --> initialise[initialise_run]
-    initialise --> prepare[supervisor_prepare]
+    initialise -->|valid identifiers| prepare[supervisor_prepare]
+    initialise -->|invalid identifiers| END
     prepare -->|budget available| hypothesis[generate_hypothesis]
     prepare -->|stop/error| provenance[record_provenance]
     hypothesis --> planner[plan_search]
