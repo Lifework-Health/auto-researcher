@@ -106,10 +106,10 @@ payloads.
   supplied).
 - `auto_agent_v2` commit inspected:
   `dab8c47ccdf3d5045ff5d9c76a6961b0dacd97cf`.
-- Core/default suite: 84 passed, 1 real-data test skipped, 15 HPO tests
+- Core/default suite: 84 passed, 1 real-data test skipped, 17 HPO tests
   deselected.
-- HPO suite: 15 passed, 85 non-HPO tests deselected.
-- Combined suite: 99 passed, 1 skipped, 0 failed.
+- HPO suite: 17 passed, 85 non-HPO tests deselected.
+- Combined suite: 101 passed, 1 skipped, 0 failed.
 - The real iCCA patient-data Optuna trial is pending because explicit local
   patient-data environment variables were not supplied. No successful
   real-data run is claimed.

@@ -448,6 +448,12 @@ def optuna_finalise_study(
         "optuna_study_result": result,
         "decision_event_ids": [event_id],
         "executed_nodes": ["optuna_finalise_study"],
+        "experiment_spec": None,
+        "evaluation_result": None,
+        "verification_result": None,
+        "diagnostic_experiment_spec": None,
+        "diagnostic_evaluation_result": None,
+        "diagnostic_verification_result": None,
     }
     if selected_models is not None:
         experiment, evaluation, verification = selected_models

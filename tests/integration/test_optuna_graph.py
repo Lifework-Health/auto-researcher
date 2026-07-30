@@ -12,7 +12,7 @@ from auto_researcher.contracts.enums import (
     ProvenanceKind,
     SearchType,
 )
-from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.contracts.models import EvaluationResult, ResearchContract
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.graph.nodes import optuna as optuna_nodes
 from auto_researcher.runtime.dependencies import (
@@ -264,3 +264,52 @@ def test_generic_optuna_nodes_contain_no_scientific_domain_conditionals():
         "pytorch",
     ):
         assert domain_term not in source
+
+
+def test_all_failed_study_clears_primary_and_diagnostic_results():
+    class AlwaysFailEvaluator:
+        evaluator_id = "synthetic-evaluator"
+        cost_per_experiment = 0.0
+
+        def evaluate(self, experiment, contract):
+            return EvaluationResult(
+                experiment_id=experiment.experiment_id,
+                success=False,
+                primary_score=None,
+                metrics={},
+                constraint_results={},
+                evaluator_version="always-fail-v1",
+                provenance=ProvenanceKind.SIMULATED,
+                error="intentional_test_failure",
+            )
+
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.OPTUNA}),
+        maximum_experiments=3,
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(manifest_created_at=FIXED_TIME),
+        contract,
+        {"trial_budget": 3, "seed": 19},
+        search_type=SearchType.OPTUNA,
+        evaluator=AlwaysFailEvaluator(),
+        clock=lambda: FIXED_TIME,
+    )
+    final = invoke(
+        build_graph(dependencies),
+        contract,
+        "all-failed",
+        "all-failed-thread",
+    )
+    assert final["optuna_study_result"].trials_completed == 0
+    assert final["optuna_study_result"].trials_failed == 3
+    for field in (
+        "experiment_spec",
+        "evaluation_result",
+        "verification_result",
+        "diagnostic_experiment_spec",
+        "diagnostic_evaluation_result",
+        "diagnostic_verification_result",
+    ):
+        assert final[field] is None

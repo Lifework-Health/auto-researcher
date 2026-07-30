@@ -119,6 +119,35 @@ def test_ask_samples_all_parameters_and_recovers_without_duplicate():
     }
 
 
+def test_sequential_asks_advance_one_persistent_seeded_sampler():
+    backend, task, _, request, spec, metadata, identity = setup_backend()
+    parameter_sets = []
+    for slot_index in range(3):
+        reference, _ = backend.ask_or_recover_trial(
+            identity,
+            spec,
+            slot_index=slot_index,
+            asked_at=NOW,
+        )
+        parameter_sets.append(tuple(sorted(reference.parameters.items())))
+        experiment = backend.create_experiment_spec(
+            task=task,
+            metadata=metadata,
+            spec=spec,
+            request=request,
+            reference=reference,
+        )
+        backend.tell_trial(
+            spec=spec,
+            reference=reference,
+            experiment=experiment,
+            evaluation=result(experiment),
+            verification=verification(experiment),
+            reported_at=NOW,
+        )
+    assert len(set(parameter_sets)) > 1
+
+
 @pytest.mark.parametrize(
     ("success", "verified", "feasible", "expected_status", "expected_feasible"),
     [

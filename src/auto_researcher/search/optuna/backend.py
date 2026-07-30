@@ -67,6 +67,10 @@ class OptunaAskTellBackend:
 
     def __init__(self, storage: Any) -> None:
         self.storage = storage
+        # Optuna persists trials, not sampler RNG state. Keep one sampler-bearing
+        # Study object per prepared study for the lifetime of this runtime so
+        # sequential ask calls advance the seeded sampler instead of resetting it.
+        self._study_cache: dict[str, Any] = {}
 
     @staticmethod
     def _imports():
@@ -83,8 +87,11 @@ class OptunaAskTellBackend:
         return optuna, TPESampler, Trial, TrialState
 
     def _load_study(self, study_name: str, spec: OptunaStudySpec):
+        cached = self._study_cache.get(study_name)
+        if cached is not None:
+            return cached
         optuna, TPESampler, _, _ = self._imports()
-        return optuna.load_study(
+        study = optuna.load_study(
             study_name=study_name,
             storage=self.storage,
             sampler=TPESampler(
@@ -92,6 +99,8 @@ class OptunaAskTellBackend:
                 n_startup_trials=spec.n_startup_trials,
             ),
         )
+        self._study_cache[study_name] = study
+        return study
 
     def prepare_or_load_study(
         self,
@@ -136,6 +145,7 @@ class OptunaAskTellBackend:
                 raise StudyIdentityMismatchError(
                     "Optuna study direction does not match the task specification"
                 )
+        self._study_cache[identity.study_name] = study
 
         running = [
             trial
@@ -455,6 +465,9 @@ class OptunaAskTellBackend:
         )
 
     def _load_study_by_identity(self, identity: StudyIdentity):
+        cached = self._study_cache.get(identity.study_name)
+        if cached is not None:
+            return cached
         optuna, _, _, _ = self._imports()
         return optuna.load_study(
             study_name=identity.study_name,
