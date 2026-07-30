@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-researcher"
+version = "2.1.0"
+description = "A typed, resumable LangGraph control plane for bounded scientific research."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph==1.2.10",
+    "langgraph-checkpoint-sqlite==3.1.0",
+    "pydantic==2.13.4",
+    "typer==0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.2",
+]
+
+[project.scripts]
+auto-researcher = "auto_researcher.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+markers = [
+    "v2: optional contract tests requiring the auto_agent_v2 package",
+]

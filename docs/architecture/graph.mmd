@@ -1,0 +1,35 @@
+flowchart TD
+    START((START)) --> initialise[initialise_run]
+    initialise --> prepare[supervisor_prepare]
+    prepare -->|budget available| hypothesis[generate_hypothesis]
+    prepare -->|stop/error| provenance[record_provenance]
+    hypothesis --> planner[plan_search]
+    planner --> approvalRouter[approval_router]
+    approvalRouter -->|required| human[human_approval interrupt]
+    approvalRouter -->|not required| searchRouter[search_router]
+    human -->|approved| searchRouter
+    human -->|rejected| provenance
+    searchRouter -->|DIRECT installed + allowed| direct[direct_search]
+    searchRouter -->|unavailable or disallowed| unavailable[unavailable_backend]
+    direct --> evaluator[evaluate_experiment]
+    evaluator --> verifier[verify_evidence]
+    verifier --> provenance
+    unavailable --> provenance
+    provenance --> decide[supervisor_decide]
+    decide -->|continue + reserve next cycle| hypothesis
+    decide -->|complete, stopped, failed| END((END))
+
+    checkpointer[(LangGraph checkpointer)]
+    provenanceStore[(append-only provenance SQLite)]
+    human -. pause/resume .-> checkpointer
+    provenance -. append .-> provenanceStore
+
+    classDef llm fill:#d9e8ff,stroke:#245aa5,color:#10233f
+    classDef deterministic fill:#e5f5e0,stroke:#3b7d23,color:#17310e
+    classDef backend fill:#fff1cc,stroke:#a66b00,color:#4d3100
+    classDef persistence fill:#f1e4ff,stroke:#7040a0,color:#2e1745
+
+    class hypothesis,planner llm
+    class initialise,prepare,approvalRouter,human,searchRouter,evaluator,verifier,provenance,decide,unavailable deterministic
+    class direct backend
+    class checkpointer,provenanceStore persistence

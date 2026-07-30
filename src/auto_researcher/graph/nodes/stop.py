@@ -1,0 +1,48 @@
+"""Deterministic continue/stop adjudication."""
+
+from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.graph.state import ResearchState
+
+
+def supervisor_decide(state: ResearchState) -> dict:
+    update: dict = {"executed_nodes": ["supervisor_decide"]}
+    if state["status"] in {RunStatus.STOPPED, RunStatus.FAILED}:
+        return update
+    if state["errors"]:
+        update.update(status=RunStatus.FAILED, stop_reason="fatal_error")
+        return update
+
+    budget = state["budget"]
+    if budget.cycles_used >= budget.maximum_cycles:
+        update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cycles_reached")
+        return update
+    if budget.experiments_used >= budget.maximum_experiments:
+        update.update(status=RunStatus.COMPLETED, stop_reason="maximum_experiments_reached")
+        return update
+    if budget.cost_used >= budget.maximum_cost:
+        update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cost_reached")
+        return update
+
+    next_budget = budget.before_cycle()
+    if next_budget.exhausted:
+        update.update(
+            budget=next_budget,
+            status=RunStatus.COMPLETED,
+            stop_reason=next_budget.exhaustion_reason,
+        )
+        return update
+    update.update(
+        budget=next_budget,
+        cycle=next_budget.cycles_used,
+        status=RunStatus.RUNNING,
+        active_hypothesis=None,
+        search_request=None,
+        search_backend_result=None,
+        experiment_spec=None,
+        evaluation_result=None,
+        verification_result=None,
+        pending_human_request=None,
+        human_approval_granted=None,
+        stop_reason=None,
+    )
+    return update
