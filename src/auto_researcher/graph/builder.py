@@ -1,4 +1,4 @@
-"""Compile the PR 1 control plane with injected dependencies."""
+"""Compile the domain-neutral control plane with injected task dependencies."""
 
 from __future__ import annotations
 

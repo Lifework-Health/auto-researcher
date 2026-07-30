@@ -1,0 +1,15 @@
+task:
+  id: icca_nbs
+  version: "1.0"
+
+experiment:
+  network: Ideker
+  alignment: Intersect
+  alpha: 0.7
+  K: 5
+  r: 100
+
+runtime:
+  data_dir: /external/path/to/icca-data
+  workspace_dir: /external/path/to/icca-workspace
+  output_dir: .auto-researcher

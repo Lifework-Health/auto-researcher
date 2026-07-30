@@ -1,4 +1,4 @@
-"""Explicit runtime dependency injection; graph nodes contain no global services."""
+"""Task-driven runtime assembly; LangGraph receives only generic dependencies."""
 
 from __future__ import annotations
 
@@ -10,15 +10,26 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from auto_researcher.agents.mock import MockHypothesisAgent, MockPlannerAgent
+from auto_researcher.agents.mock import (
+    ConfiguredPlannerAgent,
+    MockHypothesisAgent,
+)
 from auto_researcher.agents.protocols import HypothesisAgent, PlannerAgent
-from auto_researcher.evaluation.mock import MockEvaluator
+from auto_researcher.contracts.models import ResearchContract
 from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.provenance.protocols import ProvenanceStore
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.checkpoints import memory_checkpointer, sqlite_checkpointer
 from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.search.protocols import SearchBackend
+from auto_researcher.tasks.models import (
+    ArtefactPolicy,
+    DatasetManifest,
+    TaskDescriptor,
+    TaskNotReadyError,
+    TaskRuntimeContext,
+)
+from auto_researcher.tasks.protocols import ResearchTask, VerificationPolicy
 from auto_researcher.verification.verifier import DeterministicVerifier, Verifier
 
 
@@ -33,6 +44,10 @@ class RuntimeDependencies:
     checkpointer: Any
     clock: Callable[[], datetime]
     id_generator: Callable[[str], str]
+    task_descriptor: TaskDescriptor
+    dataset_manifest: DatasetManifest
+    artefact_policy: ArtefactPolicy
+    verification_policy: VerificationPolicy
 
 
 def utc_now() -> datetime:
@@ -43,7 +58,88 @@ def random_id(prefix: str) -> str:
     return f"{prefix}-{uuid4()}"
 
 
-def memory_dependencies(
+def _context_for_contract(
+    context: TaskRuntimeContext,
+    contract: ResearchContract,
+    manifest_created_at: datetime,
+) -> TaskRuntimeContext:
+    options = dict(context.task_options)
+    options["objective_version"] = contract.objective_version
+    payload = context.model_dump(mode="python")
+    payload.update(
+        {
+            "task_options": options,
+            "manifest_created_at": context.manifest_created_at
+            or manifest_created_at,
+        }
+    )
+    return TaskRuntimeContext.model_validate(payload)
+
+
+def _assemble_task_dependencies(
+    *,
+    task: ResearchTask,
+    runtime_context: TaskRuntimeContext,
+    contract: ResearchContract,
+    experiment_configuration: dict,
+    provenance_store: ProvenanceStore,
+    checkpointer: Any,
+    hypothesis_agent: HypothesisAgent | None,
+    planner_agent: PlannerAgent | None,
+    evaluator: Evaluator | None,
+    verifier: Verifier | None,
+    clock: Callable[[], datetime],
+    id_generator: Callable[[str], str],
+) -> RuntimeDependencies:
+    task.validate_contract(contract)
+    context = _context_for_contract(runtime_context, contract, clock())
+    readiness = task.readiness(context)
+    if not readiness.ready:
+        detail = "; ".join(readiness.errors) or "unspecified readiness failure"
+        raise TaskNotReadyError(
+            f"task {task.task_id}@{task.task_version} is not ready: {detail}"
+        )
+    descriptor = task.descriptor()
+    manifest = task.dataset_manifest(context)
+    metadata = task.experiment_metadata(context)
+    if metadata.evaluator_id != contract.evaluator_id:
+        raise ValueError("task experiment metadata does not match contract evaluator_id")
+    if metadata.provenance != contract.provenance:
+        raise ValueError("task experiment metadata does not match contract provenance")
+    if metadata.dataset_version != manifest.dataset_version:
+        raise ValueError("task experiment metadata does not match dataset manifest")
+    normalised = task.normalise_configuration(experiment_configuration)
+    policy = task.create_verification_policy(contract)
+    if policy.policy_id != descriptor.verification_policy_id:
+        raise ValueError("task verification policy does not match its descriptor")
+    task_evaluator = evaluator or task.create_evaluator(context)
+    if task_evaluator.evaluator_id != metadata.evaluator_id:
+        raise ValueError("task evaluator does not match experiment metadata")
+    return RuntimeDependencies(
+        hypothesis_agent=hypothesis_agent or MockHypothesisAgent(),
+        planner_agent=planner_agent or ConfiguredPlannerAgent(normalised),
+        direct_search_backend=DirectSearchBackend(
+            metadata,
+            task.normalise_configuration,
+        ),
+        evaluator=task_evaluator,
+        verifier=verifier or DeterministicVerifier(policy),
+        provenance_store=provenance_store,
+        checkpointer=checkpointer,
+        clock=clock,
+        id_generator=id_generator,
+        task_descriptor=descriptor,
+        dataset_manifest=manifest,
+        artefact_policy=task.artefact_policy(),
+        verification_policy=policy,
+    )
+
+
+def task_memory_dependencies(
+    task: ResearchTask,
+    runtime_context: TaskRuntimeContext,
+    contract,
+    experiment_configuration: dict,
     *,
     hypothesis_agent: HypothesisAgent | None = None,
     planner_agent: PlannerAgent | None = None,
@@ -53,21 +149,28 @@ def memory_dependencies(
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
 ) -> RuntimeDependencies:
-    return RuntimeDependencies(
-        hypothesis_agent=hypothesis_agent or MockHypothesisAgent(),
-        planner_agent=planner_agent or MockPlannerAgent(),
-        direct_search_backend=DirectSearchBackend(),
-        evaluator=evaluator or MockEvaluator(),
-        verifier=verifier or DeterministicVerifier(),
+    return _assemble_task_dependencies(
+        task=task,
+        runtime_context=runtime_context,
+        contract=contract,
+        experiment_configuration=experiment_configuration,
         provenance_store=provenance_store or SQLiteProvenanceStore(),
         checkpointer=memory_checkpointer(),
+        hypothesis_agent=hypothesis_agent,
+        planner_agent=planner_agent,
+        evaluator=evaluator,
+        verifier=verifier,
         clock=clock,
         id_generator=id_generator,
     )
 
 
 @contextmanager
-def sqlite_dependencies(
+def task_sqlite_dependencies(
+    task: ResearchTask,
+    runtime_context: TaskRuntimeContext,
+    contract,
+    experiment_configuration: dict,
     checkpoint_path: str | Path,
     provenance_path: str | Path,
     *,
@@ -87,17 +190,87 @@ def sqlite_dependencies(
     saver, connection = sqlite_checkpointer(checkpoint)
     store = SQLiteProvenanceStore(provenance)
     try:
-        yield RuntimeDependencies(
-            hypothesis_agent=hypothesis_agent or MockHypothesisAgent(),
-            planner_agent=planner_agent or MockPlannerAgent(),
-            direct_search_backend=DirectSearchBackend(),
-            evaluator=evaluator or MockEvaluator(),
-            verifier=verifier or DeterministicVerifier(),
+        yield _assemble_task_dependencies(
+            task=task,
+            runtime_context=runtime_context,
+            contract=contract,
+            experiment_configuration=experiment_configuration,
             provenance_store=store,
             checkpointer=saver,
+            hypothesis_agent=hypothesis_agent,
+            planner_agent=planner_agent,
+            evaluator=evaluator,
+            verifier=verifier,
             clock=clock,
             id_generator=id_generator,
         )
     finally:
         store.close()
         connection.close()
+
+
+# PR 1 compatibility factories remain easy synthetic entry points.
+def memory_dependencies(
+    *,
+    hypothesis_agent: HypothesisAgent | None = None,
+    planner_agent: PlannerAgent | None = None,
+    evaluator: Evaluator | None = None,
+    verifier: Verifier | None = None,
+    provenance_store: ProvenanceStore | None = None,
+    clock: Callable[[], datetime] = utc_now,
+    id_generator: Callable[[str], str] = random_id,
+) -> RuntimeDependencies:
+    from auto_researcher.tasks.synthetic import (
+        SyntheticTask,
+        default_synthetic_configuration,
+        default_synthetic_contract,
+    )
+
+    return task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        default_synthetic_contract(),
+        default_synthetic_configuration(),
+        hypothesis_agent=hypothesis_agent,
+        planner_agent=planner_agent,
+        evaluator=evaluator,
+        verifier=verifier,
+        provenance_store=provenance_store,
+        clock=clock,
+        id_generator=id_generator,
+    )
+
+
+@contextmanager
+def sqlite_dependencies(
+    checkpoint_path: str | Path,
+    provenance_path: str | Path,
+    *,
+    hypothesis_agent: HypothesisAgent | None = None,
+    planner_agent: PlannerAgent | None = None,
+    evaluator: Evaluator | None = None,
+    verifier: Verifier | None = None,
+    clock: Callable[[], datetime] = utc_now,
+    id_generator: Callable[[str], str] = random_id,
+) -> Iterator[RuntimeDependencies]:
+    from auto_researcher.tasks.synthetic import (
+        SyntheticTask,
+        default_synthetic_configuration,
+        default_synthetic_contract,
+    )
+
+    with task_sqlite_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        default_synthetic_contract(),
+        default_synthetic_configuration(),
+        checkpoint_path,
+        provenance_path,
+        hypothesis_agent=hypothesis_agent,
+        planner_agent=planner_agent,
+        evaluator=evaluator,
+        verifier=verifier,
+        clock=clock,
+        id_generator=id_generator,
+    ) as dependencies:
+        yield dependencies

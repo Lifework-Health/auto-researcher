@@ -1,0 +1,16 @@
+# Extension sketch only: this task is not implemented in PR 2.
+task:
+  id: mri_segmentation
+  version: "1.0"
+
+experiment:
+  architecture: unet
+  encoder: resnet34
+  learning_rate: 0.0003
+  batch_size: 8
+  loss: dice_bce
+  augmentation_policy: strong
+
+runtime:
+  data_dir: /external/path/to/mri-data
+  output_dir: .auto-researcher

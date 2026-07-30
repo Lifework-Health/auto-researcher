@@ -27,7 +27,7 @@ def search_router(state: ResearchState) -> dict:
             requested_type=request.search_type,
             available=False,
             code="BACKEND_UNAVAILABLE",
-            message=f"{request.search_type.value} is declared but not installed in PR 1",
+            message=f"{request.search_type.value} is declared but not installed in PR 2",
         )
     return {
         "search_backend_result": result,

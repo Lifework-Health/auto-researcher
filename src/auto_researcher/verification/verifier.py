@@ -11,6 +11,7 @@ from auto_researcher.contracts.models import (
     ResearchContract,
     VerificationResult,
 )
+from auto_researcher.tasks.protocols import VerificationPolicy
 
 
 @runtime_checkable
@@ -29,9 +30,13 @@ class Verifier(Protocol):
 
 class DeterministicVerifier:
     verifier_id = "deterministic-verifier"
-    required_metrics = frozenset({"primary_score", "stability"})
 
-    def __init__(self, score_tolerance: float = 1e-9) -> None:
+    def __init__(
+        self,
+        policy: VerificationPolicy,
+        score_tolerance: float = 1e-9,
+    ) -> None:
+        self.policy = policy
         self.score_tolerance = score_tolerance
 
     def verify(
@@ -49,13 +54,13 @@ class DeterministicVerifier:
             reasons.append("unregistered_evaluator")
         if contract.verifier_id != self.verifier_id:
             reasons.append("unregistered_verifier")
+        if experiment.provenance != evaluation.provenance:
+            reasons.append("experiment_evaluation_provenance_mismatch")
         if not evaluation.success:
             reasons.append("evaluation_failed")
-        missing = sorted(self.required_metrics - evaluation.metrics.keys())
+        missing = sorted(self.policy.required_metrics - evaluation.metrics.keys())
         if missing:
             reasons.append(f"missing_metrics:{','.join(missing)}")
-        if not evaluation.constraint_results:
-            reasons.append("constraints_not_evaluated")
         measured = evaluation.primary_score
         claim = measured if claimed_score is None else claimed_score
         if (
@@ -65,26 +70,26 @@ class DeterministicVerifier:
         ):
             reasons.append("score_mismatch")
 
-        constraint_compliant = bool(evaluation.constraint_results) and all(
-            evaluation.constraint_results.values()
-        )
-        if not constraint_compliant:
-            reasons.append("constraint_violation")
-        verified = not reasons
+        structural_ok = not reasons
+        if structural_ok:
+            decision = self.policy.evaluate_constraints(evaluation, contract)
+            constraint_compliant = decision.constraint_compliant
+            reasons.extend(decision.reasons)
+            evidence_status = decision.evidence_status
+        else:
+            constraint_compliant = False
+            evidence_status = EvidenceStatus.INCONCLUSIVE
 
-        if evaluation.provenance in {ProvenanceKind.MOCK, ProvenanceKind.SIMULATED}:
+        if (
+            evaluation.provenance in {ProvenanceKind.MOCK, ProvenanceKind.SIMULATED}
+            and evidence_status == EvidenceStatus.SUPPORTED
+        ):
             evidence_status = EvidenceStatus.INCONCLUSIVE
             reasons.append("synthetic_evidence_cannot_support")
-        elif verified and constraint_compliant:
-            evidence_status = EvidenceStatus.SUPPORTED
-        elif "constraint_violation" in reasons:
-            evidence_status = EvidenceStatus.REFUTED
-        else:
-            evidence_status = EvidenceStatus.INCONCLUSIVE
 
         return VerificationResult(
             experiment_id=evaluation.experiment_id,
-            verified=verified,
+            verified=structural_ok,
             claimed_score=claim,
             measured_score=measured,
             constraint_compliant=constraint_compliant,

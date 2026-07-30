@@ -17,8 +17,8 @@ class SearchBackend(Protocol):
 
 
 class OptunaSearchBackend(SearchBackend, Protocol):
-    """Future ask/tell backend boundary. No PR 1 implementation exists."""
+    """Future ask/tell backend boundary. No PR 2 implementation exists."""
 
 
 class OpenEvolveSearchBackend(SearchBackend, Protocol):
-    """Future program-search boundary. No PR 1 implementation exists."""
+    """Future program-search boundary. No PR 2 implementation exists."""
