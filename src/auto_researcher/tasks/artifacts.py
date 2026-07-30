@@ -52,7 +52,7 @@ def json_safe(value: Any) -> Any:
     raise TypeError(f"unsupported scientific result type: {type(value).__name__}")
 
 
-def _safe_segment(value: str, field: str) -> str:
+def safe_segment(value: str, field: str) -> str:
     if (
         not value
         or value in {".", ".."}
@@ -68,13 +68,13 @@ def artefact_references(
 ) -> tuple[str, ...]:
     if context.output_dir is None or not context.run_id:
         return ()
-    run_id = _safe_segment(context.run_id, "run_id")
-    safe_experiment_id = _safe_segment(experiment_id, "experiment_id")
+    run_id = safe_segment(context.run_id, "run_id")
+    safe_experiment_id = safe_segment(experiment_id, "experiment_id")
     prefix = Path("runs") / run_id / safe_experiment_id
     return tuple((prefix / name).as_posix() for name in ARTEFACT_FILENAMES)
 
 
-def _atomic_json_write(path: Path, value: Any) -> None:
+def atomic_json_write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(json_safe(value), indent=2, sort_keys=True, allow_nan=False)
     with tempfile.NamedTemporaryFile(
@@ -111,4 +111,4 @@ def write_artefact_bundle(
         evaluator_manifest,
     )
     for relative, value in zip(references, values, strict=True):
-        _atomic_json_write(context.output_dir / relative, value)
+        atomic_json_write(context.output_dir / relative, value)

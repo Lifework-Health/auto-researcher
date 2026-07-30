@@ -8,7 +8,7 @@ from typing import Any
 import typer
 import yaml
 
-from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.contracts.models import ResearchContract
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
@@ -57,10 +57,28 @@ def _load_task_configuration(
             f"{task_identity.get('version')!r}, not {task_version!r}"
         )
     experiment = payload.get("experiment")
+    search = payload.get("search")
     runtime = payload.get("runtime", {})
-    if not isinstance(experiment, dict) or not isinstance(runtime, dict):
-        raise ValueError("task config requires mapping sections: experiment and runtime")
-    return experiment, runtime
+    if (experiment is None) == (search is None):
+        raise ValueError("task config requires exactly one of experiment or search")
+    if not isinstance(runtime, dict):
+        raise ValueError("task config runtime section must be a mapping")
+    selected = experiment if experiment is not None else search
+    if not isinstance(selected, dict):
+        raise ValueError("task config experiment/search section must be a mapping")
+    selected = dict(selected)
+    if search is not None:
+        kind = selected.pop("type", None)
+        if kind != SearchType.OPTUNA.value:
+            raise ValueError("PR 3 search section type must be OPTUNA")
+    return selected, runtime
+
+
+def _configured_search_type(path: Path | None) -> SearchType:
+    if path is None:
+        return SearchType.DIRECT
+    payload = _load_yaml(path)
+    return SearchType.OPTUNA if "search" in payload else SearchType.DIRECT
 
 
 @app.command()
@@ -80,16 +98,29 @@ def run(
         DEFAULT_DATA_DIR / "provenance.sqlite",
         "--provenance-db",
     ),
+    optuna_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "optuna.sqlite",
+        "--optuna-db",
+    ),
 ) -> None:
     """Run a registered task through the unchanged LangGraph control plane."""
     if mock:
         task_id = "synthetic"
     registry = default_task_registry()
     try:
+        search_type = _configured_search_type(task_config)
+        raw_config = _load_yaml(task_config) if task_config else {}
+        requested_budget = int(
+            raw_config.get("search", {}).get("trial_budget", max_cycles)
+        )
         contract = (
             ResearchContract.model_validate(_load_yaml(contract_path))
             if contract_path
-            else default_synthetic_contract(max_cycles)
+            else default_synthetic_contract(
+                max_cycles,
+                search_types=frozenset({search_type}),
+                maximum_experiments=requested_budget,
+            )
         )
         if contract.task_id != task_id:
             raise ValueError(
@@ -117,19 +148,22 @@ def run(
             experiment,
             checkpoint_db,
             provenance_db,
+            optuna_db if search_type == SearchType.OPTUNA else None,
+            search_type=search_type,
         ) as dependencies:
             graph = build_graph(dependencies)
             final = graph.invoke(
                 {"run_id": run_id, "thread_id": thread_id, "contract": contract},
                 config,
             )
-    except (TaskPluginError, ValueError, FileNotFoundError) as exc:
+    except (TaskPluginError, ValueError, FileNotFoundError, RuntimeError) as exc:
         typer.echo(f"Task setup failed: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
     verification = final.get("verification_result")
     evaluation = final.get("evaluation_result")
     typer.echo(f"Task: {contract.task_id}@{contract.task_version}")
+    typer.echo(f"Search type: {search_type.value}")
     typer.echo(f"Run: {run_id}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(f"Cycles: {final['budget'].cycles_used}/{final['budget'].maximum_cycles}")
@@ -141,6 +175,22 @@ def run(
     )
     typer.echo(f"Stop reason: {final.get('stop_reason') or 'none'}")
     typer.echo(f"Event IDs: {', '.join(final['decision_event_ids']) or 'none'}")
+    study = final.get("optuna_study_result")
+    if study is not None:
+        typer.echo(f"Study: {study.study_name}")
+        typer.echo(f"Direction: {study.direction.value}")
+        typer.echo(f"Trial budget: {study.trial_budget}")
+        typer.echo(f"Trials asked: {study.trials_asked}")
+        typer.echo(f"Trials completed: {study.trials_completed}")
+        typer.echo(f"Trials failed: {study.trials_failed}")
+        typer.echo(f"Best feasible score: {study.best_feasible_score}")
+        typer.echo(f"Best feasible trial: {study.best_feasible_trial_number}")
+        typer.echo(f"Best overall diagnostic score: {study.best_overall_score}")
+        typer.echo(f"Study finish reason: {study.finish_reason}")
+        typer.echo(
+            "Study artefacts: "
+            f"{', '.join(study.artefact_references) or 'none'}"
+        )
     if final["status"] == RunStatus.FAILED:
         raise typer.Exit(code=1)
 

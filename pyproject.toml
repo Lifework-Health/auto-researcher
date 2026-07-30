@@ -20,6 +20,9 @@ dependencies = [
 dev = [
     "pytest==9.0.2",
 ]
+hpo = [
+    "optuna>=4.9,<5",
+]
 
 [project.scripts]
 auto-researcher = "auto_researcher.cli:app"
@@ -32,6 +35,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra"
 markers = [
+    "hpo: optional tests requiring the Optuna hpo extra",
     "v2: optional contract tests requiring the auto_agent_v2 package",
     "real_data: optional iCCA compatibility gate requiring explicit local data",
 ]

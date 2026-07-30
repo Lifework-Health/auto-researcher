@@ -32,5 +32,12 @@ def supervisor_prepare(state: ResearchState) -> dict:
         "verification_result": None,
         "pending_human_request": None,
         "human_approval_granted": None,
+        "optuna_study_spec": None,
+        "optuna_study_state": None,
+        "optuna_study_result": None,
+        "optuna_trial_outcome": None,
+        "diagnostic_experiment_spec": None,
+        "diagnostic_evaluation_result": None,
+        "diagnostic_verification_result": None,
         "executed_nodes": ["supervisor_prepare"],
     }

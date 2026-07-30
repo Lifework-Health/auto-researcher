@@ -109,8 +109,42 @@ The graph checkpointer stores resumable execution state by `thread_id`.
 Scientific provenance is a separate append-only store keyed by `run_id`.
 Neither store receives `TaskRuntimeContext`.
 
-## PR 2 non-goals
+## Generic Optuna ask/tell search
 
-PR 2 does not implement Optuna ask/tell, live LLM calls, OpenEvolve, Neo4j,
-MRI training, PyTorch/MONAI, distributed execution, patient-level artefacts, or
+An optional `OptunaCapableTask` supplies an immutable study specification. The
+task owns maximum parameter ranges, fixed scientific context, objective metric,
+direction and search-space version. A planner may only narrow that structure;
+widening ranges, adding choices or parameters, or mutating distribution
+semantics is rejected before execution.
+
+LangGraph owns every lifecycle transition:
+
+`prepare → ask → create experiment → evaluate → verify → tell → record → decide`.
+
+There is no `study.optimize()` call and no task-specific optimisation loop.
+Every trial therefore uses the same evaluator, verifier, budget and checkpoint
+nodes as DIRECT. A structurally valid finite result is told `COMPLETE`;
+constraint violations remain complete but infeasible. Evaluation or structural
+verification failures are told `FAIL` without fabricated penalty scores.
+
+The selected research result is the best feasible trial. The best objective
+value regardless of feasibility is retained separately as a diagnostic. If no
+feasible trial exists, the primary experiment/evaluation/verification slots are
+left empty and the diagnostic slots are explicit.
+
+Study identity binds run, task and task version, objective and constraint
+versions, evaluator, dataset, code version, request and normalised search-space
+hash. Reopening validates every identity attribute. A durable running trial is
+recovered by slot instead of asked twice, and repeated tell/provenance writes
+must match their original content.
+
+PR 3 local execution is sequential. LangGraph checkpoints, append-only
+scientific provenance, and Optuna RDB state use three separate databases. A
+future MRI plugin can expose learning rate, architecture or augmentation
+parameters through the same capability without changing the graph.
+
+## PR 3 non-goals
+
+PR 3 does not implement live LLM calls, OpenEvolve, Neo4j, MRI training,
+PyTorch/MONAI, distributed/parallel execution, patient-level artefacts, or
 changes to the iCCA objective.

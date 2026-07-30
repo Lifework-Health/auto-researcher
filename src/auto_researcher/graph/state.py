@@ -17,6 +17,12 @@ from auto_researcher.contracts.models import (
     SearchRequest,
     VerificationResult,
 )
+from auto_researcher.search.optuna.models import (
+    OptunaStudyResult,
+    OptunaStudySpec,
+    OptunaStudyState,
+    OptunaTrialOutcome,
+)
 
 
 class ResearchState(TypedDict):
@@ -38,3 +44,10 @@ class ResearchState(TypedDict):
     pending_human_request: NotRequired[ApprovalRequest | None]
     human_approval_granted: NotRequired[bool | None]
     stop_reason: NotRequired[str | None]
+    optuna_study_spec: NotRequired[OptunaStudySpec | None]
+    optuna_study_state: NotRequired[OptunaStudyState | None]
+    optuna_study_result: NotRequired[OptunaStudyResult | None]
+    optuna_trial_outcome: NotRequired[OptunaTrialOutcome | None]
+    diagnostic_experiment_spec: NotRequired[ExperimentSpec | None]
+    diagnostic_evaluation_result: NotRequired[EvaluationResult | None]
+    diagnostic_verification_result: NotRequired[VerificationResult | None]

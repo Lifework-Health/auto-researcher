@@ -1,0 +1,26 @@
+task:
+  id: icca_nbs
+  version: "1.0"
+
+search:
+  type: OPTUNA
+  trial_budget: 8
+  seed: 123
+  fixed:
+    network: Ideker
+    alignment: Intersect
+    r: 100
+  parameters:
+    alpha:
+      type: float
+      low: 0.3
+      high: 0.9
+    K:
+      type: int
+      low: 4
+      high: 8
+
+runtime:
+  data_dir: /external/path/to/icca-data
+  workspace_dir: /external/path/to/icca-workspace
+  output_dir: .auto-researcher

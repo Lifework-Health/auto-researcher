@@ -13,6 +13,15 @@ from auto_researcher.graph.nodes.human_approval import approval_router, human_ap
 from auto_researcher.graph.nodes.hypothesis import generate_hypothesis
 from auto_researcher.graph.nodes.initialise import initialise_run
 from auto_researcher.graph.nodes.planner import plan_search
+from auto_researcher.graph.nodes.optuna import (
+    optuna_ask_trial,
+    optuna_create_experiment,
+    optuna_decide_study,
+    optuna_finalise_study,
+    optuna_prepare_study,
+    optuna_record_trial,
+    optuna_tell_trial,
+)
 from auto_researcher.graph.nodes.provenance import record_provenance
 from auto_researcher.graph.nodes.search_router import search_router
 from auto_researcher.graph.nodes.stop import supervisor_decide
@@ -23,7 +32,10 @@ from auto_researcher.graph.routing import (
     route_after_decision,
     route_after_human,
     route_after_initialise,
+    route_after_optuna_decision,
+    route_after_optuna_prepare,
     route_after_prepare,
+    route_after_verification,
     route_approval,
     route_search_backend,
 )
@@ -46,7 +58,10 @@ def build_graph(
     graph.add_node("plan_search", partial(plan_search, dependencies=dependencies))
     graph.add_node("approval_router", partial(approval_router, dependencies=dependencies))
     graph.add_node("human_approval", human_approval)
-    graph.add_node("search_router", search_router)
+    graph.add_node(
+        "search_router",
+        partial(search_router, dependencies=dependencies),
+    )
     graph.add_node("direct_search", partial(direct_search, dependencies=dependencies))
     graph.add_node("unavailable_backend", unavailable_backend)
     graph.add_node(
@@ -59,6 +74,31 @@ def build_graph(
         partial(record_provenance, dependencies=dependencies),
     )
     graph.add_node("supervisor_decide", supervisor_decide)
+    graph.add_node(
+        "optuna_prepare_study",
+        partial(optuna_prepare_study, dependencies=dependencies),
+    )
+    graph.add_node(
+        "optuna_ask_trial",
+        partial(optuna_ask_trial, dependencies=dependencies),
+    )
+    graph.add_node(
+        "optuna_create_experiment",
+        partial(optuna_create_experiment, dependencies=dependencies),
+    )
+    graph.add_node(
+        "optuna_tell_trial",
+        partial(optuna_tell_trial, dependencies=dependencies),
+    )
+    graph.add_node(
+        "optuna_record_trial",
+        partial(optuna_record_trial, dependencies=dependencies),
+    )
+    graph.add_node("optuna_decide_study", optuna_decide_study)
+    graph.add_node(
+        "optuna_finalise_study",
+        partial(optuna_finalise_study, dependencies=dependencies),
+    )
 
     graph.add_edge(START, "initialise_run")
     graph.add_conditional_edges(
@@ -73,8 +113,21 @@ def build_graph(
     graph.add_conditional_edges("human_approval", route_after_human)
     graph.add_conditional_edges("search_router", route_search_backend)
     graph.add_edge("direct_search", "evaluate_experiment")
+    graph.add_conditional_edges(
+        "optuna_prepare_study",
+        route_after_optuna_prepare,
+    )
+    graph.add_edge("optuna_ask_trial", "optuna_create_experiment")
+    graph.add_edge("optuna_create_experiment", "evaluate_experiment")
     graph.add_edge("evaluate_experiment", "verify_evidence")
-    graph.add_edge("verify_evidence", "record_provenance")
+    graph.add_conditional_edges("verify_evidence", route_after_verification)
+    graph.add_edge("optuna_tell_trial", "optuna_record_trial")
+    graph.add_edge("optuna_record_trial", "optuna_decide_study")
+    graph.add_conditional_edges(
+        "optuna_decide_study",
+        route_after_optuna_decision,
+    )
+    graph.add_edge("optuna_finalise_study", "supervisor_decide")
     graph.add_edge("unavailable_backend", "record_provenance")
     graph.add_edge("record_provenance", "supervisor_decide")
     graph.add_conditional_edges(

@@ -48,6 +48,17 @@ class SQLiteProvenanceStore:
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"event {event.event_id!r} already exists; events are immutable") from exc
 
+    def append_event_idempotent(self, event: DecisionEvent) -> bool:
+        existing = self.get_event(event.event_id)
+        if existing is not None:
+            if existing != event:
+                raise ValueError(
+                    f"event {event.event_id!r} already exists with different content"
+                )
+            return False
+        self.append_event(event)
+        return True
+
     def get_event(self, event_id: str) -> DecisionEvent | None:
         row = self._connection.execute(
             "SELECT payload FROM decision_events WHERE event_id = ?",

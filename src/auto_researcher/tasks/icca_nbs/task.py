@@ -7,7 +7,14 @@ import importlib.util
 from pydantic import JsonValue
 
 from auto_researcher.contracts.enums import ProvenanceKind, SearchType
-from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.contracts.models import ResearchContract, SearchRequest
+from auto_researcher.search.optuna.models import (
+    FloatParameterSpec,
+    IntParameterSpec,
+    OptimisationDirection,
+    OptunaStudySpec,
+)
+from auto_researcher.search.optuna.narrowing import narrow_study_spec
 from auto_researcher.tasks.icca_nbs.bindings import (
     ICCABindings,
     load_installed_icca_bindings,
@@ -51,7 +58,7 @@ class ICCANBSTask:
             display_name="iCCA Network Based Stratification",
             domain="cancer-subtyping",
             description="Adapter over the auto_agent_v2 iCCA scientific evaluator.",
-            supported_search_types=frozenset({SearchType.DIRECT}),
+            supported_search_types=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
             evaluator_id="icca-nbs-v2-evaluator",
             verification_policy_id="icca-nbs-policy-v1",
             configuration_schema_version="1.0",
@@ -187,6 +194,10 @@ class ICCANBSTask:
                     "evaluation_result",
                     "dataset_manifest",
                     "evaluator_manifest",
+                    "study_spec",
+                    "study_summary",
+                    "trials_summary",
+                    "selected_trial",
                 }
             ),
             prohibited_artefact_types=frozenset(
@@ -199,6 +210,65 @@ class ICCANBSTask:
             ),
             contains_sensitive_data=False,
             retention_notes=(
-                "PR 2 writes only aggregate, non-patient-level manifests and results."
+                "Only aggregate, non-patient-level manifests and results are written."
             ),
+        )
+
+    def create_optuna_study_spec(
+        self,
+        contract: ResearchContract,
+        request: SearchRequest,
+    ) -> OptunaStudySpec:
+        self.validate_contract(contract)
+        if request.search_type != SearchType.OPTUNA:
+            raise ValueError("iCCA Optuna study requires an OPTUNA SearchRequest")
+        proposed = dict(request.search_space)
+        fixed = proposed.get("fixed", {})
+        if not isinstance(fixed, dict):
+            raise ValueError("iCCA Optuna fixed section must be a mapping")
+        required = {"network", "alignment", "r"}
+        if set(fixed) != required:
+            raise ValueError(
+                "iCCA Optuna fixed section must contain exactly network, alignment and r"
+            )
+        canonical = self.normalise_configuration(
+            {
+                **fixed,
+                "alpha": self._bindings().alpha_bounds[0],
+                "K": self._bindings().k_bounds[0],
+            }
+        )
+        proposed["fixed"] = {
+            "network": canonical["network"],
+            "alignment": canonical["alignment"],
+            "r": canonical["r"],
+        }
+        registered = OptunaStudySpec(
+            schema_version="1.0",
+            task_id=self.task_id,
+            task_version=self.task_version,
+            search_space_version="auto-agent-v2-icca-v1",
+            direction=OptimisationDirection.MAXIMIZE,
+            parameters=(
+                FloatParameterSpec(
+                    name="alpha",
+                    low=float(self._bindings().alpha_bounds[0]),
+                    high=float(self._bindings().alpha_bounds[1]),
+                ),
+                IntParameterSpec(
+                    name="K",
+                    low=int(self._bindings().k_bounds[0]),
+                    high=int(self._bindings().k_bounds[1]),
+                ),
+            ),
+            fixed_configuration=proposed["fixed"],
+            trial_budget=request.experiment_budget,
+            seed=20260730,
+            objective_metric=contract.primary_metric,
+            study_metadata={"reference_implementation": "auto_agent_v2"},
+        )
+        return narrow_study_spec(
+            registered,
+            proposed,
+            request_experiment_budget=request.experiment_budget,
         )

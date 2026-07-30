@@ -9,7 +9,7 @@ the scientific reference package into the Auto Researcher environment:
 .venv/bin/pip install -e ../auto_agent_v2
 ```
 
-PR 2 was developed against v2 commit
+PR 3 compatibility was verified against v2 commit
 `dab8c47ccdf3d5045ff5d9c76a6961b0dacd97cf`.
 
 The external data directory must contain:
@@ -46,6 +46,7 @@ The installed-v2 contract test uses real v2 dataclasses and objective code:
 
 ```bash
 .venv/bin/pytest tests/integration/test_v2_adapter_optional.py -v
+.venv/bin/pytest tests/integration/test_icca_optuna_installed_optional.py -v
 ```
 
 The real-data comparison is opt-in:

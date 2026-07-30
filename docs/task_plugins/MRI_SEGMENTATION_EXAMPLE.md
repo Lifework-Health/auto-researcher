@@ -1,6 +1,6 @@
 # Future MRI segmentation task
 
-MRI segmentation is an extension example, not an implemented PR 2 task. It would
+MRI segmentation is an extension example, not an implemented PR 3 task. It would
 implement the same `ResearchTask` protocol and be registered as
 `mri_segmentation@1.0`; the LangGraph control plane would not change.
 
@@ -21,10 +21,12 @@ policy could check train/validation/test separation, patient leakage, reproducib
 seeds, foreground coverage, required prediction artefacts, and a performance
 threshold.
 
-DIRECT could execute predefined configurations. A later OPTUNA backend could
-optimise hyperparameters, and a later OPENEVOLVE backend could evolve losses,
+DIRECT could execute predefined configurations. The generic OPTUNA backend can
+optimise task-registered hyperparameters through a future MRI plugin, while a
+later OPENEVOLVE backend could evolve losses,
 augmentation policies, model blocks, or post-processing. Those backends are
-explicitly outside PR 2.
+The MRI task, training implementation, and OPENEVOLVE support remain outside
+PR 3.
 
 The plugin would also define data custody and artefact rules suitable for medical
 images. No PyTorch, MONAI, training loop, dataset loader, or model implementation

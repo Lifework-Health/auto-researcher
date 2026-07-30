@@ -43,11 +43,46 @@ def route_after_human(
 
 def route_search_backend(
     state: ResearchState,
-) -> Literal["direct_search", "unavailable_backend"]:
+) -> Literal["direct_search", "optuna_prepare_study", "unavailable_backend"]:
     backend = state["search_backend_result"]
     if backend and backend.available and backend.requested_type == SearchType.DIRECT:
         return "direct_search"
+    if backend and backend.available and backend.requested_type == SearchType.OPTUNA:
+        return "optuna_prepare_study"
     return "unavailable_backend"
+
+
+def route_after_optuna_prepare(
+    state: ResearchState,
+) -> Literal[
+    "optuna_ask_trial",
+    "optuna_create_experiment",
+    "optuna_finalise_study",
+]:
+    summary = state["optuna_study_state"]
+    assert summary is not None
+    if summary.finished:
+        return "optuna_finalise_study"
+    if summary.current_trial is not None:
+        return "optuna_create_experiment"
+    return "optuna_ask_trial"
+
+
+def route_after_verification(
+    state: ResearchState,
+) -> Literal["record_provenance", "optuna_tell_trial"]:
+    request = state.get("search_request")
+    if request is not None and request.search_type == SearchType.OPTUNA:
+        return "optuna_tell_trial"
+    return "record_provenance"
+
+
+def route_after_optuna_decision(
+    state: ResearchState,
+) -> Literal["optuna_ask_trial", "optuna_finalise_study"]:
+    summary = state["optuna_study_state"]
+    assert summary is not None
+    return "optuna_finalise_study" if summary.finished else "optuna_ask_trial"
 
 
 def route_after_decision(

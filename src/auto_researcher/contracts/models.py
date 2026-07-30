@@ -115,7 +115,7 @@ class SearchRequest(ImmutableDomainModel):
     hypothesis_id: str = Field(min_length=1)
     search_type: SearchType
     target: str = Field(min_length=1)
-    search_space: dict[str, JsonValue]
+    search_space: FrozenJsonDict
     experiment_budget: int = Field(ge=1)
     rationale: str = Field(min_length=1)
     requires_human_approval: bool = False

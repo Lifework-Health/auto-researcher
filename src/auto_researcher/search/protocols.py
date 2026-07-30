@@ -1,7 +1,9 @@
-"""Protocol shared by current and future search backends."""
+"""Protocol and capability metadata shared by search backends."""
 
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ExperimentSpec, ResearchContract, SearchRequest
 
 
@@ -17,8 +19,16 @@ class SearchBackend(Protocol):
 
 
 class OptunaSearchBackend(SearchBackend, Protocol):
-    """Future ask/tell backend boundary. No PR 2 implementation exists."""
+    """Generic ask/tell backend marker implemented by the PR 3 adapter."""
 
 
 class OpenEvolveSearchBackend(SearchBackend, Protocol):
-    """Future program-search boundary. No PR 2 implementation exists."""
+    """Reserved program-search boundary; no implementation exists yet."""
+
+
+@dataclass(frozen=True)
+class SearchCapability:
+    search_type: SearchType
+    available: bool
+    code: str
+    message: str

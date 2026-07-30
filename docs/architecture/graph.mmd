@@ -11,10 +11,21 @@ flowchart TD
     human -->|approved| searchRouter
     human -->|rejected| provenance
     searchRouter -->|DIRECT installed + allowed| direct[direct_search]
+    searchRouter -->|OPTUNA installed + task capable + allowed| optunaPrepare[optuna_prepare_study]
     searchRouter -->|unavailable or disallowed| unavailable[unavailable_backend]
     direct --> evaluator[evaluate_experiment]
+    optunaPrepare --> optunaAsk[optuna_ask_trial]
+    optunaPrepare -->|recover running trial| optunaCreate[optuna_create_experiment]
+    optunaAsk --> optunaCreate
+    optunaCreate --> evaluator
     evaluator --> verifier[verify_evidence]
-    verifier --> provenance
+    verifier -->|DIRECT| provenance
+    verifier -->|OPTUNA| optunaTell[optuna_tell_trial]
+    optunaTell --> optunaRecord[optuna_record_trial]
+    optunaRecord --> optunaDecide[optuna_decide_study]
+    optunaDecide -->|budget remains| optunaAsk
+    optunaDecide -->|finished| optunaFinal[optuna_finalise_study]
+    optunaFinal --> decide
     unavailable --> provenance
     provenance --> decide[supervisor_decide]
     decide -->|continue + reserve next cycle| hypothesis
@@ -22,8 +33,12 @@ flowchart TD
 
     checkpointer[(LangGraph checkpointer)]
     provenanceStore[(append-only provenance SQLite)]
+    optunaStore[(separate Optuna SQLite)]
     human -. pause/resume .-> checkpointer
     provenance -. append .-> provenanceStore
+    optunaPrepare -. study identity .-> optunaStore
+    optunaAsk -. ask .-> optunaStore
+    optunaTell -. tell .-> optunaStore
 
     classDef llm fill:#d9e8ff,stroke:#245aa5,color:#10233f
     classDef deterministic fill:#e5f5e0,stroke:#3b7d23,color:#17310e
@@ -32,5 +47,5 @@ flowchart TD
 
     class hypothesis,planner llm
     class initialise,prepare,approvalRouter,human,searchRouter,evaluator,verifier,provenance,decide,unavailable deterministic
-    class direct backend
-    class checkpointer,provenanceStore persistence
+    class direct,optunaPrepare,optunaAsk,optunaTell backend
+    class checkpointer,provenanceStore,optunaStore persistence
