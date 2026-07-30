@@ -5,7 +5,7 @@ scientific research. Scientific domains plug into the same graph through a
 `ResearchTask` contract; the core owns lifecycle, budgets, orchestration,
 structural verification, checkpoints, provenance, and approval.
 
-PR 3 includes:
+PR 4 includes:
 
 - an offline deterministic `synthetic` task;
 - an `icca_nbs` adapter that delegates scientific execution and scoring to
@@ -18,6 +18,12 @@ PR 3 includes:
 - task-owned bounded search spaces for synthetic and iCCA NBS;
 - feasible winner selection, diagnostic best-overall reporting, and separate
   checkpoint, provenance and Optuna SQLite stores.
+- optional bounded live hypothesis/planner agents using typed structured
+  proposals and deterministic reconciliation;
+- plugin-owned safe model contexts, honest grounding labels, durable
+  replay-safe model-call records, and combined model/evaluator cost accounting;
+- optional LangChain/Anthropic integration while mock mode remains the offline
+  default.
 
 ## Quick start
 
@@ -26,6 +32,7 @@ python -m venv .venv
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
 .venv/bin/pip install -e '.[hpo]' # only for OPTUNA
+.venv/bin/pip install -e '.[agents-anthropic]' # only for live Anthropic
 .venv/bin/auto-researcher tasks
 .venv/bin/auto-researcher run \
   --task synthetic \
@@ -34,6 +41,7 @@ python -m venv .venv
   --run-id demo \
   --thread-id demo-thread
 .venv/bin/auto-researcher provenance --run-id demo
+.venv/bin/auto-researcher agent-calls list --run-id demo
 ```
 
 Run the offline Optuna example with:
@@ -59,4 +67,6 @@ persisted in graph state or scientific provenance.
 
 See [the architecture](docs/architecture/V2_1_ARCHITECTURE.md), the
 [task-plugin runbook](docs/runbooks/TASK_PLUGIN_DEVELOPMENT.md), and the
-[iCCA runbook](docs/runbooks/ICCA_NBS_RUN.md).
+[iCCA runbook](docs/runbooks/ICCA_NBS_RUN.md). Live model setup, pricing,
+privacy and indeterminate-call recovery are in
+[LIVE_AGENTS.md](docs/runbooks/LIVE_AGENTS.md).

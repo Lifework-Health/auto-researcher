@@ -11,9 +11,11 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 ALLOWED_CHECKPOINT_TYPES = [
     ("auto_researcher.contracts.enums", "EvidenceStatus"),
+    ("auto_researcher.contracts.enums", "GroundingStatus"),
     ("auto_researcher.contracts.enums", "EventType"),
     ("auto_researcher.contracts.enums", "HypothesisStatus"),
     ("auto_researcher.contracts.enums", "ProvenanceKind"),
+    ("auto_researcher.contracts.enums", "ProposalSource"),
     ("auto_researcher.contracts.enums", "RunStatus"),
     ("auto_researcher.contracts.enums", "SearchType"),
     ("auto_researcher.contracts.models", "ApprovalRequest"),

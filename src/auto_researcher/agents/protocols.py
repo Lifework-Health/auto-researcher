@@ -2,20 +2,24 @@
 
 from typing import Protocol, runtime_checkable
 
-from auto_researcher.contracts.models import Hypothesis, ResearchContract, SearchRequest
+from auto_researcher.agents.models import (
+    AgentCallTelemetry,
+    HypothesisAgentContext,
+    PlannerAgentContext,
+)
+from auto_researcher.contracts.models import Hypothesis, SearchRequest
 
 
 @runtime_checkable
 class HypothesisAgent(Protocol):
-    def generate(self, contract: ResearchContract, *, cycle: int) -> Hypothesis: ...
+    def generate(self, context: HypothesisAgentContext) -> Hypothesis: ...
 
 
 @runtime_checkable
 class PlannerAgent(Protocol):
-    def plan(
-        self,
-        contract: ResearchContract,
-        hypothesis: Hypothesis,
-        *,
-        cycle: int,
-    ) -> SearchRequest: ...
+    def plan(self, context: PlannerAgentContext) -> SearchRequest: ...
+
+
+@runtime_checkable
+class AgentTelemetrySource(Protocol):
+    def consume_telemetry(self) -> AgentCallTelemetry | None: ...

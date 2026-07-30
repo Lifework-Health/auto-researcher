@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import hashlib
 
-from auto_researcher.contracts.enums import HypothesisStatus, ProvenanceKind, SearchType
+from auto_researcher.agents.models import HypothesisAgentContext, PlannerAgentContext
+from auto_researcher.contracts.enums import (
+    GroundingStatus,
+    HypothesisStatus,
+    ProposalSource,
+    ProvenanceKind,
+    SearchType,
+)
 from auto_researcher.contracts.models import Hypothesis, ResearchContract, SearchRequest
 
 
@@ -16,12 +23,20 @@ def _stable_id(prefix: str, *parts: str) -> str:
 class MockHypothesisAgent:
     """A deterministic stand-in for a future live hypothesis agent."""
 
-    def generate(self, contract: ResearchContract, *, cycle: int) -> Hypothesis:
+    def generate(
+        self,
+        context: HypothesisAgentContext | ResearchContract,
+        *,
+        cycle: int | None = None,
+    ) -> Hypothesis:
+        contract = context.contract if isinstance(context, HypothesisAgentContext) else context
+        active_cycle = context.cycle if isinstance(context, HypothesisAgentContext) else cycle
+        assert active_cycle is not None
         hypothesis_id = _stable_id(
             "hyp",
             contract.contract_id,
             contract.objective_version,
-            str(cycle),
+            str(active_cycle),
         )
         return Hypothesis(
             hypothesis_id=hypothesis_id,
@@ -37,6 +52,8 @@ class MockHypothesisAgent:
             prior_weight=0.5,
             status=HypothesisStatus.OPEN,
             provenance=ProvenanceKind.MOCK,
+            proposal_source=ProposalSource.DETERMINISTIC,
+            grounding_status=GroundingStatus.CONTRACT_GROUNDED,
         )
 
 
@@ -63,16 +80,24 @@ class MockPlannerAgent:
 
     def plan(
         self,
-        contract: ResearchContract,
-        hypothesis: Hypothesis,
+        context: PlannerAgentContext | ResearchContract,
+        hypothesis: Hypothesis | None = None,
         *,
-        cycle: int,
+        cycle: int | None = None,
     ) -> SearchRequest:
+        if isinstance(context, PlannerAgentContext):
+            contract = context.contract
+            hypothesis = context.hypothesis
+            active_cycle = context.cycle
+        else:
+            contract = context
+            active_cycle = cycle
+        assert hypothesis is not None and active_cycle is not None
         request_id = _stable_id(
             "search",
             contract.contract_id,
             hypothesis.hypothesis_id,
-            str(cycle),
+            str(active_cycle),
             self.search_type.value,
         )
         return SearchRequest(
@@ -84,6 +109,8 @@ class MockPlannerAgent:
             experiment_budget=self.experiment_budget,
             rationale="Run one bounded, deterministic experiment for the proposed hypothesis.",
             requires_human_approval=self.search_type in contract.requires_approval_for,
+            proposal_source=ProposalSource.DETERMINISTIC,
+            grounding_status=hypothesis.grounding_status,
         )
 
 

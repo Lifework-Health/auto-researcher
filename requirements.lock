@@ -1,4 +1,4 @@
-# Exact Python 3.12 resolution for the PR 1 runtime and offline test suite.
+# Exact Python 3.12 resolution for the PR 4 core runtime and offline test suite.
 aiosqlite==0.22.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
@@ -13,7 +13,7 @@ idna==3.18
 iniconfig==2.3.0
 jsonpatch==1.33
 jsonpointer==3.1.1
-langchain-core==1.5.2
+langchain-core==1.5.3
 langchain-protocol==0.0.18
 langgraph==1.2.10
 langgraph-checkpoint==4.1.1

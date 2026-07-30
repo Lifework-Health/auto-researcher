@@ -50,3 +50,24 @@ def test_three_sqlite_stores_must_be_distinct(tmp_path):
             search_type=SearchType.OPTUNA,
         ):
             pass
+
+
+def test_agent_call_store_must_be_separate_from_checkpoint_and_provenance(tmp_path):
+    contract = default_synthetic_contract()
+    checkpoint = tmp_path / "checkpoint.sqlite"
+    provenance = tmp_path / "provenance.sqlite"
+    with pytest.raises(ValueError, match="agent-call stores must use separate"):
+        with task_sqlite_dependencies(
+            SyntheticTask(),
+            TaskRuntimeContext(),
+            contract,
+            {
+                "model_family": "tree",
+                "complexity": 4,
+                "learning_rate": 0.05,
+            },
+            checkpoint,
+            provenance,
+            agent_calls_path=provenance,
+        ):
+            pass

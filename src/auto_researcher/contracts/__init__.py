@@ -1,9 +1,14 @@
 """Stable domain contracts exchanged by Auto Researcher components."""
 
 from auto_researcher.contracts.enums import (
+    AgentCallStatus,
+    AgentRole,
     EvidenceStatus,
     EventType,
+    GroundingStatus,
     HypothesisStatus,
+    ProposalSource,
+    ProviderErrorCode,
     ProvenanceKind,
     RunStatus,
     SearchType,
@@ -23,14 +28,19 @@ from auto_researcher.contracts.models import (
 
 __all__ = [
     "ApprovalRequest",
+    "AgentCallStatus",
+    "AgentRole",
     "BudgetState",
     "DecisionEvent",
     "EvaluationResult",
     "EvidenceStatus",
     "EventType",
+    "GroundingStatus",
     "ExperimentSpec",
     "Hypothesis",
     "HypothesisStatus",
+    "ProposalSource",
+    "ProviderErrorCode",
     "ProvenanceKind",
     "ResearchContract",
     "RunStatus",

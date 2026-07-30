@@ -14,11 +14,11 @@ from auto_researcher.search.optuna.artifacts import (
 from auto_researcher.search.optuna.models import (
     OptunaStudyResult,
     OptunaStudySpec,
-    OptunaTrialReference,
 )
 from auto_researcher.search.optuna.naming import build_study_identity
 from auto_researcher.search.optuna.provenance import append_optuna_event
 from auto_researcher.tasks.protocols import OptunaCapableTask
+from auto_researcher.agents.provenance import append_model_call_events
 
 
 def _backend(dependencies: RuntimeDependencies):
@@ -100,7 +100,13 @@ def optuna_prepare_study(
     timestamp = _parse_timestamp(str(attrs["started_at"]))
     hypothesis = state["active_hypothesis"]
     assert hypothesis is not None
-    event_ids = [
+    event_ids = append_model_call_events(
+        dependencies.provenance_store,
+        dependencies.agent_call_store,
+        run_id=state["run_id"],
+        cycle=state["cycle"],
+    )
+    event_ids.extend([
         append_optuna_event(
             dependencies.provenance_store,
             run_id=state["run_id"],
@@ -108,8 +114,16 @@ def optuna_prepare_study(
             study_name=identity.study_name,
             event_type=EventType.HYPOTHESIS_PROPOSED,
             actor="hypothesis_agent",
-            inputs=(state["contract"].contract_id,),
-            outputs=(hypothesis.hypothesis_id,),
+            inputs=(
+                state["contract"].contract_id,
+                *((hypothesis.agent_call_id,) if hypothesis.agent_call_id else ()),
+            ),
+            outputs=(
+                hypothesis.hypothesis_id,
+                f"source:{hypothesis.proposal_source.value}",
+                f"grounding:{hypothesis.grounding_status.value}",
+                f"prompt:{hypothesis.prompt_version or 'none'}",
+            ),
             rationale=hypothesis.rationale,
             timestamp=timestamp,
             provenance=hypothesis.provenance,
@@ -121,13 +135,22 @@ def optuna_prepare_study(
             study_name=identity.study_name,
             event_type=EventType.SEARCH_PLANNED,
             actor="planner_agent",
-            inputs=(request.hypothesis_id,),
-            outputs=(request.request_id,),
+            inputs=(
+                request.hypothesis_id,
+                *((request.agent_call_id,) if request.agent_call_id else ()),
+            ),
+            outputs=(
+                request.request_id,
+                f"search_type:{request.search_type.value}",
+                f"source:{request.proposal_source.value}",
+                f"grounding:{request.grounding_status.value}",
+                f"prompt:{request.prompt_version or 'none'}",
+            ),
             rationale=request.rationale,
             timestamp=timestamp,
             provenance=hypothesis.provenance,
         ),
-    ]
+    ])
     if state.get("human_approval_granted") is not None:
         event_ids.append(
             append_optuna_event(
@@ -328,7 +351,18 @@ def optuna_record_trial(
             event_type=EventType.EVIDENCE_VERIFIED,
             actor="verifier",
             inputs=(experiment.experiment_id,),
-            outputs=(f"evidence:{verification.evidence_status.value}",),
+            outputs=(
+                f"evidence:{verification.evidence_status.value}",
+                f"verified:{str(verification.verified).lower()}",
+                f"constraints:{str(verification.constraint_compliant).lower()}",
+                f"score:{verification.measured_score}",
+                "search_type:OPTUNA",
+                f"hypothesis:{experiment.hypothesis_id}",
+                *(
+                    f"artefact:{reference}"
+                    for reference in evaluation.artefact_references
+                ),
+            ),
             rationale="Applied mandatory structural and task-policy verification.",
         ),
         append_optuna_event(

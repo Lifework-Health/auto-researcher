@@ -1,0 +1,196 @@
+"""Deterministic validation of untrusted model proposals."""
+
+from __future__ import annotations
+
+import hashlib
+
+from auto_researcher.agents.models import (
+    HypothesisAgentContext,
+    HypothesisProposal,
+    PlannerAgentContext,
+    PlannerProposal,
+)
+from auto_researcher.contracts.enums import (
+    GroundingStatus,
+    HypothesisStatus,
+    ProposalSource,
+    ProvenanceKind,
+    SearchType,
+)
+from auto_researcher.contracts.models import Hypothesis, ResearchContract, SearchRequest
+from auto_researcher.tasks.protocols import OptunaCapableTask, ResearchTask
+
+
+class ReconciliationError(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _stable_id(prefix: str, *parts: str) -> str:
+    digest = hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:20]
+    return f"{prefix}-{digest}"
+
+
+class HypothesisReconciler:
+    def reconcile(
+        self,
+        proposal: HypothesisProposal,
+        context: HypothesisAgentContext,
+        *,
+        call_id: str,
+        prompt_version: str,
+    ) -> Hypothesis:
+        permitted = set(context.permitted_evidence_reference_ids)
+        unknown = set(proposal.evidence_references) - permitted
+        if unknown:
+            raise ReconciliationError("unknown_evidence_reference")
+        lowered_statement = proposal.statement.casefold()
+        if any(
+            claim in lowered_statement
+            for claim in ("is supported", "has been proven", "is confirmed")
+        ):
+            raise ReconciliationError("proposal_claims_existing_support")
+        metric = context.contract.primary_metric.casefold().replace("_", " ")
+        observation = proposal.expected_observation.casefold().replace("_", " ")
+        if metric not in observation:
+            raise ReconciliationError("expected_observation_not_measurable_by_primary_metric")
+        if (
+            proposal.expected_observation.casefold().strip()
+            == proposal.falsification_condition.casefold().strip()
+        ):
+            raise ReconciliationError("falsification_condition_not_distinct")
+        permitted_parameters = set(context.task.direct_configuration_schema) | set(
+            context.task.optuna_space_summary
+        )
+        if not proposal.predicted_subspace:
+            raise ReconciliationError("predicted_subspace_is_empty")
+        if set(proposal.predicted_subspace) - permitted_parameters:
+            raise ReconciliationError("predicted_subspace_not_task_compatible")
+        if len(proposal.predicted_subspace) > 32:
+            raise ReconciliationError("predicted_subspace_too_large")
+        prior_refs = {
+            item.hypothesis_reference
+            for item in context.prior_verified_findings
+        } | {
+            item.experiment_reference
+            for item in context.prior_verified_findings
+        } | {
+            reference
+            for item in context.prior_verified_findings
+            for reference in item.safe_artefact_references
+        }
+        if set(proposal.evidence_references) & prior_refs:
+            grounding = GroundingStatus.PRIOR_RESULTS_GROUNDED
+            cap = 0.8
+        elif context.contract.contract_id in proposal.evidence_references:
+            grounding = GroundingStatus.CONTRACT_GROUNDED
+            cap = 0.6
+        else:
+            grounding = GroundingStatus.UNGROUNDED
+            cap = 0.3
+        return Hypothesis(
+            hypothesis_id=_stable_id(
+                "hyp",
+                context.run_id,
+                str(context.cycle),
+                prompt_version,
+                context.context_hash,
+            ),
+            statement=proposal.statement,
+            rationale=proposal.rationale,
+            predicted_subspace=dict(proposal.predicted_subspace),
+            expected_observation=proposal.expected_observation,
+            falsification_condition=proposal.falsification_condition,
+            evidence_references=proposal.evidence_references,
+            prior_weight=min(proposal.confidence, cap),
+            status=HypothesisStatus.OPEN,
+            provenance=ProvenanceKind.MOCK,
+            proposal_source=ProposalSource.MODEL_GENERATED,
+            grounding_status=grounding,
+            agent_call_id=call_id,
+            prompt_version=prompt_version,
+        )
+
+
+class PlannerReconciler:
+    def __init__(self, task: ResearchTask, contract: ResearchContract) -> None:
+        self._task = task
+        self._contract = contract
+
+    def reconcile(
+        self,
+        proposal: PlannerProposal,
+        context: PlannerAgentContext,
+        *,
+        call_id: str,
+        prompt_version: str,
+    ) -> SearchRequest:
+        search_type = proposal.search_type
+        if search_type not in context.installed_search_capabilities:
+            raise ReconciliationError("search_type_not_installed")
+        if search_type not in context.contract.allowed_search_types:
+            raise ReconciliationError("search_type_not_allowed")
+        if search_type not in context.task.available_search_types:
+            raise ReconciliationError("search_type_not_supported_by_task")
+        if proposal.requested_experiment_budget > context.remaining_experiment_budget:
+            raise ReconciliationError("requested_budget_exceeds_remaining_budget")
+        search_space = dict(proposal.proposed_search_space)
+        provisional = SearchRequest(
+            request_id="proposal-validation",
+            hypothesis_id=context.hypothesis.hypothesis_id,
+            search_type=search_type,
+            target=proposal.target,
+            search_space=search_space,
+            experiment_budget=proposal.requested_experiment_budget,
+            rationale=proposal.rationale,
+        )
+        if search_type == SearchType.DIRECT:
+            if proposal.requested_experiment_budget != 1:
+                raise ReconciliationError("direct_requires_single_experiment")
+            try:
+                search_space = self._task.normalise_configuration(search_space)
+            except (TypeError, ValueError) as exc:
+                raise ReconciliationError("invalid_direct_configuration") from exc
+        elif search_type == SearchType.OPTUNA:
+            if not isinstance(self._task, OptunaCapableTask):
+                raise ReconciliationError("task_not_optuna_capable")
+            try:
+                self._task.create_optuna_study_spec(
+                    self._contract,
+                    provisional,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ReconciliationError("invalid_optuna_narrowing") from exc
+        else:
+            raise ReconciliationError("unsupported_pr4_search_type")
+        if context.hypothesis.grounding_status == GroundingStatus.PRIOR_RESULTS_GROUNDED:
+            grounding = GroundingStatus.PRIOR_RESULTS_GROUNDED
+        elif context.hypothesis.grounding_status == GroundingStatus.CONTRACT_GROUNDED:
+            grounding = GroundingStatus.CONTRACT_GROUNDED
+        else:
+            grounding = GroundingStatus.UNGROUNDED
+        return SearchRequest(
+            request_id=_stable_id(
+                "search",
+                context.run_id,
+                str(context.cycle),
+                context.hypothesis.hypothesis_id,
+                prompt_version,
+                context.context_hash,
+            ),
+            hypothesis_id=context.hypothesis.hypothesis_id,
+            search_type=search_type,
+            target=proposal.target,
+            search_space=search_space,
+            experiment_budget=proposal.requested_experiment_budget,
+            rationale=proposal.rationale,
+            requires_human_approval=(
+                proposal.recommends_human_approval
+                or search_type in context.approval_requirements
+            ),
+            proposal_source=ProposalSource.MODEL_GENERATED,
+            grounding_status=grounding,
+            agent_call_id=call_id,
+            prompt_version=prompt_version,
+        )

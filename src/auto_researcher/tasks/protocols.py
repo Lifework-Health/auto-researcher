@@ -6,12 +6,15 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue
 
+from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import (
     EvaluationResult,
     ResearchContract,
     SearchRequest,
 )
 from auto_researcher.search.optuna.models import OptunaStudySpec
+from auto_researcher.search.protocols import SearchCapability
+from auto_researcher.agents.models import TaskAgentContext
 from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.tasks.models import (
     ArtefactPolicy,
@@ -81,3 +84,15 @@ class OptunaCapableTask(Protocol):
         contract: ResearchContract,
         request: SearchRequest,
     ) -> OptunaStudySpec: ...
+
+
+@runtime_checkable
+class AgentContextCapableTask(Protocol):
+    """Optional safe model-facing context supplied by a task plugin."""
+
+    def create_agent_context(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+        search_capabilities: dict[SearchType, SearchCapability],
+    ) -> TaskAgentContext: ...

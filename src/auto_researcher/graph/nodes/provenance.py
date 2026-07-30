@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from auto_researcher.contracts.enums import EventType, ProvenanceKind
 from auto_researcher.contracts.models import DecisionEvent
+from auto_researcher.agents.provenance import append_model_call_events
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
 
-CODE_VERSION = "auto-researcher-v2.1-pr2"
+CODE_VERSION = "auto-researcher-v2.1-pr4"
 
 
 def record_provenance(
@@ -23,14 +24,28 @@ def record_provenance(
     experiment = state.get("experiment_spec")
     evaluation = state.get("evaluation_result")
     verification = state.get("verification_result")
+    model_event_ids = append_model_call_events(
+        dependencies.provenance_store,
+        dependencies.agent_call_store,
+        run_id=run_id,
+        cycle=cycle,
+    )
 
     if hypothesis:
         rows.append(
             (
                 EventType.HYPOTHESIS_PROPOSED,
                 "hypothesis_agent",
-                (state["contract"].contract_id,),
-                (hypothesis.hypothesis_id,),
+                (
+                    state["contract"].contract_id,
+                    *((hypothesis.agent_call_id,) if hypothesis.agent_call_id else ()),
+                ),
+                (
+                    hypothesis.hypothesis_id,
+                    f"source:{hypothesis.proposal_source.value}",
+                    f"grounding:{hypothesis.grounding_status.value}",
+                    f"prompt:{hypothesis.prompt_version or 'none'}",
+                ),
                 hypothesis.rationale,
                 hypothesis.provenance,
             )
@@ -40,8 +55,17 @@ def record_provenance(
             (
                 EventType.SEARCH_PLANNED,
                 "planner_agent",
-                (request.hypothesis_id,),
-                (request.request_id,),
+                (
+                    request.hypothesis_id,
+                    *((request.agent_call_id,) if request.agent_call_id else ()),
+                ),
+                (
+                    request.request_id,
+                    f"search_type:{request.search_type.value}",
+                    f"source:{request.proposal_source.value}",
+                    f"grounding:{request.grounding_status.value}",
+                    f"prompt:{request.prompt_version or 'none'}",
+                ),
                 request.rationale,
                 ProvenanceKind.MOCK,
             )
@@ -101,7 +125,20 @@ def record_provenance(
                 EventType.EVIDENCE_VERIFIED,
                 "verifier",
                 (verification.experiment_id,),
-                (f"evidence:{verification.evidence_status.value}",),
+                (
+                    f"evidence:{verification.evidence_status.value}",
+                    f"verified:{str(verification.verified).lower()}",
+                    f"constraints:{str(verification.constraint_compliant).lower()}",
+                    f"score:{verification.measured_score}",
+                    f"search_type:{request.search_type.value if request else 'DIRECT'}",
+                    f"hypothesis:{hypothesis.hypothesis_id if hypothesis else 'unknown'}",
+                    *(
+                        f"artefact:{reference}"
+                        for reference in (
+                            evaluation.artefact_references if evaluation else ()
+                        )
+                    ),
+                ),
                 "; ".join(verification.reasons) or "Evidence reconciled without issues.",
                 verification.provenance,
             )
@@ -118,7 +155,7 @@ def record_provenance(
             )
         )
 
-    event_ids: list[str] = []
+    event_ids: list[str] = list(model_event_ids)
     for event_type, actor, inputs, outputs, rationale, provenance in rows:
         event = DecisionEvent(
             event_id=dependencies.id_generator("event"),

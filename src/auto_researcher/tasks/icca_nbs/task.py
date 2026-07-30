@@ -35,6 +35,8 @@ from auto_researcher.tasks.models import (
     TaskDescriptor,
     TaskRuntimeContext,
 )
+from auto_researcher.search.protocols import SearchCapability
+from auto_researcher.agents.models import TaskAgentContext
 
 
 class ICCANBSTask:
@@ -212,6 +214,21 @@ class ICCANBSTask:
             retention_notes=(
                 "Only aggregate, non-patient-level manifests and results are written."
             ),
+        )
+
+    def create_agent_context(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+        search_capabilities: dict[SearchType, SearchCapability],
+    ) -> TaskAgentContext:
+        from auto_researcher.tasks.icca_nbs.agents import create_icca_agent_context
+
+        return create_icca_agent_context(
+            contract,
+            self.dataset_manifest(runtime_context),
+            search_capabilities,
+            self._bindings(),
         )
 
     def create_optuna_study_spec(

@@ -14,6 +14,11 @@ def approval_router(
     state: ResearchState,
     dependencies: RuntimeDependencies,
 ) -> dict:
+    if state["status"] != RunStatus.RUNNING:
+        return {
+            "pending_human_request": None,
+            "executed_nodes": ["approval_router"],
+        }
     if state["errors"]:
         return {
             "status": RunStatus.FAILED,

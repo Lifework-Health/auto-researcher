@@ -8,6 +8,12 @@ from typing import Any
 import typer
 import yaml
 
+from auto_researcher.agents.call_store import SQLiteAgentCallStore
+from auto_researcher.agents.models import (
+    AgentBudgetPolicy,
+    ModelCallConfig,
+    ModelPricing,
+)
 from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.contracts.models import ResearchContract
 from auto_researcher.graph.builder import build_graph
@@ -21,6 +27,11 @@ from auto_researcher.tasks.synthetic import (
 )
 
 app = typer.Typer(no_args_is_help=True, help="Run task plugins on Auto Researcher.")
+agent_calls_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect or explicitly retry durable live-agent calls.",
+)
+app.add_typer(agent_calls_app, name="agent-calls")
 DEFAULT_DATA_DIR = Path(".auto-researcher")
 
 
@@ -81,6 +92,69 @@ def _configured_search_type(path: Path | None) -> SearchType:
     return SearchType.OPTUNA if "search" in payload else SearchType.DIRECT
 
 
+def _load_live_agents(payload: dict[str, Any]):
+    configured = payload.get("agents", {"mode": "mock"})
+    if not isinstance(configured, dict):
+        raise ValueError("agents section must be a mapping")
+    mode = configured.get("mode", "mock")
+    if mode == "mock":
+        return None, None, None, None, AgentBudgetPolicy(), "mock"
+    if mode != "live":
+        raise ValueError("agents.mode must be 'mock' or 'live'")
+    provider = configured.get("provider")
+    model_id = configured.get("model_id")
+    if not isinstance(provider, str) or not isinstance(model_id, str):
+        raise ValueError("live agents require explicit provider and model_id")
+    pricing_payload = configured.get("pricing")
+    if not isinstance(pricing_payload, dict):
+        raise ValueError("live agents require an explicit versioned pricing mapping")
+    pricing = ModelPricing.model_validate(pricing_payload)
+    policy_payload = configured.get("budget", {})
+    if not isinstance(policy_payload, dict):
+        raise ValueError("agents.budget must be a mapping")
+    policy = AgentBudgetPolicy.model_validate(policy_payload)
+
+    def call_config(role: str, default_temperature: float) -> ModelCallConfig:
+        role_payload = configured.get(role, {})
+        if not isinstance(role_payload, dict):
+            raise ValueError(f"agents.{role} must be a mapping")
+        return ModelCallConfig(
+            provider=provider,
+            model_id=model_id,
+            temperature=role_payload.get("temperature", default_temperature),
+            maximum_output_tokens=role_payload.get("maximum_output_tokens"),
+            timeout_seconds=role_payload.get("timeout_seconds"),
+            maximum_attempts=role_payload.get("maximum_attempts"),
+            maximum_cost_per_call=role_payload.get("maximum_cost_per_call"),
+            pricing=pricing,
+            prompt_version=role_payload.get("prompt_version", "1.0.0"),
+            structured_output_strategy=role_payload.get(
+                "structured_output_strategy",
+                "pydantic",
+            ),
+        )
+
+    hypothesis_config = call_config("hypothesis", 0.2)
+    planner_config = call_config("planner", 0.0)
+    if provider.casefold() == "anthropic":
+        from auto_researcher.providers.anthropic import create_anthropic_client
+
+        hypothesis_client = create_anthropic_client(hypothesis_config)
+        planner_client = create_anthropic_client(planner_config)
+    else:
+        raise ValueError(
+            f"unsupported live provider {provider!r}; PR 4 implements 'anthropic'"
+        )
+    return (
+        hypothesis_client,
+        planner_client,
+        hypothesis_config,
+        planner_config,
+        policy,
+        "live",
+    )
+
+
 @app.command()
 def run(
     task_id: str = typer.Option("synthetic", "--task"),
@@ -102,6 +176,10 @@ def run(
         DEFAULT_DATA_DIR / "optuna.sqlite",
         "--optuna-db",
     ),
+    agent_calls_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "agent-calls.sqlite",
+        "--agent-calls-db",
+    ),
 ) -> None:
     """Run a registered task through the unchanged LangGraph control plane."""
     if mock:
@@ -110,6 +188,14 @@ def run(
     try:
         search_type = _configured_search_type(task_config)
         raw_config = _load_yaml(task_config) if task_config else {}
+        (
+            model_client,
+            planner_model_client,
+            hypothesis_call_config,
+            planner_call_config,
+            agent_budget_policy,
+            agent_mode,
+        ) = _load_live_agents(raw_config)
         requested_budget = int(
             raw_config.get("search", {}).get("trial_budget", max_cycles)
         )
@@ -149,6 +235,12 @@ def run(
             checkpoint_db,
             provenance_db,
             optuna_db if search_type == SearchType.OPTUNA else None,
+            agent_calls_db,
+            model_client=model_client,
+            planner_model_client=planner_model_client,
+            hypothesis_call_config=hypothesis_call_config,
+            planner_call_config=planner_call_config,
+            agent_budget_policy=agent_budget_policy,
             search_type=search_type,
         ) as dependencies:
             graph = build_graph(dependencies)
@@ -164,9 +256,35 @@ def run(
     evaluation = final.get("evaluation_result")
     typer.echo(f"Task: {contract.task_id}@{contract.task_version}")
     typer.echo(f"Search type: {search_type.value}")
+    typer.echo(f"Agent mode: {agent_mode}")
+    if agent_mode == "live":
+        assert hypothesis_call_config is not None and planner_call_config is not None
+        typer.echo(
+            "Live model: "
+            f"{hypothesis_call_config.provider}/{hypothesis_call_config.model_id}"
+        )
+        typer.echo(
+            "Prompt versions: "
+            f"hypothesis@{hypothesis_call_config.prompt_version}, "
+            f"planner@{planner_call_config.prompt_version}"
+        )
     typer.echo(f"Run: {run_id}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(f"Cycles: {final['budget'].cycles_used}/{final['budget'].maximum_cycles}")
+    typer.echo(
+        "Model usage: "
+        f"calls={final['budget'].model_calls_used} "
+        f"input_tokens={final['budget'].model_input_tokens_used} "
+        f"output_tokens={final['budget'].model_output_tokens_used} "
+        f"cache_creation_tokens={final['budget'].model_cache_creation_tokens_used} "
+        f"cache_read_tokens={final['budget'].model_cache_read_tokens_used} "
+        f"cost={final['budget'].model_cost_used}"
+    )
+    typer.echo(f"Evaluator cost: {final['budget'].evaluator_cost_used}")
+    typer.echo(f"Total cost: {final['budget'].cost_used}")
+    hypothesis = final.get("active_hypothesis")
+    if hypothesis is not None:
+        typer.echo(f"Grounding: {hypothesis.grounding_status.value}")
     typer.echo(f"Primary score: {evaluation.primary_score if evaluation else 'n/a'}")
     typer.echo(
         "Evidence: "
@@ -233,6 +351,78 @@ def provenance(
             f"{event.event_id} {event.event_type.value} "
             f"actor={event.actor} provenance={event.provenance.value}"
         )
+
+
+@agent_calls_app.command("list")
+def list_agent_calls(
+    run_id: str = typer.Option(..., "--run-id"),
+    agent_calls_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "agent-calls.sqlite",
+        "--agent-calls-db",
+    ),
+) -> None:
+    """List append-only model-call snapshots for one run."""
+    store = SQLiteAgentCallStore(agent_calls_db)
+    try:
+        records = store.list_records(run_id)
+    finally:
+        store.close()
+    if not records:
+        typer.echo(f"No agent calls found for run {run_id!r}.")
+        raise typer.Exit(code=1)
+    for record in records:
+        typer.echo(
+            f"{record.created_at.isoformat()} {record.call_id} "
+            f"role={record.role.value} status={record.status.value} "
+            f"provider={record.provider} model={record.model_id} "
+            f"attempts={record.attempt_count} cost={record.estimated_cost}"
+        )
+
+
+@agent_calls_app.command("show")
+def show_agent_call(
+    call_id: str = typer.Option(..., "--call-id"),
+    agent_calls_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "agent-calls.sqlite",
+        "--agent-calls-db",
+    ),
+) -> None:
+    """Show safe snapshots for a call; rendered prompts are never stored."""
+    store = SQLiteAgentCallStore(agent_calls_db)
+    try:
+        records = store.records_for_call(call_id)
+    finally:
+        store.close()
+    if not records:
+        typer.echo(f"No agent call found for {call_id!r}.")
+        raise typer.Exit(code=1)
+    for record in records:
+        typer.echo(record.model_dump_json(indent=2))
+
+
+@agent_calls_app.command("retry")
+def retry_agent_call(
+    call_id: str = typer.Option(..., "--call-id"),
+    agent_calls_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "agent-calls.sqlite",
+        "--agent-calls-db",
+    ),
+) -> None:
+    """Authorise one linked retry of an indeterminate paid-call reservation."""
+    from auto_researcher.runtime.dependencies import utc_now
+
+    store = SQLiteAgentCallStore(agent_calls_db)
+    try:
+        retry = store.create_retry(call_id, created_at=utc_now())
+    except (KeyError, ValueError) as exc:
+        typer.echo(f"Retry not authorised: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        store.close()
+    typer.echo(
+        f"Authorised retry {retry.call_id} linked to {retry.retry_of_call_id}. "
+        "Resume the same LangGraph thread to execute it."
+    )
 
 
 if __name__ == "__main__":

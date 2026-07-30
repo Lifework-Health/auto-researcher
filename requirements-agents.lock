@@ -1,0 +1,6 @@
+# Optional PR 4 Anthropic agent environment, resolved for Python 3.12.
+# Install the core lock first: pip install -r requirements.lock
+anthropic==0.120.2
+docstring-parser==0.18.0
+jiter==0.16.0
+langchain-anthropic==1.5.3

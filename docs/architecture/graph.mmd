@@ -4,7 +4,7 @@ flowchart TD
     initialise -->|invalid identifiers| END
     prepare -->|budget available| hypothesis[generate_hypothesis]
     prepare -->|stop/error| provenance[record_provenance]
-    hypothesis --> planner[plan_search]
+    hypothesis["generate_hypothesis<br/>mock or bounded live + reconcile"] --> planner["plan_search<br/>mock or bounded live + reconcile"]
     planner --> approvalRouter[approval_router]
     approvalRouter -->|required| human[human_approval interrupt]
     approvalRouter -->|not required| searchRouter[search_router]
@@ -34,18 +34,23 @@ flowchart TD
     checkpointer[(LangGraph checkpointer)]
     provenanceStore[(append-only provenance SQLite)]
     optunaStore[(separate Optuna SQLite)]
+    agentCallStore[(separate agent-call SQLite)]
     human -. pause/resume .-> checkpointer
     provenance -. append .-> provenanceStore
     optunaPrepare -. study identity .-> optunaStore
     optunaAsk -. ask .-> optunaStore
     optunaTell -. tell .-> optunaStore
+    hypothesis -. reserve / outcome .-> agentCallStore
+    planner -. reserve / outcome .-> agentCallStore
 
     classDef llm fill:#d9e8ff,stroke:#245aa5,color:#10233f
     classDef deterministic fill:#e5f5e0,stroke:#3b7d23,color:#17310e
     classDef backend fill:#fff1cc,stroke:#a66b00,color:#4d3100
     classDef persistence fill:#f1e4ff,stroke:#7040a0,color:#2e1745
+    classDef scientific fill:#ffe5e5,stroke:#a23b3b,color:#451515
 
     class hypothesis,planner llm
-    class initialise,prepare,approvalRouter,human,searchRouter,evaluator,verifier,provenance,decide,unavailable deterministic
+    class initialise,prepare,approvalRouter,human,searchRouter,provenance,decide,unavailable deterministic
+    class evaluator,verifier scientific
     class direct,optunaPrepare,optunaAsk,optunaTell backend
-    class checkpointer,provenanceStore,optunaStore persistence
+    class checkpointer,provenanceStore,optunaStore,agentCallStore persistence

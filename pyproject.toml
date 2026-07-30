@@ -23,12 +23,22 @@ dev = [
 hpo = [
     "optuna>=4.9,<5",
 ]
+agents = [
+    "langchain-core==1.5.3",
+]
+agents-anthropic = [
+    "langchain-core==1.5.3",
+    "langchain-anthropic==1.5.3",
+]
 
 [project.scripts]
 auto-researcher = "auto_researcher.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"auto_researcher.prompts" = ["**/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -38,4 +48,5 @@ markers = [
     "hpo: optional tests requiring the Optuna hpo extra",
     "v2: optional contract tests requiring the auto_agent_v2 package",
     "real_data: optional iCCA compatibility gate requiring explicit local data",
+    "live_agent: optional paid provider smoke tests requiring explicit environment opt-in",
 ]

@@ -10,7 +10,9 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue, mo
 from auto_researcher.contracts.enums import (
     EvidenceStatus,
     EventType,
+    GroundingStatus,
     HypothesisStatus,
+    ProposalSource,
     ProvenanceKind,
     SearchType,
 )
@@ -108,6 +110,10 @@ class Hypothesis(ImmutableDomainModel):
     prior_weight: float = Field(ge=0, le=1)
     status: HypothesisStatus = HypothesisStatus.OPEN
     provenance: ProvenanceKind
+    proposal_source: ProposalSource = ProposalSource.DETERMINISTIC
+    grounding_status: GroundingStatus = GroundingStatus.CONTRACT_GROUNDED
+    agent_call_id: str | None = None
+    prompt_version: str | None = None
 
 
 class SearchRequest(ImmutableDomainModel):
@@ -119,6 +125,10 @@ class SearchRequest(ImmutableDomainModel):
     experiment_budget: int = Field(ge=1)
     rationale: str = Field(min_length=1)
     requires_human_approval: bool = False
+    proposal_source: ProposalSource = ProposalSource.DETERMINISTIC
+    grounding_status: GroundingStatus = GroundingStatus.CONTRACT_GROUNDED
+    agent_call_id: str | None = None
+    prompt_version: str | None = None
 
 
 class ExperimentSpec(ImmutableDomainModel):
@@ -193,6 +203,14 @@ class BudgetState(ImmutableDomainModel):
     cycles_used: int = Field(default=0, ge=0)
     experiments_used: int = Field(default=0, ge=0)
     cost_used: float = Field(default=0, ge=0)
+    model_calls_used: int = Field(default=0, ge=0)
+    model_input_tokens_used: int = Field(default=0, ge=0)
+    model_output_tokens_used: int = Field(default=0, ge=0)
+    model_cache_tokens_used: int = Field(default=0, ge=0)
+    model_cache_creation_tokens_used: int = Field(default=0, ge=0)
+    model_cache_read_tokens_used: int = Field(default=0, ge=0)
+    model_cost_used: float = Field(default=0, ge=0)
+    evaluator_cost_used: float = Field(default=0, ge=0)
     exhausted: bool = False
     exhaustion_reason: str | None = None
 
@@ -211,6 +229,7 @@ class BudgetState(ImmutableDomainModel):
     def record_experiment(self, cost: float = 0.0) -> "BudgetState":
         experiments = self.experiments_used + 1
         total_cost = self.cost_used + cost
+        evaluator_cost = self.evaluator_cost_used + cost
         reason: str | None = None
         if experiments >= self.maximum_experiments:
             reason = "maximum_experiments_reached"
@@ -219,6 +238,46 @@ class BudgetState(ImmutableDomainModel):
         return self.model_copy(
             update={
                 "experiments_used": experiments,
+                "cost_used": total_cost,
+                "evaluator_cost_used": evaluator_cost,
+                "exhausted": reason is not None,
+                "exhaustion_reason": reason,
+            }
+        )
+
+    def record_model_usage(
+        self,
+        *,
+        calls: int = 1,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cost: float,
+    ) -> "BudgetState":
+        total_cost = self.cost_used + cost
+        reason = (
+            "maximum_cost_reached"
+            if total_cost >= self.maximum_cost
+            else self.exhaustion_reason
+        )
+        return self.model_copy(
+            update={
+                "model_calls_used": self.model_calls_used + calls,
+                "model_input_tokens_used": self.model_input_tokens_used + input_tokens,
+                "model_output_tokens_used": self.model_output_tokens_used + output_tokens,
+                "model_cache_tokens_used": (
+                    self.model_cache_tokens_used
+                    + cache_creation_tokens
+                    + cache_read_tokens
+                ),
+                "model_cache_creation_tokens_used": (
+                    self.model_cache_creation_tokens_used + cache_creation_tokens
+                ),
+                "model_cache_read_tokens_used": (
+                    self.model_cache_read_tokens_used + cache_read_tokens
+                ),
+                "model_cost_used": self.model_cost_used + cost,
                 "cost_used": total_cost,
                 "exhausted": reason is not None,
                 "exhaustion_reason": reason,
