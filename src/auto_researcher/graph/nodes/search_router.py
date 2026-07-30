@@ -3,9 +3,13 @@
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import SearchBackendResult
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.runtime.dependencies import RuntimeDependencies
 
 
-def search_router(state: ResearchState) -> dict:
+def search_router(
+    state: ResearchState,
+    dependencies: RuntimeDependencies | None = None,
+) -> dict:
     request = state["search_request"]
     assert request is not None
     if request.search_type not in state["contract"].allowed_search_types:
@@ -15,19 +19,27 @@ def search_router(state: ResearchState) -> dict:
             code="SEARCH_TYPE_NOT_ALLOWED",
             message=f"{request.search_type.value} is not allowed by the research contract",
         )
-    elif request.search_type == SearchType.DIRECT:
+    elif dependencies is None and request.search_type == SearchType.DIRECT:
         result = SearchBackendResult(
             requested_type=request.search_type,
             available=True,
             code="BACKEND_AVAILABLE",
             message="DIRECT backend selected",
         )
-    else:
+    elif dependencies is None:
         result = SearchBackendResult(
             requested_type=request.search_type,
             available=False,
             code="BACKEND_UNAVAILABLE",
-            message=f"{request.search_type.value} is declared but not installed in PR 2",
+            message=f"{request.search_type.value} is unavailable",
+        )
+    else:
+        capability = dependencies.search_capabilities[request.search_type]
+        result = SearchBackendResult(
+            requested_type=request.search_type,
+            available=capability.available,
+            code=capability.code,
+            message=capability.message,
         )
     return {
         "search_backend_result": result,

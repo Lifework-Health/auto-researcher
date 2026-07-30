@@ -36,3 +36,15 @@ def test_example_task_configurations_have_expected_sections():
         )
         assert experiment
         assert "output_dir" in runtime
+
+
+def test_optuna_task_configuration_uses_search_section():
+    repository = Path(__file__).resolve().parents[2]
+    search, runtime = _load_task_configuration(
+        repository / "examples/tasks/synthetic/optuna.yaml",
+        "synthetic",
+        "1.0",
+    )
+    assert search["trial_budget"] == 8
+    assert "type" not in search
+    assert "output_dir" in runtime

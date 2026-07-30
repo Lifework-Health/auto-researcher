@@ -9,6 +9,15 @@ from pydantic import JsonValue
 
 from auto_researcher.contracts.enums import ProvenanceKind, SearchType
 from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.contracts.models import SearchRequest
+from auto_researcher.search.optuna.models import (
+    CategoricalParameterSpec,
+    FloatParameterSpec,
+    IntParameterSpec,
+    OptimisationDirection,
+    OptunaStudySpec,
+)
+from auto_researcher.search.optuna.narrowing import narrow_study_spec
 from auto_researcher.tasks.models import (
     ArtefactPolicy,
     DatasetManifest,
@@ -37,7 +46,7 @@ class SyntheticTask:
             display_name="Deterministic synthetic landscape",
             domain="synthetic",
             description="Offline task proving domain-neutral orchestration.",
-            supported_search_types=frozenset({SearchType.DIRECT}),
+            supported_search_types=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
             evaluator_id="synthetic-evaluator",
             verification_policy_id="synthetic-policy-v1",
             configuration_schema_version="1.0",
@@ -135,11 +144,53 @@ class SyntheticTask:
                     "evaluation_result",
                     "dataset_manifest",
                     "evaluator_manifest",
+                    "study_spec",
+                    "study_summary",
+                    "trials_summary",
+                    "selected_trial",
                 }
             ),
             prohibited_artefact_types=frozenset({"raw_input_data"}),
             contains_sensitive_data=False,
             retention_notes="Synthetic artefacts may use standard development retention.",
+        )
+
+    def create_optuna_study_spec(
+        self,
+        contract: ResearchContract,
+        request: SearchRequest,
+    ) -> OptunaStudySpec:
+        self.validate_contract(contract)
+        if request.search_type != SearchType.OPTUNA:
+            raise ValueError("synthetic Optuna study requires an OPTUNA SearchRequest")
+        registered = OptunaStudySpec(
+            schema_version="1.0",
+            task_id=self.task_id,
+            task_version=self.task_version,
+            search_space_version="synthetic-landscape-v1",
+            direction=OptimisationDirection.MAXIMIZE,
+            parameters=(
+                CategoricalParameterSpec(
+                    name="model_family",
+                    choices=("linear", "tree", "neural"),
+                ),
+                IntParameterSpec(name="complexity", low=1, high=10),
+                FloatParameterSpec(
+                    name="learning_rate",
+                    low=0.001,
+                    high=1.0,
+                    log=True,
+                ),
+            ),
+            trial_budget=request.experiment_budget,
+            seed=20260730,
+            objective_metric=contract.primary_metric,
+            study_metadata={"task_kind": "offline_reference"},
+        )
+        return narrow_study_spec(
+            registered,
+            dict(request.search_space),
+            request_experiment_budget=request.experiment_budget,
         )
 
 
@@ -151,7 +202,12 @@ def default_synthetic_configuration() -> dict[str, JsonValue]:
     }
 
 
-def default_synthetic_contract(maximum_cycles: int = 1) -> ResearchContract:
+def default_synthetic_contract(
+    maximum_cycles: int = 1,
+    *,
+    search_types: frozenset[SearchType] | None = None,
+    maximum_experiments: int | None = None,
+) -> ResearchContract:
     return ResearchContract(
         contract_id="synthetic-demo-contract",
         schema_version="1.0",
@@ -167,11 +223,15 @@ def default_synthetic_contract(maximum_cycles: int = 1) -> ResearchContract:
             "refute_threshold": 0.4,
             "maximum_runtime": 3.0,
         },
-        allowed_search_types=frozenset({SearchType.DIRECT}),
+        allowed_search_types=search_types or frozenset({SearchType.DIRECT}),
         evaluator_id="synthetic-evaluator",
         verifier_id="deterministic-verifier",
         maximum_cycles=maximum_cycles,
-        maximum_experiments=maximum_cycles,
+        maximum_experiments=(
+            maximum_experiments
+            if maximum_experiments is not None
+            else maximum_cycles
+        ),
         maximum_cost=1.0,
         requires_approval_for=frozenset(),
         provenance=ProvenanceKind.SIMULATED,

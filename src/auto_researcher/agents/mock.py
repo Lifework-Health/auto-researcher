@@ -47,13 +47,19 @@ class MockPlannerAgent:
         self,
         search_type: SearchType = SearchType.DIRECT,
         configuration: dict | None = None,
+        experiment_budget: int = 1,
     ) -> None:
         self.search_type = search_type
-        self.configuration = configuration or {
-            "model_family": "linear",
-            "complexity": 4,
-            "learning_rate": 0.05,
-        }
+        self.experiment_budget = experiment_budget
+        self.configuration = (
+            configuration
+            if configuration is not None
+            else {
+                "model_family": "linear",
+                "complexity": 4,
+                "learning_rate": 0.05,
+            }
+        )
 
     def plan(
         self,
@@ -75,7 +81,7 @@ class MockPlannerAgent:
             search_type=self.search_type,
             target="maximise primary_score while satisfying all declared constraints",
             search_space=self.configuration,
-            experiment_budget=1,
+            experiment_budget=self.experiment_budget,
             rationale="Run one bounded, deterministic experiment for the proposed hypothesis.",
             requires_human_approval=self.search_type in contract.requires_approval_for,
         )
@@ -84,5 +90,14 @@ class MockPlannerAgent:
 class ConfiguredPlannerAgent(MockPlannerAgent):
     """Deterministic planner fed a task-normalised DIRECT configuration."""
 
-    def __init__(self, configuration: dict, search_type: SearchType = SearchType.DIRECT) -> None:
-        super().__init__(search_type=search_type, configuration=configuration)
+    def __init__(
+        self,
+        configuration: dict,
+        search_type: SearchType = SearchType.DIRECT,
+        experiment_budget: int = 1,
+    ) -> None:
+        super().__init__(
+            search_type=search_type,
+            configuration=configuration,
+            experiment_budget=experiment_budget,
+        )

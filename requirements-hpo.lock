@@ -1,0 +1,9 @@
+# Optional PR 3 HPO environment, resolved for Python 3.12.
+optuna==4.9.0
+alembic==1.18.5
+SQLAlchemy==2.0.51
+colorlog==6.12.0
+numpy==2.5.1
+tqdm==4.70.0
+Mako==1.3.12
+MarkupSafe==3.0.3

@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import importlib.util
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,21 +16,33 @@ from auto_researcher.agents.mock import (
     MockHypothesisAgent,
 )
 from auto_researcher.agents.protocols import HypothesisAgent, PlannerAgent
-from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.contracts.enums import SearchType
+from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.provenance.protocols import ProvenanceStore
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.checkpoints import memory_checkpointer, sqlite_checkpointer
 from auto_researcher.search.direct import DirectSearchBackend
-from auto_researcher.search.protocols import SearchBackend
+from auto_researcher.search.protocols import SearchBackend, SearchCapability
+from auto_researcher.search.optuna.backend import OptunaAskTellBackend
+from auto_researcher.search.optuna.storage import (
+    OptunaStorageHandle,
+    in_memory_storage,
+    sqlite_storage,
+)
 from auto_researcher.tasks.models import (
     ArtefactPolicy,
     DatasetManifest,
+    ExperimentMetadata,
     TaskDescriptor,
     TaskNotReadyError,
     TaskRuntimeContext,
 )
-from auto_researcher.tasks.protocols import ResearchTask, VerificationPolicy
+from auto_researcher.tasks.protocols import (
+    OptunaCapableTask,
+    ResearchTask,
+    VerificationPolicy,
+)
 from auto_researcher.verification.verifier import DeterministicVerifier, Verifier
 
 
@@ -48,6 +61,12 @@ class RuntimeDependencies:
     dataset_manifest: DatasetManifest
     artefact_policy: ArtefactPolicy
     verification_policy: VerificationPolicy
+    task: ResearchTask
+    runtime_context: TaskRuntimeContext
+    experiment_metadata: ExperimentMetadata
+    search_capabilities: dict[SearchType, SearchCapability]
+    optuna_backend: OptunaAskTellBackend | None = None
+    optuna_storage_handle: OptunaStorageHandle | None = None
 
 
 def utc_now() -> datetime:
@@ -90,6 +109,8 @@ def _assemble_task_dependencies(
     verifier: Verifier | None,
     clock: Callable[[], datetime],
     id_generator: Callable[[str], str],
+    search_type: SearchType = SearchType.DIRECT,
+    optuna_storage_handle: OptunaStorageHandle | None = None,
 ) -> RuntimeDependencies:
     task.validate_contract(contract)
     context = _context_for_contract(runtime_context, contract, clock())
@@ -108,16 +129,81 @@ def _assemble_task_dependencies(
         raise ValueError("task experiment metadata does not match contract provenance")
     if metadata.dataset_version != manifest.dataset_version:
         raise ValueError("task experiment metadata does not match dataset manifest")
-    normalised = task.normalise_configuration(experiment_configuration)
+    normalised = (
+        task.normalise_configuration(experiment_configuration)
+        if search_type == SearchType.DIRECT
+        else experiment_configuration
+    )
     policy = task.create_verification_policy(contract)
     if policy.policy_id != descriptor.verification_policy_id:
         raise ValueError("task verification policy does not match its descriptor")
     task_evaluator = evaluator or task.create_evaluator(context)
     if task_evaluator.evaluator_id != metadata.evaluator_id:
         raise ValueError("task evaluator does not match experiment metadata")
+    optuna_installed = importlib.util.find_spec("optuna") is not None
+    optuna_capable = isinstance(task, OptunaCapableTask)
+    optuna_permitted = SearchType.OPTUNA in contract.allowed_search_types
+    if search_type == SearchType.OPTUNA and optuna_capable and optuna_permitted:
+        validation_request = SearchRequest(
+            request_id="runtime-capability-validation",
+            hypothesis_id="runtime-capability-validation",
+            search_type=SearchType.OPTUNA,
+            target="validate task-owned Optuna search space",
+            search_space=experiment_configuration,
+            experiment_budget=experiment_configuration.get(
+                "trial_budget",
+                contract.maximum_experiments,
+            ),
+            rationale="Validate the task capability before graph execution.",
+        )
+        task.create_optuna_study_spec(contract, validation_request)
+    if (
+        search_type == SearchType.OPTUNA
+        and optuna_installed
+        and optuna_capable
+        and optuna_permitted
+        and optuna_storage_handle is None
+    ):
+        optuna_storage_handle = in_memory_storage()
+    optuna_available = (
+        optuna_installed
+        and optuna_capable
+        and optuna_permitted
+        and optuna_storage_handle is not None
+    )
+    capabilities = {
+        SearchType.DIRECT: SearchCapability(
+            SearchType.DIRECT, True, "BACKEND_AVAILABLE", "DIRECT backend selected"
+        ),
+        SearchType.OPTUNA: SearchCapability(
+            SearchType.OPTUNA,
+            optuna_available,
+            "BACKEND_AVAILABLE" if optuna_available else "BACKEND_UNAVAILABLE",
+            (
+                "OPTUNA ask/tell backend selected"
+                if optuna_available
+                else "OPTUNA requires an Optuna-capable task and the hpo extra"
+            ),
+        ),
+        SearchType.OPENEVOLVE: SearchCapability(
+            SearchType.OPENEVOLVE,
+            False,
+            "BACKEND_UNAVAILABLE",
+            "OPENEVOLVE is reserved for a later PR",
+        ),
+    }
     return RuntimeDependencies(
         hypothesis_agent=hypothesis_agent or MockHypothesisAgent(),
-        planner_agent=planner_agent or ConfiguredPlannerAgent(normalised),
+        planner_agent=planner_agent
+        or ConfiguredPlannerAgent(
+            normalised,
+            search_type=search_type,
+            experiment_budget=(
+                int(experiment_configuration.get("trial_budget", contract.maximum_experiments))
+                if search_type == SearchType.OPTUNA
+                else 1
+            ),
+        ),
         direct_search_backend=DirectSearchBackend(
             metadata,
             task.normalise_configuration,
@@ -132,6 +218,16 @@ def _assemble_task_dependencies(
         dataset_manifest=manifest,
         artefact_policy=task.artefact_policy(),
         verification_policy=policy,
+        task=task,
+        runtime_context=context,
+        experiment_metadata=metadata,
+        search_capabilities=capabilities,
+        optuna_backend=(
+            OptunaAskTellBackend(optuna_storage_handle.storage)
+            if optuna_available and optuna_storage_handle
+            else None
+        ),
+        optuna_storage_handle=optuna_storage_handle,
     )
 
 
@@ -148,6 +244,7 @@ def task_memory_dependencies(
     provenance_store: ProvenanceStore | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
+    search_type: SearchType = SearchType.DIRECT,
 ) -> RuntimeDependencies:
     return _assemble_task_dependencies(
         task=task,
@@ -162,6 +259,7 @@ def task_memory_dependencies(
         verifier=verifier,
         clock=clock,
         id_generator=id_generator,
+        search_type=search_type,
     )
 
 
@@ -173,6 +271,7 @@ def task_sqlite_dependencies(
     experiment_configuration: dict,
     checkpoint_path: str | Path,
     provenance_path: str | Path,
+    optuna_path: str | Path | None = None,
     *,
     hypothesis_agent: HypothesisAgent | None = None,
     planner_agent: PlannerAgent | None = None,
@@ -180,15 +279,31 @@ def task_sqlite_dependencies(
     verifier: Verifier | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
+    search_type: SearchType = SearchType.DIRECT,
 ) -> Iterator[RuntimeDependencies]:
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     provenance = Path(provenance_path).expanduser().resolve()
-    if checkpoint == provenance:
-        raise ValueError("checkpoint and provenance stores must use separate files")
+    optuna_file = (
+        Path(optuna_path).expanduser().resolve() if optuna_path is not None else None
+    )
+    stores = [checkpoint, provenance, *(tuple([optuna_file]) if optuna_file else ())]
+    if len(stores) != len(set(stores)):
+        raise ValueError(
+            "checkpoint, provenance and Optuna stores must use separate files"
+        )
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     provenance.parent.mkdir(parents=True, exist_ok=True)
     saver, connection = sqlite_checkpointer(checkpoint)
     store = SQLiteProvenanceStore(provenance)
+    optuna_handle = (
+        sqlite_storage(optuna_file)
+        if (
+            search_type == SearchType.OPTUNA
+            and optuna_file is not None
+            and importlib.util.find_spec("optuna") is not None
+        )
+        else None
+    )
     try:
         yield _assemble_task_dependencies(
             task=task,
@@ -203,8 +318,12 @@ def task_sqlite_dependencies(
             verifier=verifier,
             clock=clock,
             id_generator=id_generator,
+            search_type=search_type,
+            optuna_storage_handle=optuna_handle,
         )
     finally:
+        if optuna_handle is not None:
+            optuna_handle.close()
         store.close()
         connection.close()
 
@@ -219,6 +338,7 @@ def memory_dependencies(
     provenance_store: ProvenanceStore | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
+    search_type: SearchType = SearchType.DIRECT,
 ) -> RuntimeDependencies:
     from auto_researcher.tasks.synthetic import (
         SyntheticTask,
@@ -229,8 +349,15 @@ def memory_dependencies(
     return task_memory_dependencies(
         SyntheticTask(),
         TaskRuntimeContext(),
-        default_synthetic_contract(),
-        default_synthetic_configuration(),
+        default_synthetic_contract(
+            search_types=frozenset({search_type}),
+            maximum_experiments=8 if search_type == SearchType.OPTUNA else 1,
+        ),
+        (
+            {"trial_budget": 8}
+            if search_type == SearchType.OPTUNA
+            else default_synthetic_configuration()
+        ),
         hypothesis_agent=hypothesis_agent,
         planner_agent=planner_agent,
         evaluator=evaluator,
@@ -238,6 +365,7 @@ def memory_dependencies(
         provenance_store=provenance_store,
         clock=clock,
         id_generator=id_generator,
+        search_type=search_type,
     )
 
 

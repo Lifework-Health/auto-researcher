@@ -5,7 +5,7 @@ scientific research. Scientific domains plug into the same graph through a
 `ResearchTask` contract; the core owns lifecycle, budgets, orchestration,
 structural verification, checkpoints, provenance, and approval.
 
-PR 2 includes:
+PR 3 includes:
 
 - an offline deterministic `synthetic` task;
 - an `icca_nbs` adapter that delegates scientific execution and scoring to
@@ -13,6 +13,11 @@ PR 2 includes:
 - task-owned configuration, manifests, artefact policies, and verification
   policies;
 - a deterministic task registry and task-driven runtime assembly.
+- an optional, resumable Optuna 4 ask/tell backend controlled explicitly by
+  LangGraph;
+- task-owned bounded search spaces for synthetic and iCCA NBS;
+- feasible winner selection, diagnostic best-overall reporting, and separate
+  checkpoint, provenance and Optuna SQLite stores.
 
 ## Quick start
 
@@ -20,6 +25,7 @@ PR 2 includes:
 python -m venv .venv
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
+.venv/bin/pip install -e '.[hpo]' # only for OPTUNA
 .venv/bin/auto-researcher tasks
 .venv/bin/auto-researcher run \
   --task synthetic \
@@ -28,6 +34,17 @@ python -m venv .venv
   --run-id demo \
   --thread-id demo-thread
 .venv/bin/auto-researcher provenance --run-id demo
+```
+
+Run the offline Optuna example with:
+
+```bash
+.venv/bin/auto-researcher run \
+  --task synthetic \
+  --task-config examples/tasks/synthetic/optuna.yaml \
+  --run-id optuna-demo \
+  --thread-id optuna-demo-thread \
+  --optuna-db .auto-researcher/optuna.sqlite
 ```
 
 For iCCA, install the reference repository into the same environment:

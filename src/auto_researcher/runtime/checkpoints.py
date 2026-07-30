@@ -26,6 +26,16 @@ ALLOWED_CHECKPOINT_TYPES = [
     ("auto_researcher.contracts.models", "SearchBackendResult"),
     ("auto_researcher.contracts.models", "SearchRequest"),
     ("auto_researcher.contracts.models", "VerificationResult"),
+    ("auto_researcher.search.optuna.models", "OptimisationDirection"),
+    ("auto_researcher.search.optuna.models", "OptunaTrialStatus"),
+    ("auto_researcher.search.optuna.models", "FloatParameterSpec"),
+    ("auto_researcher.search.optuna.models", "IntParameterSpec"),
+    ("auto_researcher.search.optuna.models", "CategoricalParameterSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaStudySpec"),
+    ("auto_researcher.search.optuna.models", "OptunaTrialReference"),
+    ("auto_researcher.search.optuna.models", "OptunaTrialOutcome"),
+    ("auto_researcher.search.optuna.models", "OptunaStudyState"),
+    ("auto_researcher.search.optuna.models", "OptunaStudyResult"),
 ]
 
 

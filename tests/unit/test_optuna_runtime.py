@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+import pytest
+
+from auto_researcher.contracts.enums import SearchType
+from auto_researcher.runtime.dependencies import (
+    task_memory_dependencies,
+    task_sqlite_dependencies,
+)
+from auto_researcher.tasks.models import TaskRuntimeContext
+from auto_researcher.tasks.synthetic import SyntheticTask, default_synthetic_contract
+
+
+def test_optuna_capability_is_actionable_when_package_is_absent(monkeypatch):
+    monkeypatch.setattr(
+        "auto_researcher.runtime.dependencies.importlib.util.find_spec",
+        lambda name: None if name == "optuna" else None,
+    )
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.OPTUNA}),
+        maximum_experiments=2,
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        contract,
+        {"trial_budget": 2},
+        search_type=SearchType.OPTUNA,
+    )
+    capability = dependencies.search_capabilities[SearchType.OPTUNA]
+    assert capability.available is False
+    assert "hpo extra" in capability.message
+
+
+def test_three_sqlite_stores_must_be_distinct(tmp_path):
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.OPTUNA}),
+        maximum_experiments=2,
+    )
+    shared = tmp_path / "shared.sqlite"
+    with pytest.raises(ValueError, match="separate"):
+        with task_sqlite_dependencies(
+            SyntheticTask(),
+            TaskRuntimeContext(),
+            contract,
+            {"trial_budget": 2},
+            shared,
+            tmp_path / "provenance.sqlite",
+            shared,
+            search_type=SearchType.OPTUNA,
+        ):
+            pass

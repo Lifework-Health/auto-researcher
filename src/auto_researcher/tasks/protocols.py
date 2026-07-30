@@ -6,7 +6,12 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue
 
-from auto_researcher.contracts.models import EvaluationResult, ResearchContract
+from auto_researcher.contracts.models import (
+    EvaluationResult,
+    ResearchContract,
+    SearchRequest,
+)
+from auto_researcher.search.optuna.models import OptunaStudySpec
 from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.tasks.models import (
     ArtefactPolicy,
@@ -65,3 +70,14 @@ class ResearchTask(Protocol):
     ) -> DatasetManifest: ...
 
     def artefact_policy(self) -> ArtefactPolicy: ...
+
+
+@runtime_checkable
+class OptunaCapableTask(Protocol):
+    """Optional capability implemented only by tasks with a registered HPO space."""
+
+    def create_optuna_study_spec(
+        self,
+        contract: ResearchContract,
+        request: SearchRequest,
+    ) -> OptunaStudySpec: ...
