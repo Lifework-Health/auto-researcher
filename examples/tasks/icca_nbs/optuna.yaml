@@ -2,6 +2,9 @@ task:
   id: icca_nbs
   version: "1.0"
 
+agents:
+  mode: mock
+
 search:
   type: OPTUNA
   trial_budget: 8

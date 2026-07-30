@@ -16,6 +16,19 @@ from auto_researcher.agents.mock import (
     MockHypothesisAgent,
 )
 from auto_researcher.agents.protocols import HypothesisAgent, PlannerAgent
+from auto_researcher.agents.call_store import (
+    AgentCallStore,
+    InMemoryAgentCallStore,
+    SQLiteAgentCallStore,
+)
+from auto_researcher.agents.context import AgentContextAssembler
+from auto_researcher.agents.live import LiveHypothesisAgent, LivePlannerAgent
+from auto_researcher.agents.models import (
+    AgentBudgetPolicy,
+    ModelCallConfig,
+    TaskAgentContext,
+)
+from auto_researcher.providers.protocols import StructuredModelClient
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.evaluation.protocols import Evaluator
@@ -39,6 +52,7 @@ from auto_researcher.tasks.models import (
     TaskRuntimeContext,
 )
 from auto_researcher.tasks.protocols import (
+    AgentContextCapableTask,
     OptunaCapableTask,
     ResearchTask,
     VerificationPolicy,
@@ -54,6 +68,10 @@ class RuntimeDependencies:
     evaluator: Evaluator
     verifier: Verifier
     provenance_store: ProvenanceStore
+    agent_call_store: AgentCallStore
+    agent_context_assembler: AgentContextAssembler
+    task_agent_context: TaskAgentContext
+    agent_budget_policy: AgentBudgetPolicy
     checkpointer: Any
     clock: Callable[[], datetime]
     id_generator: Callable[[str], str]
@@ -107,6 +125,12 @@ def _assemble_task_dependencies(
     planner_agent: PlannerAgent | None,
     evaluator: Evaluator | None,
     verifier: Verifier | None,
+    agent_call_store: AgentCallStore | None,
+    model_client: StructuredModelClient | None,
+    planner_model_client: StructuredModelClient | None,
+    hypothesis_call_config: ModelCallConfig | None,
+    planner_call_config: ModelCallConfig | None,
+    agent_budget_policy: AgentBudgetPolicy | None,
     clock: Callable[[], datetime],
     id_generator: Callable[[str], str],
     search_type: SearchType = SearchType.DIRECT,
@@ -192,9 +216,59 @@ def _assemble_task_dependencies(
             "OPENEVOLVE is reserved for a later PR",
         ),
     }
+    call_store = agent_call_store or InMemoryAgentCallStore()
+    budget_policy = agent_budget_policy or AgentBudgetPolicy()
+    if not isinstance(task, AgentContextCapableTask):
+        raise ValueError(
+            f"task {task.task_id}@{task.task_version} does not provide safe agent context"
+        )
+    task_agent_context = task.create_agent_context(
+        contract,
+        context,
+        capabilities,
+    )
+    context_assembler = AgentContextAssembler(provenance_store)
+    live_configured = any(
+        item is not None
+        for item in (
+            model_client,
+            planner_model_client,
+            hypothesis_call_config,
+            planner_call_config,
+        )
+    )
+    if live_configured and not all(
+        item is not None
+        for item in (model_client, hypothesis_call_config, planner_call_config)
+    ):
+        raise ValueError(
+            "live agents require a model client plus hypothesis and planner call configs"
+        )
+    if live_configured and (hypothesis_agent is not None or planner_agent is not None):
+        raise ValueError("live model configuration cannot be mixed with injected agents")
+    selected_hypothesis_agent = hypothesis_agent
+    selected_planner_agent = planner_agent
+    if live_configured:
+        assert model_client and hypothesis_call_config and planner_call_config
+        selected_hypothesis_agent = LiveHypothesisAgent(
+            client=model_client,
+            call_config=hypothesis_call_config,
+            budget_policy=budget_policy,
+            call_store=call_store,
+            clock=clock,
+        )
+        selected_planner_agent = LivePlannerAgent(
+            client=planner_model_client or model_client,
+            call_config=planner_call_config,
+            budget_policy=budget_policy,
+            call_store=call_store,
+            clock=clock,
+            task=task,
+            contract=contract,
+        )
     return RuntimeDependencies(
-        hypothesis_agent=hypothesis_agent or MockHypothesisAgent(),
-        planner_agent=planner_agent
+        hypothesis_agent=selected_hypothesis_agent or MockHypothesisAgent(),
+        planner_agent=selected_planner_agent
         or ConfiguredPlannerAgent(
             normalised,
             search_type=search_type,
@@ -211,6 +285,10 @@ def _assemble_task_dependencies(
         evaluator=task_evaluator,
         verifier=verifier or DeterministicVerifier(policy),
         provenance_store=provenance_store,
+        agent_call_store=call_store,
+        agent_context_assembler=context_assembler,
+        task_agent_context=task_agent_context,
+        agent_budget_policy=budget_policy,
         checkpointer=checkpointer,
         clock=clock,
         id_generator=id_generator,
@@ -242,6 +320,12 @@ def task_memory_dependencies(
     evaluator: Evaluator | None = None,
     verifier: Verifier | None = None,
     provenance_store: ProvenanceStore | None = None,
+    agent_call_store: AgentCallStore | None = None,
+    model_client: StructuredModelClient | None = None,
+    planner_model_client: StructuredModelClient | None = None,
+    hypothesis_call_config: ModelCallConfig | None = None,
+    planner_call_config: ModelCallConfig | None = None,
+    agent_budget_policy: AgentBudgetPolicy | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
     search_type: SearchType = SearchType.DIRECT,
@@ -257,6 +341,12 @@ def task_memory_dependencies(
         planner_agent=planner_agent,
         evaluator=evaluator,
         verifier=verifier,
+        agent_call_store=agent_call_store,
+        model_client=model_client,
+        planner_model_client=planner_model_client,
+        hypothesis_call_config=hypothesis_call_config,
+        planner_call_config=planner_call_config,
+        agent_budget_policy=agent_budget_policy,
         clock=clock,
         id_generator=id_generator,
         search_type=search_type,
@@ -272,11 +362,17 @@ def task_sqlite_dependencies(
     checkpoint_path: str | Path,
     provenance_path: str | Path,
     optuna_path: str | Path | None = None,
+    agent_calls_path: str | Path | None = None,
     *,
     hypothesis_agent: HypothesisAgent | None = None,
     planner_agent: PlannerAgent | None = None,
     evaluator: Evaluator | None = None,
     verifier: Verifier | None = None,
+    model_client: StructuredModelClient | None = None,
+    planner_model_client: StructuredModelClient | None = None,
+    hypothesis_call_config: ModelCallConfig | None = None,
+    planner_call_config: ModelCallConfig | None = None,
+    agent_budget_policy: AgentBudgetPolicy | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
     search_type: SearchType = SearchType.DIRECT,
@@ -286,15 +382,32 @@ def task_sqlite_dependencies(
     optuna_file = (
         Path(optuna_path).expanduser().resolve() if optuna_path is not None else None
     )
-    stores = [checkpoint, provenance, *(tuple([optuna_file]) if optuna_file else ())]
+    agent_calls_file = (
+        Path(agent_calls_path).expanduser().resolve()
+        if agent_calls_path is not None
+        else None
+    )
+    stores = [
+        checkpoint,
+        provenance,
+        *(tuple([optuna_file]) if optuna_file else ()),
+        *(tuple([agent_calls_file]) if agent_calls_file else ()),
+    ]
     if len(stores) != len(set(stores)):
         raise ValueError(
-            "checkpoint, provenance and Optuna stores must use separate files"
+            "checkpoint, provenance, Optuna and agent-call stores must use separate files"
         )
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     provenance.parent.mkdir(parents=True, exist_ok=True)
+    if agent_calls_file is not None:
+        agent_calls_file.parent.mkdir(parents=True, exist_ok=True)
     saver, connection = sqlite_checkpointer(checkpoint)
     store = SQLiteProvenanceStore(provenance)
+    call_store = (
+        SQLiteAgentCallStore(agent_calls_file)
+        if agent_calls_file is not None
+        else InMemoryAgentCallStore()
+    )
     optuna_handle = (
         sqlite_storage(optuna_file)
         if (
@@ -316,6 +429,12 @@ def task_sqlite_dependencies(
             planner_agent=planner_agent,
             evaluator=evaluator,
             verifier=verifier,
+            agent_call_store=call_store,
+            model_client=model_client,
+            planner_model_client=planner_model_client,
+            hypothesis_call_config=hypothesis_call_config,
+            planner_call_config=planner_call_config,
+            agent_budget_policy=agent_budget_policy,
             clock=clock,
             id_generator=id_generator,
             search_type=search_type,
@@ -325,6 +444,8 @@ def task_sqlite_dependencies(
         if optuna_handle is not None:
             optuna_handle.close()
         store.close()
+        if isinstance(call_store, SQLiteAgentCallStore):
+            call_store.close()
         connection.close()
 
 
@@ -336,6 +457,12 @@ def memory_dependencies(
     evaluator: Evaluator | None = None,
     verifier: Verifier | None = None,
     provenance_store: ProvenanceStore | None = None,
+    agent_call_store: AgentCallStore | None = None,
+    model_client: StructuredModelClient | None = None,
+    planner_model_client: StructuredModelClient | None = None,
+    hypothesis_call_config: ModelCallConfig | None = None,
+    planner_call_config: ModelCallConfig | None = None,
+    agent_budget_policy: AgentBudgetPolicy | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
     search_type: SearchType = SearchType.DIRECT,
@@ -363,6 +490,12 @@ def memory_dependencies(
         evaluator=evaluator,
         verifier=verifier,
         provenance_store=provenance_store,
+        agent_call_store=agent_call_store,
+        model_client=model_client,
+        planner_model_client=planner_model_client,
+        hypothesis_call_config=hypothesis_call_config,
+        planner_call_config=planner_call_config,
+        agent_budget_policy=agent_budget_policy,
         clock=clock,
         id_generator=id_generator,
         search_type=search_type,
@@ -378,6 +511,7 @@ def sqlite_dependencies(
     planner_agent: PlannerAgent | None = None,
     evaluator: Evaluator | None = None,
     verifier: Verifier | None = None,
+    agent_calls_path: str | Path | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
 ) -> Iterator[RuntimeDependencies]:
@@ -394,6 +528,7 @@ def sqlite_dependencies(
         default_synthetic_configuration(),
         checkpoint_path,
         provenance_path,
+        agent_calls_path=agent_calls_path,
         hypothesis_agent=hypothesis_agent,
         planner_agent=planner_agent,
         evaluator=evaluator,

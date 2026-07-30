@@ -30,6 +30,8 @@ from auto_researcher.tasks.models import (
 from auto_researcher.tasks.synthetic.configuration import SyntheticConfiguration
 from auto_researcher.tasks.synthetic.evaluator import SyntheticEvaluator
 from auto_researcher.tasks.synthetic.verification import SyntheticVerificationPolicy
+from auto_researcher.search.protocols import SearchCapability
+from auto_researcher.agents.models import TaskAgentContext
 
 SYNTHETIC_DATA_SEED = b"auto-researcher-synthetic-landscape-v2"
 SYNTHETIC_DATA_HASH = hashlib.sha256(SYNTHETIC_DATA_SEED).hexdigest()
@@ -153,6 +155,22 @@ class SyntheticTask:
             prohibited_artefact_types=frozenset({"raw_input_data"}),
             contains_sensitive_data=False,
             retention_notes="Synthetic artefacts may use standard development retention.",
+        )
+
+    def create_agent_context(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+        search_capabilities: dict[SearchType, SearchCapability],
+    ) -> TaskAgentContext:
+        from auto_researcher.tasks.synthetic.agents import (
+            create_synthetic_agent_context,
+        )
+
+        return create_synthetic_agent_context(
+            contract,
+            self.dataset_manifest(runtime_context),
+            search_capabilities,
         )
 
     def create_optuna_study_spec(

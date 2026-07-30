@@ -68,3 +68,26 @@ def test_provenance_queries_preserve_insert_order():
         event.event_id
         for event in store.list_events_by_type("run-1", EventType.EVIDENCE_VERIFIED)
     ] == ["event-2"]
+
+
+def test_model_and_evaluator_costs_combine_without_hiding_retry_calls():
+    budget = BudgetState(
+        maximum_cycles=1,
+        maximum_experiments=2,
+        maximum_cost=10,
+    )
+    budget = budget.record_model_usage(
+        calls=2,
+        input_tokens=100,
+        output_tokens=50,
+        cache_creation_tokens=10,
+        cache_read_tokens=5,
+        cost=0.25,
+    )
+    budget = budget.record_experiment(0.75)
+    assert budget.model_calls_used == 2
+    assert budget.model_cache_creation_tokens_used == 10
+    assert budget.model_cache_read_tokens_used == 5
+    assert budget.model_cost_used == 0.25
+    assert budget.evaluator_cost_used == 0.75
+    assert budget.cost_used == 1.0

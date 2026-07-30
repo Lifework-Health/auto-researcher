@@ -1,0 +1,37 @@
+# Merge this agents section into a task YAML. Credentials are never stored here;
+# export ANTHROPIC_API_KEY in the runtime environment.
+agents:
+  mode: live
+  provider: anthropic
+  model_id: claude-sonnet-4-5-20250929
+  pricing:
+    version: example-review-required-2026-07
+    input_cost_per_million_tokens: REPLACE_WITH_CURRENT_RATE
+    output_cost_per_million_tokens: REPLACE_WITH_CURRENT_RATE
+    cache_write_cost_per_million_tokens: REPLACE_WITH_CURRENT_RATE
+    cache_read_cost_per_million_tokens: REPLACE_WITH_CURRENT_RATE
+    currency: USD
+  budget:
+    maximum_hypothesis_calls_per_cycle: 1
+    maximum_planner_calls_per_cycle: 1
+    maximum_attempts_per_agent_call: 2
+    maximum_input_context_size: 24000
+    maximum_output_tokens: 2048
+    maximum_cost_per_call: 0.25
+    maximum_total_model_calls: 10
+  hypothesis:
+    temperature: 0.2
+    maximum_output_tokens: 1200
+    timeout_seconds: 60
+    maximum_attempts: 2
+    maximum_cost_per_call: 0.25
+    prompt_version: 1.0.0
+    structured_output_strategy: pydantic
+  planner:
+    temperature: 0.0
+    maximum_output_tokens: 1200
+    timeout_seconds: 60
+    maximum_attempts: 2
+    maximum_cost_per_call: 0.25
+    prompt_version: 1.0.0
+    structured_output_strategy: pydantic
