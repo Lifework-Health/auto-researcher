@@ -49,7 +49,7 @@ WITH
   END AS target_curie
 RETURN
   {
-    source_id: 'source:' + coalesce(evidence.source, target.source, 'unknown') + ':' + coalesce(target.version, 'configured-content-version'),
+    source_id: 'source:' + coalesce(evidence.source, target.source, 'unknown') + ':' + coalesce(target.version, 'configured-content-version') + ':' + target_curie,
     source_type: 'ONTOLOGY_RELEASE',
     title: coalesce(evidence.source, target.source, 'registered pathway/signature source'),
     version: coalesce(target.version, 'configured-content-version'),
@@ -68,7 +68,7 @@ RETURN
       curie: target_curie,
       entity_type: CASE WHEN is_signature THEN 'Signature' ELSE 'Pathway' END,
       name: target.name,
-      safe_properties: {parent_curie: parent.curie}
+      safe_properties: {}
     }
   ] AS entities,
   {
