@@ -381,7 +381,7 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
         task_version="1.0",
         objective_version="0.9",
         primary_metric="stability_objective",
-        task_constraints_version="0.9",
+        task_constraints_version="1.0",
         question="Which bounded configuration is eligible?",
         objective="maximise stability",
         constraints={},

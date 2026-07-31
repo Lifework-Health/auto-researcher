@@ -12,6 +12,16 @@ the scientific reference package into the Auto Researcher environment:
 PR 3 compatibility was verified against v2 commit
 `dab8c47ccdf3d5045ff5d9c76a6961b0dacd97cf`.
 
+## Consensus resampling policy
+
+`r` is the number of repeated consensus-clustering resamples. The task enforces
+`r >= 10` before planner reconciliation can create an experiment. Ten is the
+minimum executable setting for lightweight deterministic compatibility tests;
+it is not a claim of final statistical adequacy. The reference implementation's
+resolved production default is `r=100`, and production examples and live
+checkpoints must use that recommended setting. Optuna keeps `r` fixed and never
+optimises it.
+
 The external data directory must contain:
 
 ```text
@@ -39,6 +49,14 @@ placeholder runtime paths locally. Then run:
 An unavailable package or missing data fails during readiness before evaluator
 creation. Experiment fields are persisted; runtime paths are not. The adapter
 writes only aggregate JSON artefacts listed in the architecture document.
+
+If the evaluator fails, its external error and `failure_diagnostics` persist only
+a safe exception class, a closed failure-stage value, canonical configuration,
+dataset fingerprint and completion flags. Raw exception messages, tracebacks,
+paths and patient-level values are never persisted. The allowed stages are
+`CONFIGURATION_VALIDATION`, `DATASET_LOADING`, `NETWORK_PROPAGATION`,
+`CONSENSUS_CLUSTERING`, `ELIGIBILITY_EVALUATION`, `OBJECTIVE_CALCULATION`,
+`ARTEFACT_WRITING` and `UNKNOWN`.
 
 ## Compatibility gates
 

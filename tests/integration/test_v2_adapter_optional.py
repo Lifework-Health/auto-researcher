@@ -71,7 +71,7 @@ def test_v2_adapter_boundary_when_reference_package_is_available():
         task_version="1.0",
         objective_version="0.9",
         primary_metric="stability_objective",
-        task_constraints_version="0.9",
+        task_constraints_version="1.0",
         question="Does the mapped result retain v2 semantics?",
         objective="maximise the imported v2 stability objective",
         constraints={},

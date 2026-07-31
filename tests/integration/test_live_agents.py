@@ -170,7 +170,7 @@ def _icca_contract(search_type: SearchType, budget: int) -> ResearchContract:
         task_version="1.0",
         objective_version="0.9",
         primary_metric="stability_objective",
-        task_constraints_version="0.9",
+        task_constraints_version="1.0",
         question="Which bounded iCCA configuration satisfies the eligibility gates?",
         objective="maximise the imported stability objective",
         constraints={},
@@ -293,6 +293,69 @@ def test_invalid_live_plan_fails_closed_before_experiment(tmp_path):
     events = dependencies.provenance_store.list_events("invalid-plan")
     assert any(event.event_type == EventType.MODEL_CALL_FAILED for event in events)
     assert not any(event.event_type == EventType.EXPERIMENT_PREPARED for event in events)
+
+
+def test_invalid_icca_resampling_plan_fails_before_experiment_and_evaluator(tmp_path):
+    for filename in ("Combined_binary_matrix.csv", "Combined_clinical.csv"):
+        (tmp_path / filename).write_text("safe-fixture\n", encoding="utf-8")
+    contract = _icca_contract(SearchType.DIRECT, 1)
+    valid_direct = {
+        "network": "Ideker",
+        "alignment": "Intersect",
+        "alpha": 0.7,
+        "K": 5,
+        "r": 100,
+    }
+    client = FakeStructuredModelClient(
+        {
+            "statement": "A bounded alpha region may alter NBS stability.",
+            "rationale": "Test the registered mutation-only search space.",
+            "predicted_subspace": {"alpha": [0.4, 0.8]},
+            "expected_observation": "stability_objective changes",
+            "falsification_condition": "stability_objective does not change",
+            "evidence_references": [contract.contract_id],
+            "confidence": 0.5,
+        },
+        {
+            "search_type": "DIRECT",
+            "target": "stability_objective",
+            "proposed_search_space": {**valid_direct, "r": 1},
+            "requested_experiment_budget": 1,
+            "rationale": "Attempt an invalid single-resample configuration.",
+            "evidence_references": [contract.contract_id],
+            "recommends_human_approval": False,
+        },
+    )
+    bindings, calls = make_fake_icca_bindings()
+    dependencies = task_memory_dependencies(
+        ICCANBSTask(bindings),
+        TaskRuntimeContext(
+            run_id="invalid-icca-r",
+            data_dir=tmp_path,
+            workspace_dir=tmp_path,
+            output_dir=tmp_path / "output",
+            manifest_created_at=FIXED_TIME,
+        ),
+        contract,
+        valid_direct,
+        model_client=client,
+        hypothesis_call_config=_call_config(),
+        planner_call_config=_call_config(),
+        clock=lambda: FIXED_TIME,
+    )
+
+    final = _invoke(dependencies, contract, "invalid-icca-r")
+
+    assert final["status"] == RunStatus.FAILED
+    assert final.get("experiment_spec") is None
+    assert "INVALID_STRUCTURED_OUTPUT" in final["errors"]
+    assert calls["load_cohort"] == 0
+    assert calls["cache_get"] == 0
+    assert calls["evaluate"] == 0
+    events = dependencies.provenance_store.list_events("invalid-icca-r")
+    assert not any(
+        event.event_type == EventType.EXPERIMENT_PREPARED for event in events
+    )
 
 
 def test_live_budget_precheck_prevents_paid_call(tmp_path):

@@ -79,11 +79,7 @@ class Neo4jKnowledgeProvider:
     def _query(self, text: str, timeout_seconds: float) -> Any:
         if self._query_factory is not None:
             return self._query_factory(text, timeout_seconds)
-        try:
-            from neo4j import Query
-        except ImportError:
-            return text
-        return Query(text, timeout=timeout_seconds)
+        return text
 
     def execution_template_hashes(self) -> dict[str, str]:
         template = self._templates.get("generic.schema_preflight", "1.0.0")
@@ -351,11 +347,19 @@ class Neo4jKnowledgeProvider:
                 self._assert_no_updates(summary)
                 return rows
 
+            managed_work = work
+            if self._query_factory is None:
+                try:
+                    from neo4j import unit_of_work
+                except ImportError:
+                    pass
+                else:
+                    managed_work = unit_of_work(timeout=remaining)(work)
             try:
                 with self._driver.session(
                     database=self.configuration.database
                 ) as session:
-                    return session.execute_read(work)
+                    return session.execute_read(managed_work)
             except KnowledgeProviderError:
                 raise
             except Exception as exc:

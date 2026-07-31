@@ -50,7 +50,7 @@ def test_icca_plugin_matches_direct_v2_evaluation_when_explicitly_configured():
         task_version="1.0",
         objective_version="0.9",
         primary_metric="stability_objective",
-        task_constraints_version="0.9",
+        task_constraints_version="1.0",
         question="Does the task adapter preserve direct v2 evaluation semantics?",
         objective="maximise the imported v2 stability objective",
         constraints={},

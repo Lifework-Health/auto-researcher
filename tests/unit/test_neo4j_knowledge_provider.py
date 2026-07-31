@@ -228,6 +228,23 @@ def test_neo4j_provider_uses_explicit_database_preflight_and_execute_read():
     assert driver.closed
 
 
+def test_default_live_query_path_uses_strings_in_managed_transactions():
+    driver = FakeDriver(_row())
+    configuration = _configuration()
+    provider = Neo4jKnowledgeProvider(
+        configuration,
+        default_template_registry(),
+        driver=driver,
+        clock=fixed_clock,
+    )
+
+    bundle = provider.retrieve(_request())
+
+    assert bundle.references
+    assert driver.queries
+    assert all(isinstance(query, str) for query, _ in driver.queries)
+
+
 def test_schema_mismatch_and_reported_updates_fail_closed():
     configuration = _configuration()
     missing_schema = FakeDriver(_row())

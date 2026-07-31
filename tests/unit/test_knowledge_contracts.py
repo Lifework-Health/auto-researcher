@@ -183,6 +183,11 @@ def test_icca_gene_context_preserves_signature_direction_and_stable_identity():
     )
     assert "'MSIGDB:' + target.sig_id" not in template.cypher
     assert "signature_contexts + pathway_contexts" in template.cypher
+    assert (
+        "coalesce(target.version, 'configured-content-version') + ':' + target_curie"
+        in template.cypher
+    )
+    assert "safe_properties: {parent_curie: parent.curie}" not in template.cypher
 
 
 def test_template_registry_is_versioned_bounded_and_task_compatible():
