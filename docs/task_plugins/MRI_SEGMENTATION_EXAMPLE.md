@@ -25,9 +25,17 @@ DIRECT could execute predefined configurations. The generic OPTUNA backend can
 optimise task-registered hyperparameters through a future MRI plugin, while a
 later OPENEVOLVE backend could evolve losses,
 augmentation policies, model blocks, or post-processing. Those backends are
-The MRI task, training implementation, and OPENEVOLVE support remain outside
-PR 3.
+independent of knowledge retrieval. The MRI task, training implementation, and
+OPENEVOLVE support remain outside PR 5.
+
+The same future task may implement `KnowledgeGroundingCapableTask` and register
+an MRI-specific profile. Its entities could include architecture, loss
+function, augmentation method, imaging modality, anatomical target,
+evaluation metric, dataset and implementation paper. The task would own fixed
+templates and relevance rules for those concepts and could use Neo4j or another
+provider. No MRI vocabulary or branches belong in the generic knowledge
+contracts or LangGraph control plane.
 
 The plugin would also define data custody and artefact rules suitable for medical
-images. No PyTorch, MONAI, training loop, dataset loader, or model implementation
-is included here.
+images. No PyTorch, MONAI, training loop, dataset loader, model implementation
+or MRI knowledge profile is included here.

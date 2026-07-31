@@ -9,6 +9,7 @@ from auto_researcher.agents.models import (
     HypothesisProposal,
     PlannerAgentContext,
     PlannerProposal,
+    PriorResearchSummary,
 )
 from auto_researcher.contracts.enums import (
     GroundingStatus,
@@ -18,6 +19,7 @@ from auto_researcher.contracts.enums import (
     SearchType,
 )
 from auto_researcher.contracts.models import Hypothesis, ResearchContract, SearchRequest
+from auto_researcher.knowledge.models import KnowledgeContextReference
 from auto_researcher.tasks.protocols import OptunaCapableTask, ResearchTask
 
 
@@ -30,6 +32,32 @@ class ReconciliationError(ValueError):
 def _stable_id(prefix: str, *parts: str) -> str:
     digest = hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:20]
     return f"{prefix}-{digest}"
+
+
+def _prior_reference_ids(
+    findings: tuple[PriorResearchSummary, ...],
+) -> set[str]:
+    return (
+        {item.hypothesis_reference for item in findings}
+        | {item.experiment_reference for item in findings}
+        | {
+            reference
+            for item in findings
+            for reference in item.safe_artefact_references
+        }
+    )
+
+
+def _require_relevant_knowledge(
+    cited_knowledge: list[KnowledgeContextReference],
+    proposal_parameters: set[str],
+) -> None:
+    if any(
+        not item.relevant_parameters
+        or proposal_parameters.isdisjoint(item.relevant_parameters)
+        for item in cited_knowledge
+    ):
+        raise ReconciliationError("knowledge_reference_not_relevant")
 
 
 class HypothesisReconciler:
@@ -54,7 +82,9 @@ class HypothesisReconciler:
         metric = context.contract.primary_metric.casefold().replace("_", " ")
         observation = proposal.expected_observation.casefold().replace("_", " ")
         if metric not in observation:
-            raise ReconciliationError("expected_observation_not_measurable_by_primary_metric")
+            raise ReconciliationError(
+                "expected_observation_not_measurable_by_primary_metric"
+            )
         if (
             proposal.expected_observation.casefold().strip()
             == proposal.falsification_condition.casefold().strip()
@@ -69,18 +99,21 @@ class HypothesisReconciler:
             raise ReconciliationError("predicted_subspace_not_task_compatible")
         if len(proposal.predicted_subspace) > 32:
             raise ReconciliationError("predicted_subspace_too_large")
-        prior_refs = {
-            item.hypothesis_reference
-            for item in context.prior_verified_findings
-        } | {
-            item.experiment_reference
-            for item in context.prior_verified_findings
-        } | {
-            reference
-            for item in context.prior_verified_findings
-            for reference in item.safe_artefact_references
+        prior_refs = _prior_reference_ids(context.prior_verified_findings)
+        knowledge_by_id = {
+            item.reference_id: item for item in context.knowledge_references
         }
-        if set(proposal.evidence_references) & prior_refs:
+        cited_knowledge = [
+            knowledge_by_id[item]
+            for item in proposal.evidence_references
+            if item in knowledge_by_id
+        ]
+        predicted_parameters = set(proposal.predicted_subspace)
+        _require_relevant_knowledge(cited_knowledge, predicted_parameters)
+        if cited_knowledge:
+            grounding = GroundingStatus.KNOWLEDGE_GROUNDED
+            cap = min(item.prior_weight_cap for item in cited_knowledge)
+        elif set(proposal.evidence_references) & prior_refs:
             grounding = GroundingStatus.PRIOR_RESULTS_GROUNDED
             cap = 0.8
         elif context.contract.contract_id in proposal.evidence_references:
@@ -127,6 +160,9 @@ class PlannerReconciler:
         prompt_version: str,
     ) -> SearchRequest:
         search_type = proposal.search_type
+        permitted = set(context.permitted_evidence_reference_ids)
+        if set(proposal.evidence_references) - permitted:
+            raise ReconciliationError("unknown_evidence_reference")
         if search_type not in context.installed_search_capabilities:
             raise ReconciliationError("search_type_not_installed")
         if search_type not in context.contract.allowed_search_types:
@@ -164,9 +200,21 @@ class PlannerReconciler:
                 raise ReconciliationError("invalid_optuna_narrowing") from exc
         else:
             raise ReconciliationError("unsupported_pr4_search_type")
-        if context.hypothesis.grounding_status == GroundingStatus.PRIOR_RESULTS_GROUNDED:
+        knowledge_by_id = {
+            item.reference_id: item for item in context.knowledge_references
+        }
+        cited_knowledge = [
+            knowledge_by_id[item]
+            for item in proposal.evidence_references
+            if item in knowledge_by_id
+        ]
+        _require_relevant_knowledge(cited_knowledge, set(search_space))
+        prior_refs = _prior_reference_ids(context.prior_verified_findings)
+        if cited_knowledge:
+            grounding = GroundingStatus.KNOWLEDGE_GROUNDED
+        elif set(proposal.evidence_references) & prior_refs:
             grounding = GroundingStatus.PRIOR_RESULTS_GROUNDED
-        elif context.hypothesis.grounding_status == GroundingStatus.CONTRACT_GROUNDED:
+        elif context.contract.contract_id in proposal.evidence_references:
             grounding = GroundingStatus.CONTRACT_GROUNDED
         else:
             grounding = GroundingStatus.UNGROUNDED
@@ -185,6 +233,7 @@ class PlannerReconciler:
             search_space=search_space,
             experiment_budget=proposal.requested_experiment_budget,
             rationale=proposal.rationale,
+            evidence_references=proposal.evidence_references,
             requires_human_approval=(
                 proposal.recommends_human_approval
                 or search_type in context.approval_requirements

@@ -27,11 +27,13 @@ class PromptBundle(BaseModel):
 
 
 def load_prompt(name: str, version: str = "1.0.0") -> PromptBundle:
-    if name not in {"hypothesis", "planner"} or version != "1.0.0":
+    versions = {"1.0.0": "v1", "2.0.0": "v2"}
+    if name not in {"hypothesis", "planner"} or version not in versions:
         raise ValueError(f"unknown prompt {name}@{version}")
     root = resources.files("auto_researcher.prompts").joinpath(name)
-    system = root.joinpath("v1_system.md").read_text(encoding="utf-8")
-    user = root.joinpath("v1_user.md").read_text(encoding="utf-8")
+    stem = versions[version]
+    system = root.joinpath(f"{stem}_system.md").read_text(encoding="utf-8")
+    user = root.joinpath(f"{stem}_user.md").read_text(encoding="utf-8")
     system_hash = hashlib.sha256(system.encode()).hexdigest()
     user_hash = hashlib.sha256(user.encode()).hexdigest()
     prompt_hash = hashlib.sha256(f"{system_hash}:{user_hash}".encode()).hexdigest()

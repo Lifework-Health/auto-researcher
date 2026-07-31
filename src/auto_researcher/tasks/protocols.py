@@ -14,6 +14,10 @@ from auto_researcher.contracts.models import (
 )
 from auto_researcher.search.optuna.models import OptunaStudySpec
 from auto_researcher.search.protocols import SearchCapability
+from auto_researcher.knowledge.models import (
+    KnowledgeGroundingPolicy,
+    KnowledgeQueryPlan,
+)
 from auto_researcher.agents.models import TaskAgentContext
 from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.tasks.models import (
@@ -96,3 +100,20 @@ class AgentContextCapableTask(Protocol):
         runtime_context: TaskRuntimeContext,
         search_capabilities: dict[SearchType, SearchCapability],
     ) -> TaskAgentContext: ...
+
+
+@runtime_checkable
+class KnowledgeGroundingCapableTask(Protocol):
+    """Optional deterministic retrieval plan owned by a scientific task."""
+
+    def create_knowledge_query_plan(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+        search_capabilities: dict[SearchType, SearchCapability],
+    ) -> KnowledgeQueryPlan: ...
+
+    def create_grounding_policy(
+        self,
+        contract: ResearchContract,
+    ) -> KnowledgeGroundingPolicy: ...

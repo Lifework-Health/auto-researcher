@@ -30,6 +30,9 @@ agents-anthropic = [
     "langchain-core==1.5.3",
     "langchain-anthropic==1.5.3",
 ]
+knowledge-neo4j = [
+    "neo4j==6.2.0",
+]
 
 [project.scripts]
 auto-researcher = "auto_researcher.cli:app"
@@ -39,6 +42,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "auto_researcher.prompts" = ["**/*.md"]
+"auto_researcher.knowledge" = ["queries/**/*.cypher"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -13,7 +13,7 @@ from auto_researcher.contracts.enums import (
 from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.provenance.protocols import ProvenanceStore
 
-CODE_VERSION = "auto-researcher-v2.1-pr4"
+CODE_VERSION = "auto-researcher-v2.1-pr5"
 
 
 def _event_type(status: AgentCallStatus) -> EventType:

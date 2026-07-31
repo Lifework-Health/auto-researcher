@@ -17,7 +17,9 @@ def supervisor_decide(state: ResearchState) -> dict:
         update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cycles_reached")
         return update
     if budget.experiments_used >= budget.maximum_experiments:
-        update.update(status=RunStatus.COMPLETED, stop_reason="maximum_experiments_reached")
+        update.update(
+            status=RunStatus.COMPLETED, stop_reason="maximum_experiments_reached"
+        )
         return update
     if budget.cost_used >= budget.maximum_cost:
         update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cost_reached")
@@ -50,6 +52,7 @@ def supervisor_decide(state: ResearchState) -> dict:
         diagnostic_experiment_spec=None,
         diagnostic_evaluation_result=None,
         diagnostic_verification_result=None,
+        knowledge_bundle_reference=None,
         stop_reason=None,
     )
     return update

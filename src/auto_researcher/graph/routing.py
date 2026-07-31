@@ -16,8 +16,22 @@ def route_after_initialise(
 
 def route_after_prepare(
     state: ResearchState,
+) -> Literal["retrieve_knowledge", "record_provenance"]:
+    return (
+        "record_provenance"
+        if state["status"] != RunStatus.RUNNING
+        else "retrieve_knowledge"
+    )
+
+
+def route_after_knowledge(
+    state: ResearchState,
 ) -> Literal["generate_hypothesis", "record_provenance"]:
-    return "record_provenance" if state["status"] != RunStatus.RUNNING else "generate_hypothesis"
+    return (
+        "generate_hypothesis"
+        if state["status"] == RunStatus.RUNNING
+        else "record_provenance"
+    )
 
 
 def route_approval(
@@ -41,7 +55,9 @@ def route_approval(
 def route_after_human(
     state: ResearchState,
 ) -> Literal["search_router", "record_provenance"]:
-    return "search_router" if state.get("human_approval_granted") else "record_provenance"
+    return (
+        "search_router" if state.get("human_approval_granted") else "record_provenance"
+    )
 
 
 def route_search_backend(
@@ -90,5 +106,5 @@ def route_after_optuna_decision(
 
 def route_after_decision(
     state: ResearchState,
-) -> Literal["generate_hypothesis", "__end__"]:
-    return "generate_hypothesis" if state["status"] == RunStatus.RUNNING else "__end__"
+) -> Literal["retrieve_knowledge", "__end__"]:
+    return "retrieve_knowledge" if state["status"] == RunStatus.RUNNING else "__end__"

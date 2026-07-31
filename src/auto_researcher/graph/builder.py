@@ -11,6 +11,7 @@ from auto_researcher.graph.nodes.direct_search import direct_search
 from auto_researcher.graph.nodes.evaluate import evaluate_experiment
 from auto_researcher.graph.nodes.human_approval import approval_router, human_approval
 from auto_researcher.graph.nodes.hypothesis import generate_hypothesis
+from auto_researcher.graph.nodes.knowledge import retrieve_knowledge
 from auto_researcher.graph.nodes.initialise import initialise_run
 from auto_researcher.graph.nodes.planner import plan_search
 from auto_researcher.graph.nodes.optuna import (
@@ -32,6 +33,7 @@ from auto_researcher.graph.routing import (
     route_after_decision,
     route_after_human,
     route_after_initialise,
+    route_after_knowledge,
     route_after_optuna_decision,
     route_after_optuna_prepare,
     route_after_prepare,
@@ -52,11 +54,17 @@ def build_graph(
     graph.add_node("initialise_run", initialise_run)
     graph.add_node("supervisor_prepare", supervisor_prepare)
     graph.add_node(
+        "retrieve_knowledge",
+        partial(retrieve_knowledge, dependencies=dependencies),
+    )
+    graph.add_node(
         "generate_hypothesis",
         partial(generate_hypothesis, dependencies=dependencies),
     )
     graph.add_node("plan_search", partial(plan_search, dependencies=dependencies))
-    graph.add_node("approval_router", partial(approval_router, dependencies=dependencies))
+    graph.add_node(
+        "approval_router", partial(approval_router, dependencies=dependencies)
+    )
     graph.add_node("human_approval", human_approval)
     graph.add_node(
         "search_router",
@@ -68,7 +76,9 @@ def build_graph(
         "evaluate_experiment",
         partial(evaluate_experiment, dependencies=dependencies),
     )
-    graph.add_node("verify_evidence", partial(verify_evidence, dependencies=dependencies))
+    graph.add_node(
+        "verify_evidence", partial(verify_evidence, dependencies=dependencies)
+    )
     graph.add_node(
         "record_provenance",
         partial(record_provenance, dependencies=dependencies),
@@ -107,6 +117,7 @@ def build_graph(
         {"supervisor_prepare": "supervisor_prepare", "__end__": END},
     )
     graph.add_conditional_edges("supervisor_prepare", route_after_prepare)
+    graph.add_conditional_edges("retrieve_knowledge", route_after_knowledge)
     graph.add_edge("generate_hypothesis", "plan_search")
     graph.add_edge("plan_search", "approval_router")
     graph.add_conditional_edges("approval_router", route_approval)
@@ -133,7 +144,7 @@ def build_graph(
     graph.add_conditional_edges(
         "supervisor_decide",
         route_after_decision,
-        {"generate_hypothesis": "generate_hypothesis", "__end__": END},
+        {"retrieve_knowledge": "retrieve_knowledge", "__end__": END},
     )
     return graph.compile(
         checkpointer=dependencies.checkpointer,

@@ -97,7 +97,7 @@ def create_icca_agent_context(
             "data_modality": "mutation-only",
         },
         task_limitations=(
-            "No literature or knowledge-graph grounding is available in PR 4.",
+            "Only validated references from the configured knowledge bundle may be cited.",
             "Only aggregate evaluator outputs may be used as prior findings.",
         ),
         safety_notes=(
