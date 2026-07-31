@@ -85,10 +85,12 @@ auto-researcher knowledge readiness \
 
 Readiness verifies configuration, connectivity and the account privilege view.
 It never performs a test write. Immediately before task templates, a fixed read
-preflight compares required labels and relationship types with the active
-graph. Missing `INCLUDES`, required labels or stable projected identifiers fail
-closed. The inspected profile uses `Signature-[:INCLUDES]->Gene`; Network nodes
-are metadata-only.
+preflight uses the allowlisted read-mode `db.labels()` and
+`db.relationshipTypes()` metadata procedures to compare required labels and
+relationship types without scanning graph data. The read-only account must be
+able to execute those two procedures. Missing `INCLUDES`, required labels or
+stable projected identifiers fail closed. The inspected profile uses
+`Signature-[:INCLUDES]->Gene`; Network nodes are metadata-only.
 
 To independently confirm least privilege, review `SHOW CURRENT USER
 PRIVILEGES` as an administrator and verify no `WRITE`, `CREATE`, `DELETE` or

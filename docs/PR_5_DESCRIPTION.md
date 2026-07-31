@@ -66,10 +66,12 @@ caps, result-summary update counters and safe error codes. It never performs a
 test write. Raw nodes/relationships/paths, database exceptions, URIs,
 credentials and internal IDs cannot cross the provider boundary.
 
-Immediately before task reads, the fixed schema preflight checks required
-labels and relationship types. Stable identifiers are then checked in every
-projected entity and source. The provider records configured content identity
-without claiming a transactionally immutable graph snapshot.
+Immediately before task reads, the fixed schema preflight uses only the
+allowlisted read-mode `db.labels()` and `db.relationshipTypes()` metadata
+procedures to check required labels and relationship types without scanning
+graph data. Stable identifiers are then checked in every projected entity and
+source. The provider records configured content identity without claiming a
+transactionally immutable graph snapshot.
 
 The inspected external repository was `Lifework-Health/knowledge_graph_auto`
 at exact commit:
@@ -97,9 +99,9 @@ privilege credentials and result update counters remain independent barriers.
 | Template | Version | SHA256 |
 |---|---|---|
 | `generic.entity_lookup` | `1.0.0` | `b5bbf530bbda97ff32f94df002fb666ef9734937fe70ae9a56622dff8aad808e` |
-| `generic.schema_preflight` | `1.0.0` | `2194cae2f6386a7e006fbc7c603b75e6a1518aafc01b2e624f6f538f30a65413` |
+| `generic.schema_preflight` | `1.0.0` | `9dd8bdfbb318904ca67d2dac0551298c18b7fced5bef9f62da9204714f5e7a61` |
 | `icca_nbs.disease_context` | `1.0.0` | `31d766af6f05298485c598ce1513bf107d2c31501756a304267c6ef4817647d1` |
-| `icca_nbs.gene_signature_pathway` | `1.0.0` | `016c03e760a4160489fe21ed7876505249d727ffda71beb93bb39488f6a5d09a` |
+| `icca_nbs.gene_signature_pathway` | `1.0.0` | `3f373bb239a2b89ef14aa7eb38b87572b6547cc1aa242c2c1c2c4f74a794875d` |
 | `icca_nbs.immune_bridge` | `1.0.0` | `3441a5a91f5006ce3e47dff751c8ea05887e227ace51e933b61bda2ee2ef7e42` |
 | `icca_nbs.network_catalog` | `1.0.0` | `bbbc536f73b7d7cda9550aff5c697e3eb0943f43f2063569d0ceff6e4f022062` |
 
@@ -227,7 +229,7 @@ queries.
 - pytz resolved lock: `2026.3.post1`
 - core install remains independent of Neo4j
 - no neo4j-graphrag, APOC, n10s, graph chain, embedding or vector dependency
-- 168 tests passed
+- 171 tests passed
 - 2 tests skipped
 - 0 tests failed
 

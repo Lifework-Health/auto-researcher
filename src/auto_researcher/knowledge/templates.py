@@ -13,9 +13,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from auto_researcher.knowledge.models import KnowledgeTemplateRequest
 
 FORBIDDEN_CYPHER = re.compile(
-    r"\b(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|LOAD\s+CSV|FOREACH|CALL)\b",
+    r"\b(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|LOAD\s+CSV|FOREACH)\b",
     re.IGNORECASE,
 )
+CALL_KEYWORD = re.compile(r"\bCALL\b", re.IGNORECASE)
+CALL_PROCEDURE = re.compile(
+    r"\bCALL\s+([A-Za-z][A-Za-z0-9_.]*)\s*\(",
+    re.IGNORECASE,
+)
+ALLOWED_READ_PROCEDURES = frozenset({"db.labels", "db.relationshiptypes"})
 
 
 class EntityLookupParameters(BaseModel):
@@ -78,6 +84,13 @@ def lint_read_only_cypher(cypher: str) -> None:
     match = FORBIDDEN_CYPHER.search(cypher)
     if match:
         raise ValueError(f"forbidden Cypher clause: {match.group(1).upper()}")
+    call_keywords = CALL_KEYWORD.findall(cypher)
+    call_procedures = CALL_PROCEDURE.findall(cypher)
+    if len(call_keywords) != len(call_procedures):
+        raise ValueError("forbidden Cypher clause: CALL")
+    for procedure in call_procedures:
+        if procedure.casefold() not in ALLOWED_READ_PROCEDURES:
+            raise ValueError(f"forbidden Cypher procedure: {procedure}")
     upper = cypher.upper()
     if "ORDER BY" not in upper or "LIMIT $LIMIT" not in upper:
         raise ValueError(

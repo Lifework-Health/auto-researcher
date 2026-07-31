@@ -13,7 +13,9 @@ The Neo4j provider uses the official driver, an explicit database, least-
 privilege credentials, connectivity and privilege readiness checks,
 `execute_read`, fixed versioned parameterised templates, per-query timeout and
 row caps, a schema preflight, and result-summary update-counter checks. The
-template linter rejects write clauses and unrestricted procedure calls.
+template linter rejects write clauses and unrestricted procedure calls. Schema
+preflight uses only the allowlisted read-mode `db.labels()` and
+`db.relationshipTypes()` metadata procedures; it does not scan graph data.
 
 Projected rows contain allowlisted fields only. Raw nodes, relationships,
 paths, connection exceptions and internal IDs never leave the provider.

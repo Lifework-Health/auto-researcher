@@ -145,13 +145,44 @@ def test_identifiers_are_stable_and_internal_properties_are_rejected():
     [
         "MATCH (n) DELETE n ORDER BY n.x LIMIT $limit",
         "MATCH (n) SET n.x = 1 ORDER BY n.x LIMIT $limit",
-        "CALL db.labels() YIELD label RETURN label ORDER BY label LIMIT $limit",
+        "CALL dbms.components() YIELD name RETURN name ORDER BY name LIMIT $limit",
+        "CALL { MATCH (n) RETURN n } RETURN 1 ORDER BY 1 LIMIT $limit",
         "MATCH (n) RETURN n LIMIT $limit",
     ],
 )
-def test_template_lint_rejects_writes_calls_and_unordered_results(query):
+def test_template_lint_rejects_writes_unlisted_calls_and_unordered_results(query):
     with pytest.raises(ValueError):
         lint_read_only_cypher(query)
+
+
+def test_schema_preflight_uses_only_allowlisted_metadata_procedures():
+    template = default_template_registry().get(
+        "generic.schema_preflight",
+        "1.0.0",
+    )
+    assert "MATCH (n)" not in template.cypher
+    assert "MATCH ()-[" not in template.cypher
+    assert "CALL db.labels()" in template.cypher
+    assert "CALL db.relationshipTypes()" in template.cypher
+    lint_read_only_cypher(template.cypher)
+
+
+def test_icca_gene_context_preserves_signature_direction_and_stable_identity():
+    template = default_template_registry().get(
+        "icca_nbs.gene_signature_pathway",
+        "1.0.0",
+    )
+    assert "coalesce(context.target.curie, context.target.sig_id)" in template.cypher
+    assert (
+        "subject_curie: CASE WHEN is_signature THEN target_curie ELSE gene_curie END"
+        in template.cypher
+    )
+    assert (
+        "object_curie: CASE WHEN is_signature THEN gene_curie ELSE target_curie END"
+        in template.cypher
+    )
+    assert "'MSIGDB:' + target.sig_id" not in template.cypher
+    assert "signature_contexts + pathway_contexts" in template.cypher
 
 
 def test_template_registry_is_versioned_bounded_and_task_compatible():

@@ -1,10 +1,12 @@
-MATCH (n)
-WITH collect(DISTINCT labels(n)) AS nested_labels
-MATCH ()-[relationship]->()
-WITH nested_labels, collect(DISTINCT type(relationship)) AS relationships
-UNWIND nested_labels AS label_group
-UNWIND label_group AS label
-RETURN collect(DISTINCT label) AS labels,
+CALL db.labels() YIELD label
+WITH label
+ORDER BY label
+WITH collect(label) AS nested_labels
+CALL db.relationshipTypes() YIELD relationshipType
+WITH nested_labels, relationshipType
+ORDER BY relationshipType
+WITH nested_labels, collect(relationshipType) AS relationships
+RETURN nested_labels AS labels,
        relationships
 ORDER BY labels
 LIMIT $limit
