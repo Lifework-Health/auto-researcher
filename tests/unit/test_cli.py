@@ -75,6 +75,7 @@ def test_default_runtime_does_not_import_optional_provider_packages():
     memory_dependencies()
     assert "langchain_anthropic" not in sys.modules
     assert "anthropic" not in sys.modules
+    assert "neo4j" not in sys.modules
 
 
 def test_live_anthropic_missing_key_is_actionable_before_call(monkeypatch):

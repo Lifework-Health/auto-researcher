@@ -5,7 +5,7 @@ scientific research. Scientific domains plug into the same graph through a
 `ResearchTask` contract; the core owns lifecycle, budgets, orchestration,
 structural verification, checkpoints, provenance, and approval.
 
-PR 4 includes:
+PR 5 includes:
 
 - an offline deterministic `synthetic` task;
 - an `icca_nbs` adapter that delegates scientific execution and scoring to
@@ -24,6 +24,14 @@ PR 4 includes:
   replay-safe model-call records, and combined model/evaluator cost accounting;
 - optional LangChain/Anthropic integration while mock mode remains the offline
   default.
+- a provider-neutral, task-owned knowledge-grounding capability and deterministic
+  `retrieve_knowledge` graph node;
+- a deterministic static provider plus an optional read-only Neo4j 6.2 adapter
+  using fixed, versioned, parameterised Cypher;
+- evidence-safe bundle validation, compact cited agent context, conservative
+  trust-tier prior caps, durable replay and explicit indeterminate-read retry;
+- iCCA query plans compatible with the inspected `knowledge_graph_auto`
+  schema, while default grounding remains disabled/offline.
 
 ## Quick start
 
@@ -33,6 +41,7 @@ python -m venv .venv
 .venv/bin/pip install -e . --no-deps
 .venv/bin/pip install -e '.[hpo]' # only for OPTUNA
 .venv/bin/pip install -e '.[agents-anthropic]' # only for live Anthropic
+.venv/bin/pip install -e '.[knowledge-neo4j]' # only for Neo4j grounding
 .venv/bin/auto-researcher tasks
 .venv/bin/auto-researcher run \
   --task synthetic \
@@ -42,6 +51,8 @@ python -m venv .venv
   --thread-id demo-thread
 .venv/bin/auto-researcher provenance --run-id demo
 .venv/bin/auto-researcher agent-calls list --run-id demo
+.venv/bin/auto-researcher knowledge providers
+.venv/bin/auto-researcher knowledge retrievals list --run-id demo
 ```
 
 Run the offline Optuna example with:
@@ -70,3 +81,6 @@ See [the architecture](docs/architecture/V2_1_ARCHITECTURE.md), the
 [iCCA runbook](docs/runbooks/ICCA_NBS_RUN.md). Live model setup, pricing,
 privacy and indeterminate-call recovery are in
 [LIVE_AGENTS.md](docs/runbooks/LIVE_AGENTS.md).
+Neo4j least-privilege configuration, readiness, schema preflight and recovery
+are documented in
+[NEO4J_GROUNDING.md](docs/runbooks/NEO4J_GROUNDING.md).

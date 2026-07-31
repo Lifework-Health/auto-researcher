@@ -29,6 +29,20 @@ from auto_researcher.agents.models import (
     TaskAgentContext,
 )
 from auto_researcher.providers.protocols import StructuredModelClient
+from auto_researcher.knowledge.models import KnowledgeProviderConfiguration
+from auto_researcher.knowledge.protocols import KnowledgeProvider
+from auto_researcher.knowledge.registry import KnowledgeProviderRegistry
+from auto_researcher.knowledge.runtime import KnowledgeRetrievalCoordinator
+from auto_researcher.knowledge.store import (
+    InMemoryKnowledgeRetrievalStore,
+    KnowledgeRetrievalStore,
+    SQLiteKnowledgeRetrievalStore,
+)
+from auto_researcher.knowledge.templates import (
+    KnowledgeQueryTemplateRegistry,
+    default_template_registry,
+)
+from auto_researcher.knowledge.validation import KnowledgeBundleValidator
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.evaluation.protocols import Evaluator
@@ -69,6 +83,12 @@ class RuntimeDependencies:
     verifier: Verifier
     provenance_store: ProvenanceStore
     agent_call_store: AgentCallStore
+    knowledge_retrieval_store: KnowledgeRetrievalStore
+    knowledge_provider_registry: KnowledgeProviderRegistry
+    knowledge_provider: KnowledgeProvider | None
+    knowledge_configuration: KnowledgeProviderConfiguration | None
+    knowledge_template_registry: KnowledgeQueryTemplateRegistry
+    knowledge_coordinator: KnowledgeRetrievalCoordinator
     agent_context_assembler: AgentContextAssembler
     task_agent_context: TaskAgentContext
     agent_budget_policy: AgentBudgetPolicy
@@ -106,8 +126,7 @@ def _context_for_contract(
     payload.update(
         {
             "task_options": options,
-            "manifest_created_at": context.manifest_created_at
-            or manifest_created_at,
+            "manifest_created_at": context.manifest_created_at or manifest_created_at,
         }
     )
     return TaskRuntimeContext.model_validate(payload)
@@ -131,6 +150,10 @@ def _assemble_task_dependencies(
     hypothesis_call_config: ModelCallConfig | None,
     planner_call_config: ModelCallConfig | None,
     agent_budget_policy: AgentBudgetPolicy | None,
+    knowledge_provider: KnowledgeProvider | None,
+    knowledge_configuration: KnowledgeProviderConfiguration | None,
+    knowledge_retrieval_store: KnowledgeRetrievalStore | None,
+    knowledge_template_registry: KnowledgeQueryTemplateRegistry | None,
     clock: Callable[[], datetime],
     id_generator: Callable[[str], str],
     search_type: SearchType = SearchType.DIRECT,
@@ -148,7 +171,9 @@ def _assemble_task_dependencies(
     manifest = task.dataset_manifest(context)
     metadata = task.experiment_metadata(context)
     if metadata.evaluator_id != contract.evaluator_id:
-        raise ValueError("task experiment metadata does not match contract evaluator_id")
+        raise ValueError(
+            "task experiment metadata does not match contract evaluator_id"
+        )
     if metadata.provenance != contract.provenance:
         raise ValueError("task experiment metadata does not match contract provenance")
     if metadata.dataset_version != manifest.dataset_version:
@@ -217,6 +242,50 @@ def _assemble_task_dependencies(
         ),
     }
     call_store = agent_call_store or InMemoryAgentCallStore()
+    retrieval_store = knowledge_retrieval_store or InMemoryKnowledgeRetrievalStore()
+    template_registry = knowledge_template_registry or default_template_registry()
+    provider_registry = KnowledgeProviderRegistry()
+    if knowledge_provider is not None:
+        provider_registry.register(
+            knowledge_provider.provider_id,
+            lambda: knowledge_provider,
+        )
+    if knowledge_configuration is not None:
+        if (
+            knowledge_provider is not None
+            and knowledge_provider.provider_id != knowledge_configuration.provider_id
+        ):
+            raise ValueError("knowledge provider identity does not match configuration")
+        requirement = contract.grounding
+        if (
+            knowledge_configuration.schema_version
+            != requirement.knowledge_schema_version
+        ):
+            raise ValueError("runtime knowledge schema version does not match contract")
+        if (
+            knowledge_configuration.content_version
+            != requirement.knowledge_content_version
+        ):
+            raise ValueError(
+                "runtime knowledge content version does not match contract"
+            )
+        if knowledge_configuration.maximum_records > requirement.maximum_query_records:
+            raise ValueError("runtime knowledge record limit weakens contract")
+        if (
+            knowledge_configuration.minimum_assertion_confidence is not None
+            and knowledge_configuration.minimum_assertion_confidence
+            < requirement.minimum_assertion_confidence
+        ):
+            raise ValueError("runtime knowledge confidence threshold weakens contract")
+        if knowledge_configuration.allowed_trust_tiers is not None and not {
+            item.value for item in knowledge_configuration.allowed_trust_tiers
+        }.issubset(requirement.permitted_trust_tiers):
+            raise ValueError("runtime knowledge trust tiers weaken contract")
+        if (
+            knowledge_configuration.query_timeout_seconds
+            > requirement.maximum_retrieval_duration
+        ):
+            raise ValueError("runtime knowledge timeout weakens contract")
     budget_policy = agent_budget_policy or AgentBudgetPolicy()
     if not isinstance(task, AgentContextCapableTask):
         raise ValueError(
@@ -227,7 +296,16 @@ def _assemble_task_dependencies(
         context,
         capabilities,
     )
-    context_assembler = AgentContextAssembler(provenance_store)
+    context_assembler = AgentContextAssembler(
+        provenance_store,
+        knowledge_retrieval_store=retrieval_store,
+    )
+    knowledge_coordinator = KnowledgeRetrievalCoordinator(
+        store=retrieval_store,
+        validator=KnowledgeBundleValidator(),
+        runtime_context=context,
+        clock=clock,
+    )
     live_configured = any(
         item is not None
         for item in (
@@ -245,7 +323,9 @@ def _assemble_task_dependencies(
             "live agents require a model client plus hypothesis and planner call configs"
         )
     if live_configured and (hypothesis_agent is not None or planner_agent is not None):
-        raise ValueError("live model configuration cannot be mixed with injected agents")
+        raise ValueError(
+            "live model configuration cannot be mixed with injected agents"
+        )
     selected_hypothesis_agent = hypothesis_agent
     selected_planner_agent = planner_agent
     if live_configured:
@@ -273,7 +353,11 @@ def _assemble_task_dependencies(
             normalised,
             search_type=search_type,
             experiment_budget=(
-                int(experiment_configuration.get("trial_budget", contract.maximum_experiments))
+                int(
+                    experiment_configuration.get(
+                        "trial_budget", contract.maximum_experiments
+                    )
+                )
                 if search_type == SearchType.OPTUNA
                 else 1
             ),
@@ -286,6 +370,12 @@ def _assemble_task_dependencies(
         verifier=verifier or DeterministicVerifier(policy),
         provenance_store=provenance_store,
         agent_call_store=call_store,
+        knowledge_retrieval_store=retrieval_store,
+        knowledge_provider_registry=provider_registry,
+        knowledge_provider=knowledge_provider,
+        knowledge_configuration=knowledge_configuration,
+        knowledge_template_registry=template_registry,
+        knowledge_coordinator=knowledge_coordinator,
         agent_context_assembler=context_assembler,
         task_agent_context=task_agent_context,
         agent_budget_policy=budget_policy,
@@ -326,6 +416,10 @@ def task_memory_dependencies(
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
+    knowledge_provider: KnowledgeProvider | None = None,
+    knowledge_configuration: KnowledgeProviderConfiguration | None = None,
+    knowledge_retrieval_store: KnowledgeRetrievalStore | None = None,
+    knowledge_template_registry: KnowledgeQueryTemplateRegistry | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
     search_type: SearchType = SearchType.DIRECT,
@@ -347,6 +441,10 @@ def task_memory_dependencies(
         hypothesis_call_config=hypothesis_call_config,
         planner_call_config=planner_call_config,
         agent_budget_policy=agent_budget_policy,
+        knowledge_provider=knowledge_provider,
+        knowledge_configuration=knowledge_configuration,
+        knowledge_retrieval_store=knowledge_retrieval_store,
+        knowledge_template_registry=knowledge_template_registry,
         clock=clock,
         id_generator=id_generator,
         search_type=search_type,
@@ -363,6 +461,7 @@ def task_sqlite_dependencies(
     provenance_path: str | Path,
     optuna_path: str | Path | None = None,
     agent_calls_path: str | Path | None = None,
+    knowledge_retrievals_path: str | Path | None = None,
     *,
     hypothesis_agent: HypothesisAgent | None = None,
     planner_agent: PlannerAgent | None = None,
@@ -373,6 +472,9 @@ def task_sqlite_dependencies(
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
+    knowledge_provider: KnowledgeProvider | None = None,
+    knowledge_configuration: KnowledgeProviderConfiguration | None = None,
+    knowledge_template_registry: KnowledgeQueryTemplateRegistry | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
     search_type: SearchType = SearchType.DIRECT,
@@ -387,26 +489,40 @@ def task_sqlite_dependencies(
         if agent_calls_path is not None
         else None
     )
+    knowledge_retrievals_file = (
+        Path(knowledge_retrievals_path).expanduser().resolve()
+        if knowledge_retrievals_path is not None
+        else None
+    )
     stores = [
         checkpoint,
         provenance,
         *(tuple([optuna_file]) if optuna_file else ()),
         *(tuple([agent_calls_file]) if agent_calls_file else ()),
+        *(tuple([knowledge_retrievals_file]) if knowledge_retrievals_file else ()),
     ]
     if len(stores) != len(set(stores)):
         raise ValueError(
-            "checkpoint, provenance, Optuna and agent-call stores must use separate files"
+            "checkpoint, provenance, Optuna and agent-call stores must use "
+            "separate files; the knowledge store must also be separate"
         )
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     provenance.parent.mkdir(parents=True, exist_ok=True)
     if agent_calls_file is not None:
         agent_calls_file.parent.mkdir(parents=True, exist_ok=True)
+    if knowledge_retrievals_file is not None:
+        knowledge_retrievals_file.parent.mkdir(parents=True, exist_ok=True)
     saver, connection = sqlite_checkpointer(checkpoint)
     store = SQLiteProvenanceStore(provenance)
     call_store = (
         SQLiteAgentCallStore(agent_calls_file)
         if agent_calls_file is not None
         else InMemoryAgentCallStore()
+    )
+    retrieval_store = (
+        SQLiteKnowledgeRetrievalStore(knowledge_retrievals_file)
+        if knowledge_retrievals_file is not None
+        else InMemoryKnowledgeRetrievalStore()
     )
     optuna_handle = (
         sqlite_storage(optuna_file)
@@ -435,6 +551,10 @@ def task_sqlite_dependencies(
             hypothesis_call_config=hypothesis_call_config,
             planner_call_config=planner_call_config,
             agent_budget_policy=agent_budget_policy,
+            knowledge_provider=knowledge_provider,
+            knowledge_configuration=knowledge_configuration,
+            knowledge_retrieval_store=retrieval_store,
+            knowledge_template_registry=knowledge_template_registry,
             clock=clock,
             id_generator=id_generator,
             search_type=search_type,
@@ -446,6 +566,10 @@ def task_sqlite_dependencies(
         store.close()
         if isinstance(call_store, SQLiteAgentCallStore):
             call_store.close()
+        if isinstance(retrieval_store, SQLiteKnowledgeRetrievalStore):
+            retrieval_store.close()
+        if knowledge_provider is not None:
+            knowledge_provider.close()
         connection.close()
 
 

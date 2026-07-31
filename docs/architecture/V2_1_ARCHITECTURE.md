@@ -48,8 +48,8 @@ compare both the compiled Mermaid topology and executed node sequence.
 
 The normal DIRECT path is:
 
-`initialise → prepare → hypothesis → plan → approval route → search route →
-DIRECT → evaluate → verify → provenance → decide`.
+`initialise → prepare → retrieve knowledge → hypothesis → plan → approval
+route → search route → DIRECT → evaluate → verify → provenance → decide`.
 
 The full edge diagram remains in [graph.mmd](graph.mmd).
 
@@ -100,11 +100,50 @@ capped. Context history, artefact references and total characters are bounded,
 and canonical JSON yields a stable context hash. The model never sees complete
 graph state or raw provenance rows.
 
-PR 4 can honestly emit `UNGROUNDED`, `CONTRACT_GROUNDED` or
-`PRIOR_RESULTS_GROUNDED`. `KNOWLEDGE_GROUNDED` is reserved and cannot be
-produced because Neo4j, literature retrieval and web search are absent.
-Unknown evidence references fail reconciliation. Model confidence is capped by
-deterministic grounding rules and is never scientific confidence.
+PR 5 can emit `KNOWLEDGE_GROUNDED` only when a proposal cites a qualifying
+reference in the active, validated bundle. Merely retrieving a bundle does not
+change grounding. Unknown, stale, cross-bundle, irrelevant, unverified or
+uncited references fail reconciliation or remain ungrounded. Model confidence
+is capped by the most conservative cited trust-tier cap and is never scientific
+confidence.
+
+## Deterministic knowledge retrieval
+
+`retrieve_knowledge` is a deterministic control node between lifecycle
+preparation and hypothesis generation. A task that implements
+`KnowledgeGroundingCapableTask` supplies a bounded query plan and evidence
+policy. The core validates that plan against a registry of fixed, versioned
+templates, then calls a provider-neutral `KnowledgeProvider`. Agents cannot
+query a provider, generate Cypher, widen limits or request extra graph content.
+
+`DISABLED` performs no provider call. `OPTIONAL` records a safe failure and
+continues honestly. `REQUIRED` stops before any paid model call when task
+support, configuration, readiness, schema, retrieval or validation is
+unavailable. The control graph never branches on iCCA, genes, Neo4j or a future
+MRI domain.
+
+The first external provider uses the official Neo4j driver with an explicit
+database, connectivity/read-only checks, fixed parameterised Cypher, a
+read-transaction API, timeouts, record caps, update-counter checks, schema
+preflight and safe error codes. Credentials come only from environment
+variables. Internal Neo4j IDs and raw driver objects cannot cross the provider
+boundary. The static provider gives offline tests a deterministic
+`SIMULATED` bundle; it is never labelled real external evidence.
+
+Providers return entities, assertions, sources and compact references.
+`KnowledgeBundleValidator` checks stable identifiers, source provenance,
+provider/schema/content identity, task policy, trust tiers, confidence,
+limits, privacy fields and deterministic hashes. Unverified or LLM-asserted
+records may be diagnostic but cannot qualify as grounding evidence. Graph
+grounding affects only a hypothesis prior; it cannot mark an experiment
+`SUPPORTED`. Only evaluation and verification determine experimental evidence.
+
+The exact completed bundle and five safe JSON artefacts are stored outside
+checkpoint state. A deterministic retrieval identity binds run/cycle, task and
+contract, provider/version, graph alias, schema/content configuration and
+query-plan hash. Completed replay uses that bundle and never re-queries a
+changing graph. A started reservation without an outcome becomes
+`INDETERMINATE`; only an explicit linked CLI retry may issue another read.
 
 ## Model-call durability and budgets
 
@@ -180,9 +219,9 @@ runs/<run_id>/<experiment_id>/
 
 The graph checkpointer stores resumable execution state by `thread_id`.
 Scientific provenance is a separate append-only store keyed by `run_id`.
-Optuna owns its independent study database, and live model calls use a fourth
-agent-call database. Runtime rejects path collisions between them. None
-receives `TaskRuntimeContext`.
+Optuna owns its independent study database, live model calls use an agent-call
+database, and knowledge retrievals use a fifth append-only store. Runtime
+rejects path collisions between them. None receives `TaskRuntimeContext`.
 
 ## Generic Optuna ask/tell search
 
@@ -213,14 +252,17 @@ hash. Reopening validates every identity attribute. A durable running trial is
 recovered by slot instead of asked twice, and repeated tell/provenance writes
 must match their original content.
 
-PR 4 local execution is sequential. LangGraph checkpoints, append-only
-scientific provenance, Optuna RDB state and agent calls use separate databases. A
-future MRI plugin can expose learning rate, architecture or augmentation
-parameters through the same capability without changing the graph.
+PR 5 local execution is sequential. LangGraph checkpoints, append-only
+scientific provenance, Optuna RDB state, agent calls and knowledge retrievals
+use separate databases. A future MRI plugin can expose learning rate,
+architecture or augmentation parameters through the same capability without
+changing the graph.
 
-## PR 4 non-goals
+## PR 5 non-goals
 
-PR 4 does not implement Neo4j, literature/web search, RAG, OpenEvolve, MRI
-training, PyTorch/MONAI, critic/report agents, autonomous tool calling, ReAct
-loops, model voting, prompt optimisation, distributed execution,
-patient-level artefacts, or changes to scientific evaluators and policies.
+PR 5 does not implement graph writes, ingestion, experiment-result projection,
+literature/web search, vector retrieval, embeddings, GraphRAG answers,
+text-to-Cypher, OpenEvolve, MRI training, PyTorch/MONAI, critic/report agents,
+autonomous tool calling, ReAct loops, model voting, prompt optimisation,
+distributed execution, patient-level artefacts, or changes to scientific
+evaluators and policies.

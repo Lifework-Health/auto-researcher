@@ -22,6 +22,7 @@ from auto_researcher.contracts.enums import (
     SearchType,
 )
 from auto_researcher.contracts.models import FrozenJsonDict, Hypothesis
+from auto_researcher.knowledge.models import KnowledgeContextReference
 
 
 class AgentModel(BaseModel):
@@ -49,9 +50,7 @@ class ModelPricing(AgentModel):
         cache_read_rate = self.cache_read_cost_per_million_tokens
         uncached_input_tokens = max(
             0,
-            input_tokens
-            - cache_creation_input_tokens
-            - cache_read_input_tokens,
+            input_tokens - cache_creation_input_tokens - cache_read_input_tokens,
         )
         return (
             uncached_input_tokens * input_rate
@@ -78,7 +77,9 @@ class ModelCallConfig(AgentModel):
     @model_validator(mode="after")
     def reject_floating_model_aliases(self) -> "ModelCallConfig":
         if self.model_id.lower().endswith(("-latest", ":latest")):
-            raise ValueError("live model_id must be an explicit version, not a latest alias")
+            raise ValueError(
+                "live model_id must be an explicit version, not a latest alias"
+            )
         return self
 
 
@@ -117,12 +118,13 @@ class PlannerProposal(AgentModel):
     proposed_search_space: FrozenJsonDict
     requested_experiment_budget: int = Field(ge=1)
     rationale: str = Field(min_length=1)
+    evidence_references: tuple[str, ...] = ()
     recommends_human_approval: bool = False
 
     @model_validator(mode="after")
-    def only_pr4_search_types(self) -> "PlannerProposal":
+    def only_supported_search_types(self) -> "PlannerProposal":
         if self.search_type not in {SearchType.DIRECT, SearchType.OPTUNA}:
-            raise ValueError("PR 4 planner proposals support only DIRECT or OPTUNA")
+            raise ValueError("planner proposals support only DIRECT or OPTUNA")
         return self
 
 
@@ -191,6 +193,9 @@ class HypothesisAgentContext(AgentModel):
     prior_verified_findings: tuple[PriorResearchSummary, ...] = ()
     permitted_evidence_reference_ids: tuple[str, ...] = ()
     grounding_availability: tuple[GroundingStatus, ...] = ()
+    knowledge_references: tuple[KnowledgeContextReference, ...] = ()
+    knowledge_bundle_id: str | None = None
+    knowledge_bundle_hash: str | None = None
     context_hash: str = Field(min_length=1)
 
 
@@ -206,6 +211,10 @@ class PlannerAgentContext(AgentModel):
     model_calls_used: int = Field(ge=0)
     approval_requirements: tuple[SearchType, ...]
     prior_verified_findings: tuple[PriorResearchSummary, ...] = ()
+    permitted_evidence_reference_ids: tuple[str, ...] = ()
+    knowledge_references: tuple[KnowledgeContextReference, ...] = ()
+    knowledge_bundle_id: str | None = None
+    knowledge_bundle_hash: str | None = None
     permitted_direct_configuration_schema: FrozenJsonDict
     permitted_optuna_maximum_space: FrozenJsonDict
     optuna_narrowing_rules: tuple[str, ...] = ()
@@ -253,10 +262,15 @@ class AgentCallRecord(AgentModel):
         if self.status == AgentCallStatus.COMPLETED and (
             self.structured_output is None or self.response_hash is None
         ):
-            raise ValueError("completed calls require structured output and response hash")
+            raise ValueError(
+                "completed calls require structured output and response hash"
+            )
         if self.status == AgentCallStatus.FAILED and self.error_code is None:
             raise ValueError("failed calls require a safe error code")
-        if self.status == AgentCallStatus.RESERVED and self.structured_output is not None:
+        if (
+            self.status == AgentCallStatus.RESERVED
+            and self.structured_output is not None
+        ):
             raise ValueError("reserved calls cannot contain structured output")
         return self
 

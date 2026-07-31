@@ -2,8 +2,10 @@ flowchart TD
     START((START)) --> initialise[initialise_run]
     initialise -->|valid identifiers| prepare[supervisor_prepare]
     initialise -->|invalid identifiers| END
-    prepare -->|budget available| hypothesis[generate_hypothesis]
+    prepare -->|budget available| knowledge["retrieve_knowledge<br/>deterministic adapter"]
     prepare -->|stop/error| provenance[record_provenance]
+    knowledge -->|disabled, optional, or validated| hypothesis[generate_hypothesis]
+    knowledge -->|required unavailable| provenance
     hypothesis["generate_hypothesis<br/>mock or bounded live + reconcile"] --> planner["plan_search<br/>mock or bounded live + reconcile"]
     planner --> approvalRouter[approval_router]
     approvalRouter -->|required| human[human_approval interrupt]
@@ -28,13 +30,15 @@ flowchart TD
     optunaFinal --> decide
     unavailable --> provenance
     provenance --> decide[supervisor_decide]
-    decide -->|continue + reserve next cycle| hypothesis
+    decide -->|continue + reserve next cycle| knowledge
     decide -->|complete, stopped, failed| END((END))
 
     checkpointer[(LangGraph checkpointer)]
     provenanceStore[(append-only provenance SQLite)]
     optunaStore[(separate Optuna SQLite)]
     agentCallStore[(separate agent-call SQLite)]
+    knowledgeStore[(separate knowledge-retrieval SQLite)]
+    neo4j[("external Neo4j<br/>read-only")]
     human -. pause/resume .-> checkpointer
     provenance -. append .-> provenanceStore
     optunaPrepare -. study identity .-> optunaStore
@@ -42,6 +46,8 @@ flowchart TD
     optunaTell -. tell .-> optunaStore
     hypothesis -. reserve / outcome .-> agentCallStore
     planner -. reserve / outcome .-> agentCallStore
+    knowledge -. reserve / bundle .-> knowledgeStore
+    knowledge -. fixed parameterised reads .-> neo4j
 
     classDef llm fill:#d9e8ff,stroke:#245aa5,color:#10233f
     classDef deterministic fill:#e5f5e0,stroke:#3b7d23,color:#17310e
@@ -50,7 +56,7 @@ flowchart TD
     classDef scientific fill:#ffe5e5,stroke:#a23b3b,color:#451515
 
     class hypothesis,planner llm
-    class initialise,prepare,approvalRouter,human,searchRouter,provenance,decide,unavailable deterministic
+    class initialise,prepare,knowledge,approvalRouter,human,searchRouter,provenance,decide,unavailable deterministic
     class evaluator,verifier scientific
     class direct,optunaPrepare,optunaAsk,optunaTell backend
-    class checkpointer,provenanceStore,optunaStore,agentCallStore persistence
+    class checkpointer,provenanceStore,optunaStore,agentCallStore,knowledgeStore persistence

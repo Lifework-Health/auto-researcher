@@ -6,9 +6,11 @@ from auto_researcher.contracts.enums import EventType, ProvenanceKind
 from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.agents.provenance import append_model_call_events
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.knowledge.models import KnowledgeBundleReference
+from auto_researcher.knowledge.provenance import append_knowledge_retrieval_events
 from auto_researcher.runtime.dependencies import RuntimeDependencies
 
-CODE_VERSION = "auto-researcher-v2.1-pr4"
+CODE_VERSION = "auto-researcher-v2.1-pr5"
 
 
 def record_provenance(
@@ -17,19 +19,30 @@ def record_provenance(
 ) -> dict:
     run_id = state["run_id"]
     cycle = state["cycle"]
-    rows: list[tuple[EventType, str, tuple[str, ...], tuple[str, ...], str, ProvenanceKind]] = []
+    rows: list[
+        tuple[EventType, str, tuple[str, ...], tuple[str, ...], str, ProvenanceKind]
+    ] = []
     hypothesis = state.get("active_hypothesis")
     request = state.get("search_request")
     backend = state.get("search_backend_result")
     experiment = state.get("experiment_spec")
     evaluation = state.get("evaluation_result")
     verification = state.get("verification_result")
+    knowledge_event_ids = append_knowledge_retrieval_events(
+        dependencies.provenance_store,
+        dependencies.knowledge_retrieval_store,
+        run_id=run_id,
+        cycle=cycle,
+    )
     model_event_ids = append_model_call_events(
         dependencies.provenance_store,
         dependencies.agent_call_store,
         run_id=run_id,
         cycle=cycle,
     )
+    bundle_reference = state.get("knowledge_bundle_reference")
+    if isinstance(bundle_reference, dict):
+        bundle_reference = KnowledgeBundleReference.model_validate(bundle_reference)
 
     if hypothesis:
         rows.append(
@@ -38,6 +51,11 @@ def record_provenance(
                 "hypothesis_agent",
                 (
                     state["contract"].contract_id,
+                    *(
+                        (bundle_reference.bundle_id,)
+                        if bundle_reference and bundle_reference.bundle_id
+                        else ()
+                    ),
                     *((hypothesis.agent_call_id,) if hypothesis.agent_call_id else ()),
                 ),
                 (
@@ -45,6 +63,11 @@ def record_provenance(
                     f"source:{hypothesis.proposal_source.value}",
                     f"grounding:{hypothesis.grounding_status.value}",
                     f"prompt:{hypothesis.prompt_version or 'none'}",
+                    f"prior_weight:{hypothesis.prior_weight}",
+                    *(
+                        f"evidence_reference:{reference}"
+                        for reference in hypothesis.evidence_references
+                    ),
                 ),
                 hypothesis.rationale,
                 hypothesis.provenance,
@@ -57,6 +80,11 @@ def record_provenance(
                 "planner_agent",
                 (
                     request.hypothesis_id,
+                    *(
+                        (bundle_reference.bundle_id,)
+                        if bundle_reference and bundle_reference.bundle_id
+                        else ()
+                    ),
                     *((request.agent_call_id,) if request.agent_call_id else ()),
                 ),
                 (
@@ -65,6 +93,10 @@ def record_provenance(
                     f"source:{request.proposal_source.value}",
                     f"grounding:{request.grounding_status.value}",
                     f"prompt:{request.prompt_version or 'none'}",
+                    *(
+                        f"evidence_reference:{reference}"
+                        for reference in request.evidence_references
+                    ),
                 ),
                 request.rationale,
                 ProvenanceKind.MOCK,
@@ -139,7 +171,8 @@ def record_provenance(
                         )
                     ),
                 ),
-                "; ".join(verification.reasons) or "Evidence reconciled without issues.",
+                "; ".join(verification.reasons)
+                or "Evidence reconciled without issues.",
                 verification.provenance,
             )
         )
@@ -155,7 +188,7 @@ def record_provenance(
             )
         )
 
-    event_ids: list[str] = list(model_event_ids)
+    event_ids: list[str] = [*knowledge_event_ids, *model_event_ids]
     for event_type, actor, inputs, outputs, rationale, provenance in rows:
         event = DecisionEvent(
             event_id=dependencies.id_generator("event"),

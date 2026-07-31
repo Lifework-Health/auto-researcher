@@ -5,7 +5,7 @@ from __future__ import annotations
 import operator
 from typing import Annotated, NotRequired, TypedDict
 
-from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.contracts.enums import KnowledgeRetrievalStatus, RunStatus
 from auto_researcher.contracts.models import (
     ApprovalRequest,
     BudgetState,
@@ -23,6 +23,7 @@ from auto_researcher.search.optuna.models import (
     OptunaStudyState,
     OptunaTrialOutcome,
 )
+from auto_researcher.knowledge.models import KnowledgeBundleReference
 
 
 class ResearchState(TypedDict):
@@ -51,3 +52,7 @@ class ResearchState(TypedDict):
     diagnostic_experiment_spec: NotRequired[ExperimentSpec | None]
     diagnostic_evaluation_result: NotRequired[EvaluationResult | None]
     diagnostic_verification_result: NotRequired[VerificationResult | None]
+    knowledge_retrieval_status: NotRequired[KnowledgeRetrievalStatus]
+    knowledge_bundle_reference: NotRequired[KnowledgeBundleReference | None]
+    knowledge_errors: Annotated[list[str], operator.add]
+    knowledge_warnings: Annotated[list[str], operator.add]

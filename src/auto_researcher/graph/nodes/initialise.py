@@ -31,6 +31,9 @@ def initialise_run(state: ResearchState) -> dict:
         ),
         "decision_event_ids": [],
         "errors": [],
+        "knowledge_errors": [],
+        "knowledge_warnings": [],
+        "knowledge_bundle_reference": None,
         "executed_nodes": ["initialise_run"],
         "stop_reason": None,
     }

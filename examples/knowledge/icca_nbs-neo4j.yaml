@@ -1,0 +1,40 @@
+task:
+  id: icca_nbs
+  version: "1.0"
+
+agents:
+  mode: mock
+
+grounding:
+  mode: OPTIONAL
+  provider: neo4j
+  graph_alias: cell-biology-grounding
+  database: neo4j
+  schema_version: knowledge-graph-auto-v0.1
+  content_version: backbone-2026-06
+  require_verified_read_only: true
+  query_timeout_seconds: 20
+  maximum_records: 100
+  maximum_attempts: 2
+  minimum_assertion_confidence: 0.6
+  allowed_trust_tiers: [CURATED, CORPUS]
+  disease_curies: [MONDO:0004992]
+  gene_curies: [HGNC:11998]
+  gene_seed_provenance: CURATED
+  signature_ids: [HALLMARK_P53_PATHWAY]
+  include_network_catalog: true
+  include_pathways: true
+  include_disease_context: true
+  include_immune_bridge: false
+
+experiment:
+  network: Ideker
+  alignment: Intersect
+  alpha: 0.7
+  K: 5
+  r: 100
+
+runtime:
+  data_dir: /external/path/to/icca-data
+  workspace_dir: /external/path/to/icca-workspace
+  output_dir: .auto-researcher

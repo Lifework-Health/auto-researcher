@@ -1,0 +1,27 @@
+task:
+  id: synthetic
+  version: "1.0"
+
+agents:
+  mode: mock
+
+grounding:
+  mode: OPTIONAL
+  provider: static
+  graph_alias: synthetic-fixture
+  database: static
+  schema_version: synthetic-v1
+  content_version: fixture-v1
+  require_verified_read_only: true
+  query_timeout_seconds: 10
+  maximum_records: 10
+  minimum_assertion_confidence: 0.6
+  allowed_trust_tiers: [CURATED, CORPUS]
+
+experiment:
+  model_family: tree
+  complexity: 4
+  learning_rate: 0.05
+
+runtime:
+  output_dir: .auto-researcher

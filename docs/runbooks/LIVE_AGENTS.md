@@ -1,9 +1,9 @@
 # Live agents runbook
 
 Live agents are optional. Mock mode is the default for examples, CI and local
-offline work. PR 4 supports Anthropic through LangChain structured output; it
-does not implement Neo4j grounding, web/literature retrieval, tools or
-OpenEvolve.
+offline work. Anthropic is supported through LangChain structured output.
+PR 5 may supply separately validated Neo4j references to those agents; live
+web/literature retrieval, agent tools and OpenEvolve remain unavailable.
 
 ## Install
 
@@ -109,6 +109,7 @@ crash requires inspecting and authorising the new indeterminate child.
 Task contexts must contain summaries and schemas only. Do not add patient IDs,
 raw records, matrices, absolute paths, credentials or evaluator internals.
 iCCA context is mutation-only at the conceptual level and contains aggregate
-manifest information only. Until a later, separately approved knowledge
-integration exists, `KNOWLEDGE_GROUNDED` cannot be produced and model
-pretraining is not a citable source.
+manifest information only. PR 5 can add validated, compact knowledge records
+before a model call. `KNOWLEDGE_GROUNDED` is produced only when a proposal
+cites a qualifying reference from that completed bundle; model pretraining is
+never a citable source.

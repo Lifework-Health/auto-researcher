@@ -231,6 +231,28 @@ class ICCANBSTask:
             self._bindings(),
         )
 
+    def create_knowledge_query_plan(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+        search_capabilities: dict[SearchType, SearchCapability],
+    ):
+        from auto_researcher.tasks.icca_nbs.knowledge import icca_query_plan
+
+        return icca_query_plan(
+            contract,
+            runtime_context,
+            search_capabilities,
+            self._bindings(),
+        )
+
+    def create_grounding_policy(self, contract: ResearchContract):
+        from auto_researcher.tasks.icca_nbs.knowledge import (
+            icca_grounding_policy,
+        )
+
+        return icca_grounding_policy(contract)
+
     def create_optuna_study_spec(
         self,
         contract: ResearchContract,

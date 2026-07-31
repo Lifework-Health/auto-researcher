@@ -22,6 +22,11 @@ from auto_researcher.contracts.enums import (
 )
 from auto_researcher.provenance.protocols import ProvenanceStore
 from auto_researcher.search.protocols import SearchCapability
+from auto_researcher.knowledge.models import (
+    KnowledgeContextReference,
+    KnowledgeRetrievalStatus,
+)
+from auto_researcher.knowledge.store import KnowledgeRetrievalStore
 
 if TYPE_CHECKING:
     from auto_researcher.graph.state import ResearchState
@@ -33,6 +38,7 @@ class AgentContextLimits:
     maximum_prior_results: int = 5
     maximum_context_characters: int = 24_000
     maximum_artefact_references: int = 8
+    maximum_knowledge_references: int = 20
 
 
 def stable_context_hash(payload: dict) -> str:
@@ -51,9 +57,61 @@ class AgentContextAssembler:
         provenance_store: ProvenanceStore,
         *,
         limits: AgentContextLimits | None = None,
+        knowledge_retrieval_store: KnowledgeRetrievalStore | None = None,
     ) -> None:
         self._provenance_store = provenance_store
+        self._knowledge_store = knowledge_retrieval_store
         self.limits = limits or AgentContextLimits()
+
+    def _knowledge(
+        self,
+        state: ResearchState,
+    ) -> tuple[
+        tuple[KnowledgeContextReference, ...],
+        str | None,
+        str | None,
+    ]:
+        compact = state.get("knowledge_bundle_reference")
+        if isinstance(compact, dict):
+            from auto_researcher.knowledge.models import KnowledgeBundleReference
+
+            compact = KnowledgeBundleReference.model_validate(compact)
+        if (
+            compact is None
+            or compact.status != KnowledgeRetrievalStatus.COMPLETED
+            or compact.retrieval_id is None
+            or self._knowledge_store is None
+        ):
+            return (), None, None
+        records = self._knowledge_store.records_for_retrieval(compact.retrieval_id)
+        completed = [item for item in records if item.bundle is not None]
+        if not completed:
+            return (), None, None
+        bundle = completed[-1].bundle
+        assert bundle is not None
+        if (
+            not bundle.validation_result.passed
+            or bundle.bundle_hash != compact.bundle_hash
+        ):
+            return (), None, None
+        permitted = set(compact.reference_ids)
+        references = tuple(
+            KnowledgeContextReference(
+                reference_id=item.reference_id,
+                concise_claim=item.concise_claim,
+                citation_label=item.citation_label,
+                trust_tier=item.trust_tier,
+                confidence=item.confidence,
+                entity_curies=(item.subject_curie, item.object_curie),
+                source_ids=item.source_references,
+                bundle_id=item.bundle_id,
+                relevant_parameters=item.relevant_parameters,
+                prior_weight_cap=item.prior_weight_cap,
+            )
+            for item in sorted(bundle.references, key=lambda value: value.reference_id)
+            if item.reference_id in permitted
+        )[: self.limits.maximum_knowledge_references]
+        return references, bundle.bundle_id, bundle.bundle_hash
 
     def _contract_summary(self, state: ResearchState) -> ContractAgentSummary:
         contract = state["contract"]
@@ -75,9 +133,9 @@ class AgentContextAssembler:
             ),
         )
 
-    def _prior(self, run_id: str, current_cycle: int) -> tuple[
-        tuple[str, ...], tuple[PriorResearchSummary, ...]
-    ]:
+    def _prior(
+        self, run_id: str, current_cycle: int
+    ) -> tuple[tuple[str, ...], tuple[PriorResearchSummary, ...]]:
         events = tuple(
             event
             for event in self._provenance_store.list_events(run_id)
@@ -148,24 +206,25 @@ class AgentContextAssembler:
         task_context: TaskAgentContext,
     ) -> HypothesisAgentContext:
         previous, prior = self._prior(state["run_id"], state["cycle"])
+        knowledge, bundle_id, bundle_hash = self._knowledge(state)
         references = tuple(
             sorted(
                 {state["contract"].contract_id}
-                | {
-                    item.hypothesis_reference
-                    for item in prior
-                }
+                | {item.hypothesis_reference for item in prior}
                 | {item.experiment_reference for item in prior}
                 | {
                     reference
                     for item in prior
                     for reference in item.safe_artefact_references
                 }
+                | {item.reference_id for item in knowledge}
             )
         )
         availability = [GroundingStatus.CONTRACT_GROUNDED]
         if prior:
             availability.append(GroundingStatus.PRIOR_RESULTS_GROUNDED)
+        if knowledge:
+            availability.append(GroundingStatus.KNOWLEDGE_GROUNDED)
         payload = {
             "run_id": state["run_id"],
             "contract": self._contract_summary(state),
@@ -173,8 +232,7 @@ class AgentContextAssembler:
             "cycle": state["cycle"],
             "remaining_experiment_budget": max(
                 0,
-                state["budget"].maximum_experiments
-                - state["budget"].experiments_used,
+                state["budget"].maximum_experiments - state["budget"].experiments_used,
             ),
             "remaining_cost_budget": max(
                 0.0,
@@ -185,6 +243,9 @@ class AgentContextAssembler:
             "prior_verified_findings": prior,
             "permitted_evidence_reference_ids": references,
             "grounding_availability": tuple(availability),
+            "knowledge_references": knowledge,
+            "knowledge_bundle_id": bundle_id,
+            "knowledge_bundle_hash": bundle_hash,
         }
         serialisable = {
             key: (
@@ -217,6 +278,23 @@ class AgentContextAssembler:
         hypothesis = state["active_hypothesis"]
         assert hypothesis is not None
         _, prior = self._prior(state["run_id"], state["cycle"])
+        knowledge, bundle_id, bundle_hash = self._knowledge(state)
+        prior_references = (
+            {item.hypothesis_reference for item in prior}
+            | {item.experiment_reference for item in prior}
+            | {
+                reference
+                for item in prior
+                for reference in item.safe_artefact_references
+            }
+        )
+        permitted_references = tuple(
+            sorted(
+                {state["contract"].contract_id}
+                | prior_references
+                | {item.reference_id for item in knowledge}
+            )
+        )
         installed = tuple(
             sorted(
                 (
@@ -239,8 +317,7 @@ class AgentContextAssembler:
             "installed_search_capabilities": installed,
             "remaining_experiment_budget": max(
                 0,
-                state["budget"].maximum_experiments
-                - state["budget"].experiments_used,
+                state["budget"].maximum_experiments - state["budget"].experiments_used,
             ),
             "remaining_cost_budget": max(
                 0.0,
@@ -254,6 +331,10 @@ class AgentContextAssembler:
                 )
             ),
             "prior_verified_findings": prior,
+            "permitted_evidence_reference_ids": permitted_references,
+            "knowledge_references": knowledge,
+            "knowledge_bundle_id": bundle_id,
+            "knowledge_bundle_hash": bundle_hash,
             "permitted_direct_configuration_schema": (
                 task_context.direct_configuration_schema
             ),

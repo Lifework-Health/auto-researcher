@@ -1,0 +1,29 @@
+contract_id: icca-nbs-neo4j-grounding
+schema_version: "1.0"
+task_id: icca_nbs
+task_version: "1.0"
+objective_version: "0.9"
+primary_metric: stability_objective
+task_constraints_version: "0.9"
+question: Does this bounded iCCA configuration satisfy the registered eligibility gates?
+objective: maximise the imported v2 stability objective
+constraints: {}
+allowed_search_types: [DIRECT]
+evaluator_id: icca-nbs-v2-evaluator
+verifier_id: deterministic-verifier
+maximum_cycles: 1
+maximum_experiments: 1
+maximum_cost: 2.0
+requires_approval_for: []
+grounding:
+  mode: OPTIONAL
+  permitted_providers: [neo4j]
+  permitted_trust_tiers: [CURATED, CORPUS]
+  minimum_assertion_confidence: 0.6
+  maximum_knowledge_references: 20
+  maximum_query_records: 100
+  maximum_graph_hops: 3
+  maximum_retrieval_duration: 20
+  knowledge_schema_version: knowledge-graph-auto-v0.1
+  knowledge_content_version: backbone-2026-06
+provenance: REAL

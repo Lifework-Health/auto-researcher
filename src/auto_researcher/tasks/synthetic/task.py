@@ -109,7 +109,9 @@ class SyntheticTask:
             provenance=ProvenanceKind.SIMULATED,
         )
 
-    def create_evaluator(self, runtime_context: TaskRuntimeContext) -> SyntheticEvaluator:
+    def create_evaluator(
+        self, runtime_context: TaskRuntimeContext
+    ) -> SyntheticEvaluator:
         return SyntheticEvaluator(
             runtime_context,
             self.experiment_metadata(runtime_context),
@@ -172,6 +174,27 @@ class SyntheticTask:
             self.dataset_manifest(runtime_context),
             search_capabilities,
         )
+
+    def create_knowledge_query_plan(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+        search_capabilities: dict[SearchType, SearchCapability],
+    ):
+        from auto_researcher.tasks.synthetic.knowledge import synthetic_query_plan
+
+        return synthetic_query_plan(
+            contract,
+            runtime_context,
+            search_capabilities,
+        )
+
+    def create_grounding_policy(self, contract: ResearchContract):
+        from auto_researcher.tasks.synthetic.knowledge import (
+            synthetic_grounding_policy,
+        )
+
+        return synthetic_grounding_policy(contract)
 
     def create_optuna_study_spec(
         self,
@@ -246,9 +269,7 @@ def default_synthetic_contract(
         verifier_id="deterministic-verifier",
         maximum_cycles=maximum_cycles,
         maximum_experiments=(
-            maximum_experiments
-            if maximum_experiments is not None
-            else maximum_cycles
+            maximum_experiments if maximum_experiments is not None else maximum_cycles
         ),
         maximum_cost=1.0,
         requires_approval_for=frozenset(),

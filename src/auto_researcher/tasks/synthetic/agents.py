@@ -65,5 +65,7 @@ def create_synthetic_agent_context(
         },
         fixed_scientific_context={"objective_kind": "offline_reference"},
         task_limitations=("Synthetic results are not real scientific evidence.",),
-        safety_notes=("No external evidence grounding is available.",),
+        safety_notes=(
+            "Static fixture grounding is simulated and is not external evidence.",
+        ),
     )

@@ -5,17 +5,26 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    model_validator,
+)
 
 from auto_researcher.contracts.enums import (
     EvidenceStatus,
     EventType,
     GroundingStatus,
     HypothesisStatus,
+    KnowledgeGroundingMode,
     ProposalSource,
     ProvenanceKind,
     SearchType,
 )
+
 
 class DomainModel(BaseModel):
     model_config = ConfigDict(extra="forbid", use_enum_values=False)
@@ -72,6 +81,47 @@ def _freeze_json(value):
 FrozenJsonDict = Annotated[dict[str, JsonValue], AfterValidator(_freeze_json)]
 
 
+class KnowledgeGroundingRequirement(ImmutableDomainModel):
+    mode: KnowledgeGroundingMode = KnowledgeGroundingMode.DISABLED
+    permitted_providers: frozenset[str] = Field(default_factory=frozenset)
+    permitted_trust_tiers: frozenset[str] = Field(
+        default_factory=lambda: frozenset({"CURATED", "CORPUS"})
+    )
+    minimum_assertion_confidence: float = Field(default=0.6, ge=0, le=1)
+    maximum_knowledge_references: int = Field(default=20, ge=0, le=100)
+    maximum_query_records: int = Field(default=100, ge=1, le=10_000)
+    maximum_graph_hops: int = Field(default=3, ge=0, le=6)
+    maximum_retrieval_duration: float = Field(default=20.0, gt=0, le=300)
+    knowledge_schema_version: str = Field(default="none", min_length=1)
+    knowledge_content_version: str = Field(default="none", min_length=1)
+
+    @model_validator(mode="after")
+    def enabled_modes_require_providers(self) -> "KnowledgeGroundingRequirement":
+        allowed_tiers = {"CURATED", "CORPUS", "LIVE", "UNVERIFIED"}
+        if not self.permitted_trust_tiers.issubset(allowed_tiers):
+            raise ValueError("unknown knowledge trust tier")
+        if any(not provider.strip() for provider in self.permitted_providers):
+            raise ValueError("knowledge provider IDs cannot be empty")
+        if (
+            self.mode != KnowledgeGroundingMode.DISABLED
+            and not self.permitted_providers
+        ):
+            raise ValueError(
+                "enabled knowledge grounding requires a permitted provider"
+            )
+        if self.mode != KnowledgeGroundingMode.DISABLED and (
+            self.knowledge_schema_version == "none"
+            or self.knowledge_content_version == "none"
+        ):
+            raise ValueError("enabled grounding requires schema and content versions")
+        if (
+            self.mode != KnowledgeGroundingMode.DISABLED
+            and self.maximum_knowledge_references == 0
+        ):
+            raise ValueError("enabled grounding requires at least one reference")
+        return self
+
+
 class ResearchContract(ImmutableDomainModel):
     contract_id: str = Field(min_length=1)
     schema_version: str = Field(pattern=r"^\d+\.\d+$")
@@ -90,12 +140,17 @@ class ResearchContract(ImmutableDomainModel):
     maximum_experiments: int = Field(ge=0)
     maximum_cost: float = Field(ge=0)
     requires_approval_for: frozenset[SearchType] = Field(default_factory=frozenset)
+    grounding: KnowledgeGroundingRequirement = Field(
+        default_factory=KnowledgeGroundingRequirement
+    )
     provenance: ProvenanceKind
 
     @model_validator(mode="after")
     def approval_types_must_be_allowed(self) -> "ResearchContract":
         if not self.requires_approval_for.issubset(self.allowed_search_types):
-            raise ValueError("requires_approval_for must be a subset of allowed_search_types")
+            raise ValueError(
+                "requires_approval_for must be a subset of allowed_search_types"
+            )
         return self
 
 
@@ -124,6 +179,7 @@ class SearchRequest(ImmutableDomainModel):
     search_space: FrozenJsonDict
     experiment_budget: int = Field(ge=1)
     rationale: str = Field(min_length=1)
+    evidence_references: tuple[str, ...] = ()
     requires_human_approval: bool = False
     proposal_source: ProposalSource = ProposalSource.DETERMINISTIC
     grounding_status: GroundingStatus = GroundingStatus.CONTRACT_GROUNDED
@@ -223,7 +279,9 @@ class BudgetState(ImmutableDomainModel):
         elif self.cost_used >= self.maximum_cost:
             reason = "maximum_cost_reached"
         if reason:
-            return self.model_copy(update={"exhausted": True, "exhaustion_reason": reason})
+            return self.model_copy(
+                update={"exhausted": True, "exhaustion_reason": reason}
+            )
         return self.model_copy(update={"cycles_used": self.cycles_used + 1})
 
     def record_experiment(self, cost: float = 0.0) -> "BudgetState":
@@ -265,7 +323,8 @@ class BudgetState(ImmutableDomainModel):
             update={
                 "model_calls_used": self.model_calls_used + calls,
                 "model_input_tokens_used": self.model_input_tokens_used + input_tokens,
-                "model_output_tokens_used": self.model_output_tokens_used + output_tokens,
+                "model_output_tokens_used": self.model_output_tokens_used
+                + output_tokens,
                 "model_cache_tokens_used": (
                     self.model_cache_tokens_used
                     + cache_creation_tokens
