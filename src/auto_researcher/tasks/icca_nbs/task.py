@@ -42,6 +42,7 @@ from auto_researcher.agents.models import TaskAgentContext
 class ICCANBSTask:
     task_id = "icca_nbs"
     task_version = "1.0"
+    task_constraints_version = "1.0"
 
     def __init__(self, bindings: ICCABindings | None = None) -> None:
         self._injected_bindings = bindings
@@ -63,7 +64,7 @@ class ICCANBSTask:
             supported_search_types=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
             evaluator_id="icca-nbs-v2-evaluator",
             verification_policy_id="icca-nbs-policy-v1",
-            configuration_schema_version="1.0",
+            configuration_schema_version="1.1",
         )
 
     def readiness(self, runtime_context: TaskRuntimeContext) -> ReadinessResult:
@@ -122,8 +123,11 @@ class ICCANBSTask:
             raise ValueError("iCCA primary_metric must be 'stability_objective'")
         if contract.objective_version != "0.9":
             raise ValueError("iCCA objective_version must be '0.9'")
-        if contract.task_constraints_version != "0.9":
-            raise ValueError("iCCA task_constraints_version must be '0.9'")
+        if contract.task_constraints_version != self.task_constraints_version:
+            raise ValueError(
+                "iCCA task_constraints_version must be "
+                f"{self.task_constraints_version!r}"
+            )
         if not contract.allowed_search_types.issubset(
             descriptor.supported_search_types
         ):
@@ -286,7 +290,7 @@ class ICCANBSTask:
             schema_version="1.0",
             task_id=self.task_id,
             task_version=self.task_version,
-            search_space_version="auto-agent-v2-icca-v1",
+            search_space_version="auto-agent-v2-icca-v2",
             direction=OptimisationDirection.MAXIMIZE,
             parameters=(
                 FloatParameterSpec(

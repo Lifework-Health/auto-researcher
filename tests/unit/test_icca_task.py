@@ -10,9 +10,21 @@ import pytest
 from pydantic import ValidationError
 
 from auto_researcher.contracts.enums import ProvenanceKind, SearchType
-from auto_researcher.contracts.models import ExperimentSpec, ResearchContract
-from auto_researcher.tasks.icca_nbs.configuration import ICCADirectConfiguration
-from auto_researcher.tasks.icca_nbs.evaluator_adapter import ICCANBSEvaluatorAdapter
+from auto_researcher.contracts.models import (
+    ExperimentSpec,
+    ResearchContract,
+    SearchRequest,
+)
+from auto_researcher.search.protocols import SearchCapability
+from auto_researcher.tasks.icca_nbs.configuration import (
+    ICCA_DEFAULT_RESAMPLING_ITERATIONS,
+    ICCA_MINIMUM_RESAMPLING_ITERATIONS,
+    ICCADirectConfiguration,
+)
+from auto_researcher.tasks.icca_nbs.diagnostics import (
+    ICCAEvaluationFailureStage,
+    classify_scientific_failure,
+)
 from auto_researcher.tasks.icca_nbs.manifests import build_icca_dataset_manifest
 from auto_researcher.tasks.icca_nbs.task import ICCANBSTask
 from auto_researcher.tasks.models import TaskRuntimeContext
@@ -27,7 +39,7 @@ def icca_contract() -> ResearchContract:
         task_version="1.0",
         objective_version="0.9",
         primary_metric="stability_objective",
-        task_constraints_version="0.9",
+        task_constraints_version="1.0",
         question="Can the requested iCCA configuration satisfy eligibility?",
         objective="maximise the imported v2 stability objective",
         constraints={},
@@ -74,6 +86,65 @@ def test_valid_configuration_and_aliases_normalise():
     config = ICCADirectConfiguration.normalise(valid_configuration(), bindings)
     assert config.network == "Ideker"
     assert config.alignment == "Intersect"
+
+
+@pytest.mark.parametrize("r", [1, 9])
+def test_consensus_resampling_below_minimum_is_rejected(r):
+    bindings, _ = make_fake_icca_bindings()
+    with pytest.raises(
+        ValueError,
+        match="r must be at least 10 consensus resampling iterations",
+    ):
+        ICCADirectConfiguration.normalise(
+            {**valid_configuration(), "r": r},
+            bindings,
+        )
+
+
+@pytest.mark.parametrize("r", [10, 100])
+def test_consensus_resampling_minimum_and_recommended_values_are_accepted(r):
+    bindings, _ = make_fake_icca_bindings()
+    configuration = ICCADirectConfiguration.normalise(
+        {**valid_configuration(), "r": r},
+        bindings,
+    )
+    assert configuration.r == r
+
+
+def test_consensus_resampling_defaults_to_recommended_value():
+    bindings, _ = make_fake_icca_bindings()
+    proposed = valid_configuration()
+    proposed.pop("r")
+    configuration = ICCADirectConfiguration.normalise(proposed, bindings)
+    assert configuration.r == ICCA_DEFAULT_RESAMPLING_ITERATIONS == 100
+
+
+def test_agent_context_advertises_one_authoritative_resampling_policy(icca_context):
+    bindings, _ = make_fake_icca_bindings()
+    task = ICCANBSTask(bindings)
+    context = task.create_agent_context(
+        icca_contract(),
+        icca_context,
+        {
+            SearchType.DIRECT: SearchCapability(
+                search_type=SearchType.DIRECT,
+                available=True,
+                code="available",
+                message="DIRECT is available.",
+            )
+        },
+    )
+    schema = context.direct_configuration_schema["r"]
+    assert schema == {
+        "type": "integer",
+        "minimum": ICCA_MINIMUM_RESAMPLING_ITERATIONS,
+        "default": ICCA_DEFAULT_RESAMPLING_ITERATIONS,
+        "recommended": ICCA_DEFAULT_RESAMPLING_ITERATIONS,
+    }
+    assert any(
+        "at least 10" in limitation and "100 is the recommended" in limitation
+        for limitation in context.task_limitations
+    )
 
 
 def test_additional_registered_aliases_normalise():
@@ -152,6 +223,27 @@ def test_metadata_mismatch_returns_structured_failure(icca_context):
     assert calls["evaluate"] == 0
 
 
+def test_invalid_resampling_never_reaches_data_or_scientific_evaluator(icca_context):
+    bindings, calls = make_fake_icca_bindings()
+    task = ICCANBSTask(bindings)
+    experiment = _experiment(task, icca_context).model_copy(
+        update={"configuration": {**valid_configuration(), "r": 1}}
+    )
+
+    result = task.create_evaluator(icca_context).evaluate(
+        experiment,
+        icca_contract(),
+    )
+
+    assert result.success is False
+    assert result.error == (
+        "icca_evaluation_failed: CONFIGURATION_VALIDATION: ValidationError"
+    )
+    assert calls["load_cohort"] == 0
+    assert calls["cache_get"] == 0
+    assert calls["evaluate"] == 0
+
+
 @pytest.mark.parametrize("eligible", [True, False])
 def test_v2_result_mapping_objective_metrics_and_constraints(
     eligible,
@@ -211,7 +303,100 @@ def test_structured_scientific_failure(icca_context):
         icca_contract(),
     )
     assert result.success is False
-    assert result.error == "icca_evaluation_failed: RuntimeError"
+    assert result.error == "icca_evaluation_failed: UNKNOWN: RuntimeError"
+    diagnostics = result.metrics["failure_diagnostics"]
+    assert diagnostics == {
+        "safe_exception_class": "RuntimeError",
+        "failure_stage": "UNKNOWN",
+        "evaluator_id": "icca-nbs-v2-evaluator",
+        "evaluator_version": "icca-adapter-v1.1",
+        "experiment_id": "experiment-1",
+        "canonical_configuration": {
+            "network": "Ideker",
+            "alignment": "Intersect",
+            "alpha": 0.7,
+            "K": 5,
+            "r": 10,
+        },
+        "dataset_fingerprint": task.dataset_manifest(icca_context).metadata[
+            "combined_dataset_fingerprint"
+        ],
+        "dataset_loading_completed": True,
+        "propagation_completed": True,
+        "clustering_completed": False,
+        "eligibility_evaluation_completed": False,
+    }
+    persisted = result.model_dump_json()
+    assert "fake scientific failure" not in persisted
+    assert "Traceback" not in persisted
+    assert str(icca_context.data_dir) not in persisted
+    assert "secret-patient" not in persisted
+    assert "internal-patient" not in persisted
+    persisted_artefact = (
+        icca_context.output_dir / result.artefact_references[1]
+    ).read_text(encoding="utf-8")
+    assert "fake scientific failure" not in persisted_artefact
+    assert "Traceback" not in persisted_artefact
+    assert str(icca_context.data_dir) not in persisted_artefact
+    assert "secret-patient" not in persisted_artefact
+    assert "internal-patient" not in persisted_artefact
+
+
+@pytest.mark.parametrize(
+    ("module", "expected"),
+    [
+        ("harness.evaluator.pac", ICCAEvaluationFailureStage.CONSENSUS_CLUSTERING),
+        (
+            "harness.evaluator.survival",
+            ICCAEvaluationFailureStage.ELIGIBILITY_EVALUATION,
+        ),
+        ("third_party.unknown", ICCAEvaluationFailureStage.UNKNOWN),
+    ],
+)
+def test_scientific_tracebacks_reduce_to_closed_safe_stages(module, expected):
+    namespace = {"__name__": module}
+    exec("def fail(): raise ValueError('private patient /absolute/path')", namespace)
+    try:
+        namespace["fail"]()
+    except ValueError as exc:
+        assert classify_scientific_failure(exc) == expected
+    else:  # pragma: no cover - defensive assertion for the dynamic fixture
+        raise AssertionError("failure fixture did not raise")
+
+
+@pytest.mark.parametrize("r", [9, 100])
+def test_optuna_fixed_resampling_uses_direct_configuration_policy(r):
+    bindings, _ = make_fake_icca_bindings()
+    task = ICCANBSTask(bindings)
+    contract = icca_contract().model_copy(
+        update={
+            "allowed_search_types": frozenset({SearchType.OPTUNA}),
+            "maximum_experiments": 2,
+        }
+    )
+    request = SearchRequest(
+        request_id=f"optuna-r-{r}",
+        hypothesis_id="hypothesis",
+        search_type=SearchType.OPTUNA,
+        target="stability_objective",
+        search_space={
+            "trial_budget": 2,
+            "fixed": {
+                "network": "Ideker",
+                "alignment": "Intersect",
+                "r": r,
+            },
+        },
+        experiment_budget=2,
+        rationale="Validate fixed resampling context.",
+    )
+    if r < ICCA_MINIMUM_RESAMPLING_ITERATIONS:
+        with pytest.raises(ValueError, match="r must be at least 10"):
+            task.create_optuna_study_spec(contract, request)
+    else:
+        specification = task.create_optuna_study_spec(contract, request)
+        assert specification.fixed_configuration["r"] == 100
+        assert "r" not in {item.name for item in specification.parameters}
 
 
 def test_dataset_fingerprint_is_deterministic_and_safe(icca_context):

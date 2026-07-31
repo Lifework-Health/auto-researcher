@@ -44,7 +44,7 @@ def _icca_contract() -> ResearchContract:
         task_version="1.0",
         objective_version="0.9",
         primary_metric="stability_objective",
-        task_constraints_version="0.9",
+        task_constraints_version="1.0",
         question="Does this bounded iCCA configuration meet its eligibility gates?",
         objective="maximise the imported v2 stability objective",
         constraints={},

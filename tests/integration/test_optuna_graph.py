@@ -163,7 +163,7 @@ def icca_contract() -> ResearchContract:
         task_version="1.0",
         objective_version="0.9",
         primary_metric="stability_objective",
-        task_constraints_version="0.9",
+        task_constraints_version="1.0",
         question="Which bounded configuration is eligible?",
         objective="maximise imported stability objective",
         constraints={},

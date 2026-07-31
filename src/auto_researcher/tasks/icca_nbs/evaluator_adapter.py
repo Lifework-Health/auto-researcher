@@ -18,6 +18,10 @@ from auto_researcher.tasks.icca_nbs.configuration import (
     ICCADirectConfiguration,
     resolve_enum_alias,
 )
+from auto_researcher.tasks.icca_nbs.diagnostics import (
+    ICCAEvaluationFailureStage,
+    classify_scientific_failure,
+)
 from auto_researcher.tasks.models import (
     DatasetManifest,
     ExperimentMetadata,
@@ -27,7 +31,7 @@ from auto_researcher.tasks.models import (
 
 class ICCANBSEvaluatorAdapter:
     evaluator_id = "icca-nbs-v2-evaluator"
-    version = "icca-adapter-v1"
+    version = "icca-adapter-v1.1"
     cost_per_experiment = 0.0
 
     def __init__(
@@ -57,12 +61,52 @@ class ICCANBSEvaluatorAdapter:
             "provenance": self.metadata.provenance.value,
         }
 
-    def _failure(self, experiment: ExperimentSpec, message: str) -> EvaluationResult:
+    def _dataset_fingerprint(self) -> str:
+        fingerprint = self.dataset_manifest.metadata.get(
+            "combined_dataset_fingerprint",
+            self.dataset_manifest.dataset_version,
+        )
+        return str(json_safe(fingerprint))
+
+    def _failure_diagnostics(
+        self,
+        experiment: ExperimentSpec,
+        configuration: ICCADirectConfiguration,
+        *,
+        exception_class: str,
+        stage: ICCAEvaluationFailureStage,
+        dataset_loading_completed: bool,
+        propagation_completed: bool,
+        clustering_completed: bool,
+        eligibility_evaluation_completed: bool,
+    ) -> dict:
+        return {
+            "safe_exception_class": exception_class,
+            "failure_stage": stage.value,
+            "evaluator_id": self.evaluator_id,
+            "evaluator_version": self.version,
+            "experiment_id": experiment.experiment_id,
+            "canonical_configuration": configuration.model_dump(mode="json"),
+            "dataset_fingerprint": self._dataset_fingerprint(),
+            "dataset_loading_completed": dataset_loading_completed,
+            "propagation_completed": propagation_completed,
+            "clustering_completed": clustering_completed,
+            "eligibility_evaluation_completed": eligibility_evaluation_completed,
+        }
+
+    def _failure(
+        self,
+        experiment: ExperimentSpec,
+        message: str,
+        *,
+        diagnostics: dict | None = None,
+        write_artefacts: bool = True,
+    ) -> EvaluationResult:
         result = EvaluationResult(
             experiment_id=experiment.experiment_id,
             success=False,
             primary_score=None,
-            metrics={},
+            metrics={"failure_diagnostics": diagnostics} if diagnostics else {},
             constraint_results={},
             artefact_references=artefact_references(
                 self.context, experiment.experiment_id
@@ -71,23 +115,75 @@ class ICCANBSEvaluatorAdapter:
             provenance=self.metadata.provenance,
             error=message,
         )
-        write_artefact_bundle(
-            self.context,
-            experiment,
-            result,
-            self.dataset_manifest,
-            self._evaluator_manifest(),
-        )
+        if write_artefacts:
+            write_artefact_bundle(
+                self.context,
+                experiment,
+                result,
+                self.dataset_manifest,
+                self._evaluator_manifest(),
+            )
         return result
 
-    def map_evaluation(
+    def _staged_failure(
+        self,
+        experiment: ExperimentSpec,
+        configuration: ICCADirectConfiguration,
+        exc: Exception,
+        stage: ICCAEvaluationFailureStage,
+        *,
+        dataset_loading_completed: bool,
+        propagation_completed: bool,
+        clustering_completed: bool,
+        eligibility_evaluation_completed: bool,
+        write_artefacts: bool = True,
+    ) -> EvaluationResult:
+        exception_class = type(exc).__name__
+        diagnostics = self._failure_diagnostics(
+            experiment,
+            configuration,
+            exception_class=exception_class,
+            stage=stage,
+            dataset_loading_completed=dataset_loading_completed,
+            propagation_completed=propagation_completed,
+            clustering_completed=clustering_completed,
+            eligibility_evaluation_completed=eligibility_evaluation_completed,
+        )
+        try:
+            return self._failure(
+                experiment,
+                f"icca_evaluation_failed: {stage.value}: {exception_class}",
+                diagnostics=diagnostics,
+                write_artefacts=write_artefacts,
+            )
+        except Exception as artefact_exc:
+            artefact_diagnostics = self._failure_diagnostics(
+                experiment,
+                configuration,
+                exception_class=type(artefact_exc).__name__,
+                stage=ICCAEvaluationFailureStage.ARTEFACT_WRITING,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
+            )
+            return self._failure(
+                experiment,
+                "icca_evaluation_failed: ARTEFACT_WRITING: "
+                f"{type(artefact_exc).__name__}",
+                diagnostics=artefact_diagnostics,
+                write_artefacts=False,
+            )
+
+    def _map_evaluation_result(
         self,
         experiment: ExperimentSpec,
         configuration: ICCADirectConfiguration,
         v2_result,
         contract: ResearchContract,
+        *,
+        score: float,
     ) -> EvaluationResult:
-        score = float(self.bindings.stability_objective(v2_result))
         selection_inputs = json_safe(v2_result.selection_inputs)
         eligibility = json_safe(v2_result.eligibility)
         pac = float(json_safe(v2_result.selection_inputs["pac"]))
@@ -111,7 +207,7 @@ class ICCANBSEvaluatorAdapter:
                 "objective_version": contract.objective_version,
             },
         }
-        result = EvaluationResult(
+        return EvaluationResult(
             experiment_id=experiment.experiment_id,
             success=True,
             primary_score=score,
@@ -123,6 +219,22 @@ class ICCANBSEvaluatorAdapter:
             evaluator_version=f"{self.version}:{self.bindings.code_version}",
             provenance=provenance,
             error=None,
+        )
+
+    def map_evaluation(
+        self,
+        experiment: ExperimentSpec,
+        configuration: ICCADirectConfiguration,
+        v2_result,
+        contract: ResearchContract,
+    ) -> EvaluationResult:
+        score = float(self.bindings.stability_objective(v2_result))
+        result = self._map_evaluation_result(
+            experiment,
+            configuration,
+            v2_result,
+            contract,
+            score=score,
         )
         write_artefact_bundle(
             self.context,
@@ -145,11 +257,24 @@ class ICCANBSEvaluatorAdapter:
             or experiment.provenance != self.metadata.provenance
         ):
             return self._failure(experiment, "experiment_metadata_mismatch")
+        dataset_loading_completed = False
+        propagation_completed = False
+        clustering_completed = False
+        eligibility_evaluation_completed = False
         try:
             configuration = ICCADirectConfiguration.normalise(
                 experiment.configuration,
                 self.bindings,
             )
+        except Exception as exc:
+            # Configuration should normally have been rejected during planning. This
+            # adapter guard protects direct callers and still performs no data access.
+            return self._failure(
+                experiment,
+                "icca_evaluation_failed: CONFIGURATION_VALIDATION: "
+                f"{type(exc).__name__}",
+            )
+        try:
             network = resolve_enum_alias(
                 self.bindings.network_type, configuration.network
             )
@@ -161,6 +286,7 @@ class ICCANBSEvaluatorAdapter:
                     self.context.data_dir,
                     verbose=False,
                 )
+            dataset_loading_completed = True
             if self._paths is None:
                 self._paths = self.bindings.harness_paths_factory(
                     self.context.workspace_dir
@@ -169,12 +295,37 @@ class ICCANBSEvaluatorAdapter:
                 self._propagation_cache = self.bindings.propagation_cache_factory(
                     self._paths
                 )
+        except Exception as exc:
+            return self._staged_failure(
+                experiment,
+                configuration,
+                exc,
+                ICCAEvaluationFailureStage.DATASET_LOADING,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
+            )
+        try:
             propagated = self._propagation_cache.get(
                 self._cohort.mutations,
                 network,
                 alignment,
                 configuration.alpha,
             )
+            propagation_completed = True
+        except Exception as exc:
+            return self._staged_failure(
+                experiment,
+                configuration,
+                exc,
+                ICCAEvaluationFailureStage.NETWORK_PROPAGATION,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
+            )
+        try:
             config_evaluation = self.bindings.evaluate(
                 propagated.matrix,
                 propagated.patient_ids,
@@ -187,18 +338,93 @@ class ICCANBSEvaluatorAdapter:
                     "alpha": configuration.alpha,
                 },
             )
+        except Exception as exc:
+            stage = classify_scientific_failure(exc)
+            clustering_completed = (
+                stage == ICCAEvaluationFailureStage.ELIGIBILITY_EVALUATION
+            )
+            return self._staged_failure(
+                experiment,
+                configuration,
+                exc,
+                stage,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
+            )
+        clustering_completed = True
+        try:
             if configuration.K not in config_evaluation.per_k:
                 raise ValueError(
                     f"v2 evaluator did not return requested K={configuration.K}"
                 )
-            return self.map_evaluation(
+            eligibility_evaluation_completed = True
+        except Exception as exc:
+            return self._staged_failure(
+                experiment,
+                configuration,
+                exc,
+                ICCAEvaluationFailureStage.ELIGIBILITY_EVALUATION,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
+            )
+        try:
+            score = float(
+                self.bindings.stability_objective(
+                    config_evaluation.per_k[configuration.K]
+                )
+            )
+        except Exception as exc:
+            return self._staged_failure(
+                experiment,
+                configuration,
+                exc,
+                ICCAEvaluationFailureStage.OBJECTIVE_CALCULATION,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
+            )
+        try:
+            result = self._map_evaluation_result(
                 experiment,
                 configuration,
                 config_evaluation.per_k[configuration.K],
                 contract,
+                score=score,
             )
         except Exception as exc:
-            return self._failure(
+            return self._staged_failure(
                 experiment,
-                f"icca_evaluation_failed: {type(exc).__name__}",
+                configuration,
+                exc,
+                ICCAEvaluationFailureStage.OBJECTIVE_CALCULATION,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
             )
+        try:
+            write_artefact_bundle(
+                self.context,
+                experiment,
+                result,
+                self.dataset_manifest,
+                self._evaluator_manifest(),
+            )
+        except Exception as exc:
+            return self._staged_failure(
+                experiment,
+                configuration,
+                exc,
+                ICCAEvaluationFailureStage.ARTEFACT_WRITING,
+                dataset_loading_completed=dataset_loading_completed,
+                propagation_completed=propagation_completed,
+                clustering_completed=clustering_completed,
+                eligibility_evaluation_completed=eligibility_evaluation_completed,
+                write_artefacts=False,
+            )
+        return result

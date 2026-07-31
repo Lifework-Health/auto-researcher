@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auto_researcher.tasks.icca_nbs.bindings import ICCABindings
+
+
+# Ten resamples is the executable floor used by lightweight compatibility tests. It
+# is deliberately not presented as statistically final: normal scientific runs use
+# the reference evaluator's resolved production default of 100 resamples.
+ICCA_MINIMUM_RESAMPLING_ITERATIONS = 10
+ICCA_DEFAULT_RESAMPLING_ITERATIONS = 100
 
 
 def resolve_enum_alias(enum_type: type, value: str) -> Any:
@@ -23,8 +30,12 @@ def resolve_enum_alias(enum_type: type, value: str) -> Any:
             aliases.add(raw_value)
         if requested in {alias.casefold() for alias in aliases if alias}:
             return member
-    valid = ", ".join(str(getattr(member, "doc_name", member.name)) for member in enum_type)
-    raise ValueError(f"unknown {enum_type.__name__} alias {value!r}; valid values: {valid}")
+    valid = ", ".join(
+        str(getattr(member, "doc_name", member.name)) for member in enum_type
+    )
+    raise ValueError(
+        f"unknown {enum_type.__name__} alias {value!r}; valid values: {valid}"
+    )
 
 
 class ICCADirectConfiguration(BaseModel):
@@ -34,7 +45,17 @@ class ICCADirectConfiguration(BaseModel):
     alignment: str = Field(min_length=1)
     alpha: float
     K: int
-    r: int = Field(default=100, gt=0)
+    r: int = Field(default=ICCA_DEFAULT_RESAMPLING_ITERATIONS)
+
+    @field_validator("r")
+    @classmethod
+    def validate_consensus_resampling_iterations(cls, value: int) -> int:
+        if value < ICCA_MINIMUM_RESAMPLING_ITERATIONS:
+            raise ValueError(
+                "r must be at least "
+                f"{ICCA_MINIMUM_RESAMPLING_ITERATIONS} consensus resampling iterations"
+            )
+        return value
 
     @classmethod
     def normalise(
