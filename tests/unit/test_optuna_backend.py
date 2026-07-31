@@ -5,6 +5,7 @@ from dataclasses import replace
 import importlib.util
 
 import pytest
+from pydantic import ValidationError
 
 from auto_researcher.contracts.enums import (
     EvidenceStatus,
@@ -53,9 +54,7 @@ def setup_backend():
         rationale="test",
     )
     spec = task.create_optuna_study_spec(contract, request)
-    metadata = task.experiment_metadata(
-        TaskRuntimeContext(manifest_created_at=NOW)
-    )
+    metadata = task.experiment_metadata(TaskRuntimeContext(manifest_created_at=NOW))
     identity = build_study_identity(
         run_id="run",
         contract=contract,
@@ -235,28 +234,17 @@ def test_conflicting_repeated_tell_fails():
         )
 
 
-def test_non_finite_score_is_failed_without_penalty():
-    backend, task, _, request, spec, metadata, identity = setup_backend()
-    reference, _ = backend.ask_or_recover_trial(
-        identity, spec, slot_index=0, asked_at=NOW
-    )
-    experiment = backend.create_experiment_spec(
-        task=task,
-        metadata=metadata,
-        spec=spec,
-        request=request,
-        reference=reference,
-    )
-    outcome = backend.tell_trial(
-        spec=spec,
-        reference=reference,
-        experiment=experiment,
-        evaluation=result(experiment, float("nan")),
-        verification=verification(experiment, float("nan")),
-        reported_at=NOW,
-    )
-    assert outcome.status == OptunaTrialStatus.FAIL
-    assert outcome.objective_value is None
+def test_non_finite_score_is_rejected_before_optuna_persistence():
+    with pytest.raises(ValidationError, match="primary_score must be finite"):
+        EvaluationResult(
+            experiment_id="non-finite",
+            success=True,
+            primary_score=float("nan"),
+            metrics={"objective_score": 0.5},
+            constraint_results={"ok": True},
+            evaluator_version="test",
+            provenance=ProvenanceKind.SIMULATED,
+        )
 
 
 def test_study_identity_attributes_are_validated_on_resume():

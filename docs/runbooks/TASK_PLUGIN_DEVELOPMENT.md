@@ -11,12 +11,17 @@
    files, or settings as actionable checks.
 6. Produce task-owned `ExperimentMetadata` and a safe `DatasetManifest`. Never
    include credentials, raw records, or absolute paths.
-7. Implement the generic `Evaluator` boundary and atomic, policy-allowed
-   artefacts. Keep large outputs outside graph state.
-8. Implement `VerificationPolicy`. Declare required metrics and interpret only
+7. Implement the generic `Evaluator` boundary. Pass scientific values through
+   the finite JSON normaliser with a task-owned exact allowlist; never apply a
+   global non-finite-to-null rule. A primary score must be finite and constraint
+   results must be explicit booleans.
+8. Publish the four-file experiment bundle through the transactional bundle
+   writer. Return intended references only after publication; persistence
+   failure results must use an empty reference tuple.
+9. Implement `VerificationPolicy`. Declare required metrics and interpret only
    task constraints; structural verification remains in core.
-9. Register a factory in a registry. Do not use a global mutable singleton.
-10. Test configuration, readiness, evaluator mapping, policy outcomes, JSON
+10. Register a factory in a registry. Do not use a global mutable singleton.
+11. Test configuration, readiness, evaluator mapping, policy outcomes, JSON
     safety, artefacts, provenance, and the complete shared graph.
 
 Acceptance requires comparing the new task with the synthetic task using the same

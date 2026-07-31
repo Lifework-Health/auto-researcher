@@ -112,18 +112,13 @@ def test_synthetic_plugin_completes_with_provenance_and_safe_artefacts(tmp_path)
         EventType.EVIDENCE_VERIFIED,
     ]
     evaluation_event = next(
-        event
-        for event in events
-        if event.event_type == EventType.EVALUATION_OBSERVED
+        event for event in events if event.event_type == EventType.EVALUATION_OBSERVED
     )
     assert set(final["evaluation_result"].artefact_references).issubset(
         evaluation_event.output_references
     )
     artefact_dir = (
-        tmp_path
-        / "runs"
-        / "synthetic-e2e"
-        / final["evaluation_result"].experiment_id
+        tmp_path / "runs" / "synthetic-e2e" / final["evaluation_result"].experiment_id
     )
     assert {path.name for path in artefact_dir.iterdir()} == {
         "experiment_spec.json",
@@ -135,6 +130,52 @@ def test_synthetic_plugin_completes_with_provenance_and_safe_artefacts(tmp_path)
         not reference.startswith("/")
         for reference in final["evaluation_result"].artefact_references
     )
+
+
+def test_bundle_publication_failure_never_reaches_provenance_as_a_reference(
+    tmp_path,
+    monkeypatch,
+):
+    context = TaskRuntimeContext(
+        run_id="synthetic-persistence-failure",
+        output_dir=tmp_path,
+        manifest_created_at=FIXED_TIME,
+    )
+
+    def fail_bundle(*args, **kwargs):
+        raise OSError("private filesystem detail")
+
+    monkeypatch.setattr(
+        "auto_researcher.tasks.synthetic.evaluator.write_artefact_bundle",
+        fail_bundle,
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        context,
+        default_synthetic_contract(),
+        default_synthetic_configuration(),
+    )
+    final = _invoke(
+        build_graph(dependencies),
+        default_synthetic_contract(),
+        context.run_id,
+        "synthetic-persistence-failure-thread",
+    )
+
+    evaluation = final["evaluation_result"]
+    assert evaluation.success is False
+    assert evaluation.artefact_references == ()
+    assert "private filesystem detail" not in evaluation.model_dump_json()
+    events = dependencies.provenance_store.list_events(context.run_id)
+    evaluation_event = next(
+        event for event in events if event.event_type == EventType.EVALUATION_OBSERVED
+    )
+    assert not any(
+        reference.endswith(".json") for reference in evaluation_event.output_references
+    )
+    assert not (
+        tmp_path / "runs" / context.run_id / final["experiment_spec"].experiment_id
+    ).exists()
 
 
 def test_synthetic_policy_covers_supported_refuted_and_inconclusive():
@@ -169,7 +210,10 @@ def test_synthetic_policy_covers_supported_refuted_and_inconclusive():
             provenance=metadata.provenance,
         )
         evaluation = evaluator.evaluate(experiment, contract)
-        assert policy.evaluate_constraints(evaluation, contract).evidence_status == expected
+        assert (
+            policy.evaluate_constraints(evaluation, contract).evidence_status
+            == expected
+        )
 
 
 def test_synthetic_path_never_imports_optional_harness():

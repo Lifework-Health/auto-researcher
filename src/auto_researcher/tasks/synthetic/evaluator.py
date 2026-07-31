@@ -8,6 +8,7 @@ from auto_researcher.contracts.models import (
     ResearchContract,
 )
 from auto_researcher.tasks.artifacts import (
+    ARTEFACT_BUNDLE_SCHEMA_VERSION,
     artefact_references,
     write_artefact_bundle,
 )
@@ -17,11 +18,12 @@ from auto_researcher.tasks.models import (
     TaskRuntimeContext,
 )
 from auto_researcher.tasks.synthetic.configuration import SyntheticConfiguration
+from auto_researcher.tasks.scientific_json import SCIENTIFIC_JSON_ENCODING_VERSION
 
 
 class SyntheticEvaluator:
     evaluator_id = "synthetic-evaluator"
-    version = "synthetic-landscape-v2"
+    version = "synthetic-landscape-v3"
     cost_per_experiment = 0.0
 
     def __init__(
@@ -48,14 +50,42 @@ class SyntheticEvaluator:
             provenance=self.metadata.provenance,
             error=message,
         )
-        write_artefact_bundle(
-            self.context,
-            experiment,
-            result,
-            self.dataset_manifest,
-            self._evaluator_manifest(),
-        )
-        return result
+        return self._persist_or_fail(experiment, result)
+
+    def _persist_or_fail(
+        self,
+        experiment: ExperimentSpec,
+        result: EvaluationResult,
+    ) -> EvaluationResult:
+        try:
+            write_artefact_bundle(
+                self.context,
+                experiment,
+                result,
+                self.dataset_manifest,
+                self._evaluator_manifest(),
+            )
+            return result
+        except Exception as exc:
+            return EvaluationResult(
+                experiment_id=experiment.experiment_id,
+                success=False,
+                primary_score=None,
+                metrics={
+                    "failure_diagnostics": {
+                        "safe_exception_class": type(exc).__name__,
+                        "failure_stage": "ARTEFACT_WRITING",
+                        "artefact_persistence_failure_code": (
+                            "bundle_publication_failed"
+                        ),
+                    }
+                },
+                constraint_results={},
+                artefact_references=(),
+                evaluator_version=self.version,
+                provenance=self.metadata.provenance,
+                error=f"artefact_bundle_publication_failed:{type(exc).__name__}",
+            )
 
     def _evaluator_manifest(self) -> dict:
         return {
@@ -63,6 +93,8 @@ class SyntheticEvaluator:
             "task_version": "1.0",
             "evaluator_id": self.evaluator_id,
             "code_version": self.metadata.code_version,
+            "result_encoding_version": SCIENTIFIC_JSON_ENCODING_VERSION,
+            "artefact_bundle_schema_version": ARTEFACT_BUNDLE_SCHEMA_VERSION,
             "dataset_version": self.metadata.dataset_version,
             "provenance": self.metadata.provenance.value,
         }
@@ -123,11 +155,4 @@ class SyntheticEvaluator:
             provenance=self.metadata.provenance,
             error=None,
         )
-        write_artefact_bundle(
-            self.context,
-            experiment,
-            result,
-            self.dataset_manifest,
-            self._evaluator_manifest(),
-        )
-        return result
+        return self._persist_or_fail(experiment, result)

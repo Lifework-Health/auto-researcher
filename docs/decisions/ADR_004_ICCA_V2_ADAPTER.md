@@ -36,6 +36,16 @@ flags. Where the reference API combines consensus and eligibility in one call,
 trusted module identities from the in-memory traceback are reduced to a stage;
 the traceback and raw exception message are discarded and never persisted.
 
+The reference result model can explicitly return `NaN` for the secondary
+`metrics.c_index.apparent`, `metrics.c_index.cv`, and
+`metrics.c_index.incremental` readouts when Cox estimation is unavailable. The
+adapter owns an exact allowlist for those mapped paths. It encodes an allowed
+unavailable readout as JSON `null` and records its schema path under
+`metric_availability`; it does not change or impute the reference calculation.
+Any other non-finite metric fails closed at `RESULT_NORMALISATION`. A non-finite
+stability objective fails earlier at `OBJECTIVE_CALCULATION`, and eligibility
+constraints must be explicit booleans.
+
 ## Consequences
 
 Scientific scoring has one owner. Synthetic mode remains installable and
@@ -46,5 +56,7 @@ data execution when explicitly configured.
 
 The resampling policy changes the iCCA configuration schema to `1.1`, task
 constraints to `1.0`, Optuna search-space identity to
-`auto-agent-v2-icca-v2`, and adapter version to `icca-adapter-v1.1` so old and
-new validation regimes cannot be replayed as equivalent.
+`auto-agent-v2-icca-v2`, and adapter version to `icca-adapter-v1.2`. Experiment
+code identity also includes `scientific-json-v1` and `experiment-bundle-v2`, so
+old result encoding and partial-file publication cannot replay as the new
+semantics.

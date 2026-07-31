@@ -11,7 +11,6 @@ from typing import Any
 from auto_researcher.contracts.models import (
     EvaluationResult,
     ExperimentSpec,
-    ResearchContract,
     SearchRequest,
     VerificationResult,
 )
@@ -49,17 +48,6 @@ def _canonical_json(value: Any) -> str:
 
 def _timestamp(value: datetime) -> str:
     return value.isoformat()
-
-
-def _finite_json(value: Any) -> Any:
-    """Make invalid scientific results safe for durable diagnostic attributes."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {str(key): _finite_json(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_finite_json(item) for item in value]
-    return value
 
 
 class OptunaAskTellBackend:
@@ -169,8 +157,7 @@ class OptunaAskTellBackend:
             )
         if any(
             trial.user_attrs.get("run_id") != identity.attributes["run_id"]
-            or trial.user_attrs.get("request_id")
-            != identity.attributes["request_id"]
+            or trial.user_attrs.get("request_id") != identity.attributes["request_id"]
             for trial in running
         ):
             raise AmbiguousRunningTrialError(
@@ -316,26 +303,17 @@ class OptunaAskTellBackend:
                 abs_tol=1e-9,
             )
         )
-        status = (
-            OptunaTrialStatus.COMPLETE
-            if complete
-            else OptunaTrialStatus.FAIL
-        )
-        feasible = bool(
-            complete
-            and verification.constraint_compliant
-        )
+        status = OptunaTrialStatus.COMPLETE if complete else OptunaTrialStatus.FAIL
+        feasible = bool(complete and verification.constraint_compliant)
         payload = {
             "status": status.value,
             "objective_value": float(score) if complete and score is not None else None,
             "feasible": feasible,
             "experiment": experiment.model_dump(mode="json"),
-            "evaluation": _finite_json(evaluation.model_dump(mode="json")),
-            "verification": _finite_json(verification.model_dump(mode="json")),
+            "evaluation": evaluation.model_dump(mode="json"),
+            "verification": verification.model_dump(mode="json"),
         }
-        digest = hashlib.sha256(
-            _canonical_json(payload).encode("utf-8")
-        ).hexdigest()
+        digest = hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
         study = self._load_study(reference.study_name, spec)
         frozen = self._trial_by_number(study, reference.trial_number)
         if frozen.state != TrialState.RUNNING:
@@ -345,13 +323,10 @@ class OptunaAskTellBackend:
                 if status == OptunaTrialStatus.COMPLETE
                 else TrialState.FAIL
             )
-            same_value = (
-                status == OptunaTrialStatus.FAIL
-                or (
-                    frozen.value is not None
-                    and score is not None
-                    and float(frozen.value) == float(score)
-                )
+            same_value = status == OptunaTrialStatus.FAIL or (
+                frozen.value is not None
+                and score is not None
+                and float(frozen.value) == float(score)
             )
             if (
                 frozen.state == expected_state
@@ -448,19 +423,13 @@ class OptunaAskTellBackend:
                 else None
             ),
             best_feasible_score=(
-                selection.best_feasible.score
-                if selection.best_feasible
-                else None
+                selection.best_feasible.score if selection.best_feasible else None
             ),
             best_overall_trial_number=(
-                selection.best_overall.trial_number
-                if selection.best_overall
-                else None
+                selection.best_overall.trial_number if selection.best_overall else None
             ),
             best_overall_score=(
-                selection.best_overall.score
-                if selection.best_overall
-                else None
+                selection.best_overall.score if selection.best_overall else None
             ),
         )
 

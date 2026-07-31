@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Protocol, runtime_checkable
 
 from auto_researcher.contracts.enums import EvidenceStatus, ProvenanceKind
@@ -63,9 +64,17 @@ class DeterministicVerifier:
             reasons.append(f"missing_metrics:{','.join(missing)}")
         measured = evaluation.primary_score
         claim = measured if claimed_score is None else claimed_score
+        if measured is not None and not math.isfinite(measured):
+            reasons.append("non_finite_measured_score")
+            measured = None
+        if claim is not None and not math.isfinite(claim):
+            reasons.append("non_finite_claimed_score")
+            claim = None
         if (
             claim is not None
             and measured is not None
+            and math.isfinite(claim)
+            and math.isfinite(measured)
             and abs(claim - measured) > self.score_tolerance
         ):
             reasons.append("score_mismatch")
