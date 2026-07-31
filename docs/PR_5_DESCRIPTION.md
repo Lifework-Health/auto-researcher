@@ -227,7 +227,7 @@ queries.
 - pytz resolved lock: `2026.3.post1`
 - core install remains independent of Neo4j
 - no neo4j-graphrag, APOC, n10s, graph chain, embedding or vector dependency
-- 166 tests passed
+- 168 tests passed
 - 2 tests skipped
 - 0 tests failed
 

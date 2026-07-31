@@ -9,6 +9,7 @@ from auto_researcher.agents.models import (
     HypothesisProposal,
     PlannerAgentContext,
     PlannerProposal,
+    PriorResearchSummary,
 )
 from auto_researcher.contracts.enums import (
     GroundingStatus,
@@ -18,6 +19,7 @@ from auto_researcher.contracts.enums import (
     SearchType,
 )
 from auto_researcher.contracts.models import Hypothesis, ResearchContract, SearchRequest
+from auto_researcher.knowledge.models import KnowledgeContextReference
 from auto_researcher.tasks.protocols import OptunaCapableTask, ResearchTask
 
 
@@ -30,6 +32,32 @@ class ReconciliationError(ValueError):
 def _stable_id(prefix: str, *parts: str) -> str:
     digest = hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:20]
     return f"{prefix}-{digest}"
+
+
+def _prior_reference_ids(
+    findings: tuple[PriorResearchSummary, ...],
+) -> set[str]:
+    return (
+        {item.hypothesis_reference for item in findings}
+        | {item.experiment_reference for item in findings}
+        | {
+            reference
+            for item in findings
+            for reference in item.safe_artefact_references
+        }
+    )
+
+
+def _require_relevant_knowledge(
+    cited_knowledge: list[KnowledgeContextReference],
+    proposal_parameters: set[str],
+) -> None:
+    if any(
+        not item.relevant_parameters
+        or proposal_parameters.isdisjoint(item.relevant_parameters)
+        for item in cited_knowledge
+    ):
+        raise ReconciliationError("knowledge_reference_not_relevant")
 
 
 class HypothesisReconciler:
@@ -71,15 +99,7 @@ class HypothesisReconciler:
             raise ReconciliationError("predicted_subspace_not_task_compatible")
         if len(proposal.predicted_subspace) > 32:
             raise ReconciliationError("predicted_subspace_too_large")
-        prior_refs = (
-            {item.hypothesis_reference for item in context.prior_verified_findings}
-            | {item.experiment_reference for item in context.prior_verified_findings}
-            | {
-                reference
-                for item in context.prior_verified_findings
-                for reference in item.safe_artefact_references
-            }
-        )
+        prior_refs = _prior_reference_ids(context.prior_verified_findings)
         knowledge_by_id = {
             item.reference_id: item for item in context.knowledge_references
         }
@@ -89,12 +109,7 @@ class HypothesisReconciler:
             if item in knowledge_by_id
         ]
         predicted_parameters = set(proposal.predicted_subspace)
-        if cited_knowledge and any(
-            item.relevant_parameters
-            and not predicted_parameters.intersection(item.relevant_parameters)
-            for item in cited_knowledge
-        ):
-            raise ReconciliationError("knowledge_reference_not_relevant")
+        _require_relevant_knowledge(cited_knowledge, predicted_parameters)
         if cited_knowledge:
             grounding = GroundingStatus.KNOWLEDGE_GROUNDED
             cap = min(item.prior_weight_cap for item in cited_knowledge)
@@ -193,15 +208,8 @@ class PlannerReconciler:
             for item in proposal.evidence_references
             if item in knowledge_by_id
         ]
-        if cited_knowledge and any(
-            item.relevant_parameters
-            and not set(search_space).intersection(item.relevant_parameters)
-            for item in cited_knowledge
-        ):
-            raise ReconciliationError("knowledge_reference_not_relevant")
-        prior_refs = {
-            item.hypothesis_reference for item in context.prior_verified_findings
-        } | {item.experiment_reference for item in context.prior_verified_findings}
+        _require_relevant_knowledge(cited_knowledge, set(search_space))
+        prior_refs = _prior_reference_ids(context.prior_verified_findings)
         if cited_knowledge:
             grounding = GroundingStatus.KNOWLEDGE_GROUNDED
         elif set(proposal.evidence_references) & prior_refs:
