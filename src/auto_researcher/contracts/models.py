@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 from datetime import datetime
 from typing import Annotated
 
@@ -11,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    field_validator,
     model_validator,
 )
 
@@ -209,12 +212,27 @@ class EvaluationResult(ImmutableDomainModel):
     provenance: ProvenanceKind
     error: str | None = None
 
+    @field_validator("constraint_results", mode="before")
+    @classmethod
+    def constraints_must_be_explicit_booleans(cls, value):
+        if not isinstance(value, dict) or any(
+            type(item) is not bool for item in value.values()
+        ):
+            raise ValueError("constraint_results values must be explicit booleans")
+        return value
+
     @model_validator(mode="after")
     def success_requires_score(self) -> "EvaluationResult":
         if self.success and self.primary_score is None:
             raise ValueError("a successful evaluation requires primary_score")
+        if self.primary_score is not None and not math.isfinite(self.primary_score):
+            raise ValueError("primary_score must be finite")
         if not self.success and self.error is None:
             raise ValueError("a failed evaluation requires error")
+        try:
+            json.dumps(self.metrics, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("evaluation metrics must be strict finite JSON") from exc
         return self
 
 

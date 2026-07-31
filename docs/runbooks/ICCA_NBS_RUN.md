@@ -50,13 +50,40 @@ An unavailable package or missing data fails during readiness before evaluator
 creation. Experiment fields are persisted; runtime paths are not. The adapter
 writes only aggregate JSON artefacts listed in the architecture document.
 
+## Finite scientific results
+
+All persisted results are standards-compliant JSON and retain
+`allow_nan=False`. A finite primary stability objective is mandatory. The task
+permits only three secondary readouts to be unavailable:
+
+```text
+scientific.c_index.apparent
+scientific.c_index.cv
+scientific.c_index.incremental
+```
+
+The installed evaluator explicitly emits `NaN` at those fields when Cox
+estimation cannot be completed. The adapter stores those values as JSON `null`
+and lists their schema paths in `metric_availability`; `null` means unavailable
+for that evaluated configuration, never zero. Infinity and non-finite values at
+all other paths fail closed. Eligibility gates remain explicit booleans and a
+missing or non-finite gate input cannot become a pass.
+
+Each experiment publishes its four JSON files as a transactional sibling
+directory. All payloads are validated in memory first, each staged file is
+flushed and fsynced, and one directory rename publishes the complete bundle.
+The evaluator manifest records deterministic payload and bundle SHA256 values.
+Identical replay is idempotent; conflicting replay is rejected. If publication
+fails, the returned failure has no artefact references, so provenance cannot
+point to nonexistent files.
+
 If the evaluator fails, its external error and `failure_diagnostics` persist only
 a safe exception class, a closed failure-stage value, canonical configuration,
 dataset fingerprint and completion flags. Raw exception messages, tracebacks,
 paths and patient-level values are never persisted. The allowed stages are
 `CONFIGURATION_VALIDATION`, `DATASET_LOADING`, `NETWORK_PROPAGATION`,
 `CONSENSUS_CLUSTERING`, `ELIGIBILITY_EVALUATION`, `OBJECTIVE_CALCULATION`,
-`ARTEFACT_WRITING` and `UNKNOWN`.
+`RESULT_NORMALISATION`, `ARTEFACT_WRITING` and `UNKNOWN`.
 
 ## Compatibility gates
 

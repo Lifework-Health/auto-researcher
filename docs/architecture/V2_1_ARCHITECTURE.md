@@ -183,6 +183,14 @@ Verification has two ordered layers:
 A policy cannot bypass structural failure or promote MOCK/SIMULATED evidence to
 `SUPPORTED`.
 
+Before a successful result can enter graph state, its primary score must be
+finite, constraints must be explicit booleans, and metrics must be strict JSON.
+The generic scientific normaliser preserves finite values and rejects infinity
+and undeclared NaN. A task may declare exact secondary diagnostic paths where
+NaN means unavailable; those values become JSON `null` with explicit metric
+availability metadata. Domain paths remain in the plugin and never enter the
+control graph.
+
 ## Reference tasks
 
 The synthetic task has its own bounded model configuration, deterministic score
@@ -216,6 +224,15 @@ runs/<run_id>/<experiment_id>/
 ├── dataset_manifest.json
 └── evaluator_manifest.json
 ```
+
+The four files are one `experiment-bundle-v2` transaction, not four independent
+commits. They are fully serialised with `allow_nan=False` before I/O, written to
+a temporary sibling directory, flushed and fsynced, checked for completeness,
+and published by one directory rename. The evaluator manifest contains the
+expected filenames, `scientific-json-v1`, per-payload SHA256 values and a bundle
+hash. Identical replay compares bytes and is idempotent; different content at
+the same identity is a conflict. A publication failure returns no references,
+so graph state and provenance never advertise a partial or missing bundle.
 
 The graph checkpointer stores resumable execution state by `thread_id`.
 Scientific provenance is a separate append-only store keyed by `run_id`.

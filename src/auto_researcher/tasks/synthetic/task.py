@@ -27,6 +27,8 @@ from auto_researcher.tasks.models import (
     TaskDescriptor,
     TaskRuntimeContext,
 )
+from auto_researcher.tasks.artifacts import ARTEFACT_BUNDLE_SCHEMA_VERSION
+from auto_researcher.tasks.scientific_json import SCIENTIFIC_JSON_ENCODING_VERSION
 from auto_researcher.tasks.synthetic.configuration import SyntheticConfiguration
 from auto_researcher.tasks.synthetic.evaluator import SyntheticEvaluator
 from auto_researcher.tasks.synthetic.verification import SyntheticVerificationPolicy
@@ -104,7 +106,11 @@ class SyntheticTask:
         manifest = self.dataset_manifest(runtime_context)
         return ExperimentMetadata(
             evaluator_id=self.descriptor().evaluator_id,
-            code_version="synthetic-task-1.0",
+            code_version=(
+                "synthetic-task-1.0"
+                f"+{SCIENTIFIC_JSON_ENCODING_VERSION}"
+                f"+{ARTEFACT_BUNDLE_SCHEMA_VERSION}"
+            ),
             dataset_version=manifest.dataset_version,
             provenance=ProvenanceKind.SIMULATED,
         )

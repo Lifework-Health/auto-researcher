@@ -27,7 +27,9 @@ from auto_researcher.tasks.icca_nbs.diagnostics import (
 )
 from auto_researcher.tasks.icca_nbs.manifests import build_icca_dataset_manifest
 from auto_researcher.tasks.icca_nbs.task import ICCANBSTask
+from auto_researcher.tasks.artifacts import verify_artefact_bundle
 from auto_researcher.tasks.models import TaskRuntimeContext
+from auto_researcher.verification.verifier import DeterministicVerifier
 from tests.fakes_icca import make_fake_icca_bindings
 
 
@@ -202,7 +204,8 @@ def _experiment(task, context, configuration=None):
         experiment_id="experiment-1",
         hypothesis_id="hypothesis-1",
         search_request_id="request-1",
-        configuration=configuration or task.normalise_configuration(valid_configuration()),
+        configuration=configuration
+        or task.normalise_configuration(valid_configuration()),
         evaluator_id=metadata.evaluator_id,
         code_version=metadata.code_version,
         dataset_version=metadata.dataset_version,
@@ -277,6 +280,169 @@ def test_v2_result_mapping_objective_metrics_and_constraints(
     json.loads(payload)
 
 
+def test_genuine_shaped_result_normalises_unavailable_c_indexes(icca_context):
+    bindings, _ = make_fake_icca_bindings()
+    base_evaluate = bindings.evaluate
+
+    def evaluate(*args, **kwargs):
+        result = base_evaluate(*args, **kwargs)
+        row = result.per_k[kwargs["k_values"][0]]
+        row.metrics = {
+            "pac": 0.2,
+            "logrank": {"chisq": 12.5, "p": 0.01, "passed": True},
+            "pairwise_logrank": {
+                "fraction_separated": 0.5,
+                "n_separated": 2,
+                "n_pairs": 4,
+            },
+            "c_index": {
+                "apparent": 0.72,
+                "cv": float("nan"),
+                "incremental": float("nan"),
+            },
+            "clinical": {
+                "fraction_clusters_associated": 1.0,
+                "n_core_associations": 3,
+                "n_distinct_core_drivers": 2,
+                "promise": {"promising_distinction": True},
+            },
+            "cluster_sizes": {1: 55, 2: 61},
+            "cluster_events": {1: 20, 2: 24},
+        }
+        row.per_cluster = {
+            1: {"size": 55, "events": 20, "has_credit_association": True},
+            2: {"size": 61, "events": 24, "has_credit_association": True},
+        }
+        return result
+
+    task = ICCANBSTask(replace(bindings, evaluate=evaluate))
+    experiment = _experiment(task, icca_context)
+    result = task.create_evaluator(icca_context).evaluate(
+        experiment,
+        icca_contract(),
+    )
+
+    assert result.success is True
+    assert result.primary_score == 0.8
+    assert result.metrics["scientific"]["c_index"] == {
+        "apparent": 0.72,
+        "cv": None,
+        "incremental": None,
+    }
+    assert result.metrics["metric_availability"] == {
+        "unavailable_paths": [
+            "scientific.c_index.cv",
+            "scientific.c_index.incremental",
+        ],
+        "unavailable_count": 2,
+        "encoding": "null_for_unavailable_non_finite_v1",
+        "result_encoding_version": "scientific-json-v1",
+    }
+    assert all(result.constraint_results.values())
+    verification = DeterministicVerifier(
+        task.create_verification_policy(icca_contract())
+    ).verify(experiment, result, icca_contract())
+    assert verification.verified is True
+    persisted = (icca_context.output_dir / result.artefact_references[1]).read_text(
+        encoding="utf-8"
+    )
+    assert "NaN" not in persisted
+    assert "Infinity" not in persisted
+    json.loads(persisted, parse_constant=lambda token: pytest.fail(token))
+    integrity = verify_artefact_bundle(icca_context, experiment.experiment_id)
+    assert integrity.complete and integrity.untampered
+
+
+def test_unexpected_non_finite_metric_fails_closed_at_normalisation(icca_context):
+    bindings, _ = make_fake_icca_bindings()
+    base_evaluate = bindings.evaluate
+
+    def evaluate(*args, **kwargs):
+        result = base_evaluate(*args, **kwargs)
+        result.per_k[kwargs["k_values"][0]].metrics["unexpected"] = float("nan")
+        return result
+
+    task = ICCANBSTask(replace(bindings, evaluate=evaluate))
+    result = task.create_evaluator(icca_context).evaluate(
+        _experiment(task, icca_context),
+        icca_contract(),
+    )
+
+    assert result.success is False
+    diagnostics = result.metrics["failure_diagnostics"]
+    assert diagnostics["failure_stage"] == "RESULT_NORMALISATION"
+    assert diagnostics["normalisation_reason_code"] == (
+        "unexpected_non_finite_scientific_value"
+    )
+    assert diagnostics["rejected_paths"] == ["scientific.unexpected"]
+
+
+def test_non_finite_objective_fails_at_objective_calculation(icca_context):
+    bindings, _ = make_fake_icca_bindings()
+    task = ICCANBSTask(
+        replace(bindings, stability_objective=lambda result: float("nan"))
+    )
+    result = task.create_evaluator(icca_context).evaluate(
+        _experiment(task, icca_context),
+        icca_contract(),
+    )
+    assert result.success is False
+    diagnostics = result.metrics["failure_diagnostics"]
+    assert diagnostics["failure_stage"] == "OBJECTIVE_CALCULATION"
+    assert diagnostics["normalisation_reason_code"] == "non_finite_primary_score"
+
+
+def test_non_finite_constraint_source_cannot_silently_pass(icca_context):
+    bindings, _ = make_fake_icca_bindings()
+    base_evaluate = bindings.evaluate
+
+    def evaluate(*args, **kwargs):
+        result = base_evaluate(*args, **kwargs)
+        row = result.per_k[kwargs["k_values"][0]]
+        row.eligibility["logrank_pass"] = float("nan")
+        return result
+
+    task = ICCANBSTask(replace(bindings, evaluate=evaluate))
+    result = task.create_evaluator(icca_context).evaluate(
+        _experiment(task, icca_context),
+        icca_contract(),
+    )
+    assert result.success is False
+    assert result.constraint_results == {}
+    diagnostics = result.metrics["failure_diagnostics"]
+    assert diagnostics["failure_stage"] == "RESULT_NORMALISATION"
+    assert diagnostics["rejected_paths"] == ["eligibility.logrank_pass"]
+
+
+def test_artefact_persistence_failure_returns_no_dangling_references(
+    icca_context,
+    monkeypatch,
+):
+    bindings, _ = make_fake_icca_bindings()
+    task = ICCANBSTask(bindings)
+
+    def fail_bundle(*args, **kwargs):
+        raise OSError("private path must not persist")
+
+    monkeypatch.setattr(
+        "auto_researcher.tasks.icca_nbs.evaluator_adapter.write_artefact_bundle",
+        fail_bundle,
+    )
+    result = task.create_evaluator(icca_context).evaluate(
+        _experiment(task, icca_context),
+        icca_contract(),
+    )
+
+    assert result.success is False
+    assert result.artefact_references == ()
+    assert "private path" not in result.model_dump_json()
+    diagnostics = result.metrics["failure_diagnostics"]
+    assert diagnostics["failure_stage"] == "ARTEFACT_WRITING"
+    assert diagnostics["artefact_persistence_failure_code"] == (
+        "bundle_publication_failed"
+    )
+
+
 def test_objective_score_is_taken_from_binding_not_recomputed(icca_context):
     bindings, calls = make_fake_icca_bindings()
 
@@ -284,9 +450,7 @@ def test_objective_score_is_taken_from_binding_not_recomputed(icca_context):
         calls["objective"] += 1
         return 0.123456
 
-    task = ICCANBSTask(
-        replace(bindings, stability_objective=registered_objective)
-    )
+    task = ICCANBSTask(replace(bindings, stability_objective=registered_objective))
     result = task.create_evaluator(icca_context).evaluate(
         _experiment(task, icca_context),
         icca_contract(),
@@ -309,7 +473,7 @@ def test_structured_scientific_failure(icca_context):
         "safe_exception_class": "RuntimeError",
         "failure_stage": "UNKNOWN",
         "evaluator_id": "icca-nbs-v2-evaluator",
-        "evaluator_version": "icca-adapter-v1.1",
+        "evaluator_version": "icca-adapter-v1.2",
         "experiment_id": "experiment-1",
         "canonical_configuration": {
             "network": "Ideker",
