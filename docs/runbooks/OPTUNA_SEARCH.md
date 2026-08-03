@@ -19,7 +19,7 @@ Ranges may narrow task-registered limits but cannot widen or change types,
 steps, logarithmic semantics or categorical order.
 
 ```bash
-auto-researcher run \
+auto-researcher run start \
   --task synthetic \
   --task-config examples/tasks/synthetic/optuna.yaml \
   --run-id study-001 \

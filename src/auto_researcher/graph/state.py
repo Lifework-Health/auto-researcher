@@ -13,6 +13,7 @@ from auto_researcher.contracts.models import (
     ExperimentSpec,
     Hypothesis,
     ResearchContract,
+    RunExecutionIdentity,
     SearchBackendResult,
     SearchRequest,
     VerificationResult,
@@ -30,6 +31,7 @@ class ResearchState(TypedDict):
     run_id: str
     thread_id: str
     contract: ResearchContract
+    execution_identity: NotRequired[RunExecutionIdentity]
     status: RunStatus
     cycle: int
     budget: BudgetState

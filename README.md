@@ -43,7 +43,7 @@ python -m venv .venv
 .venv/bin/pip install -e '.[agents-anthropic]' # only for live Anthropic
 .venv/bin/pip install -e '.[knowledge-neo4j]' # only for Neo4j grounding
 .venv/bin/auto-researcher tasks
-.venv/bin/auto-researcher run \
+.venv/bin/auto-researcher run start \
   --task synthetic \
   --contract examples/tasks/synthetic/contract.yaml \
   --task-config examples/tasks/synthetic/task.yaml \
@@ -58,7 +58,7 @@ python -m venv .venv
 Run the offline Optuna example with:
 
 ```bash
-.venv/bin/auto-researcher run \
+.venv/bin/auto-researcher run start \
   --task synthetic \
   --task-config examples/tasks/synthetic/optuna.yaml \
   --run-id optuna-demo \
@@ -84,3 +84,5 @@ privacy and indeterminate-call recovery are in
 Neo4j least-privilege configuration, readiness, schema preflight and recovery
 are documented in
 [NEO4J_GROUNDING.md](docs/runbooks/NEO4J_GROUNDING.md).
+Safe checkpoint lifecycle operations are documented in
+[RUN_EXECUTION.md](docs/runbooks/RUN_EXECUTION.md).

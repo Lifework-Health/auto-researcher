@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.graph.builder import build_graph
+from auto_researcher.runtime.execution import (
+    RunExecutionError,
+    inspect_terminal_run,
+    resume_run,
+    start_run,
+)
+
+
+def _input(contract, *, run_id="run-1", thread_id="thread-1", **extra):
+    return {
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "contract": contract,
+        **extra,
+    }
+
+
+def _config(thread_id="thread-1"):
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def test_start_requires_a_fresh_thread_and_inspect_is_read_only(
+    contract_factory,
+    deterministic_dependencies,
+):
+    graph = build_graph(deterministic_dependencies)
+    initial = _input(contract_factory())
+    final = start_run(graph, initial, _config())
+    assert final["status"] == RunStatus.COMPLETED
+    event_ids = [
+        item.event_id
+        for item in deterministic_dependencies.provenance_store.list_events("run-1")
+    ]
+
+    with pytest.raises(
+        RunExecutionError,
+        match="thread_already_exists_use_resume_or_inspect",
+    ):
+        start_run(graph, initial, _config())
+
+    inspected = inspect_terminal_run(graph, _config())
+    assert inspected == graph.get_state(_config()).values
+    assert [
+        item.event_id
+        for item in deterministic_dependencies.provenance_store.list_events("run-1")
+    ] == event_ids
+
+
+def test_start_rejects_an_existing_non_terminal_thread_and_resume_continues(
+    contract_factory,
+    deterministic_dependencies,
+):
+    graph = build_graph(
+        deterministic_dependencies,
+        interrupt_after=["plan_search"],
+    )
+    initial = _input(contract_factory())
+    paused = start_run(graph, initial, _config())
+    assert paused["status"] == RunStatus.RUNNING
+
+    with pytest.raises(RunExecutionError, match="thread_already_exists"):
+        start_run(graph, initial, _config())
+
+    resumed_graph = build_graph(deterministic_dependencies)
+    final = resume_run(resumed_graph, _config())
+    assert final["status"] == RunStatus.COMPLETED
+
+
+def test_resume_unknown_and_terminal_threads_are_rejected(
+    contract_factory,
+    deterministic_dependencies,
+):
+    graph = build_graph(deterministic_dependencies)
+    with pytest.raises(RunExecutionError, match="thread_not_found"):
+        resume_run(graph, _config())
+    start_run(graph, _input(contract_factory()), _config())
+    with pytest.raises(RunExecutionError, match="thread_is_terminal_use_inspect"):
+        resume_run(graph, _config())
+
+
+@pytest.mark.parametrize(
+    ("changed", "code"),
+    [
+        ({"run_id": "run-2"}, "conflicting_run_id"),
+        ({"operator_request": "changed"}, "conflicting_initial_input"),
+    ],
+)
+def test_existing_thread_rejects_conflicting_identity(
+    contract_factory,
+    deterministic_dependencies,
+    changed,
+    code,
+):
+    graph = build_graph(deterministic_dependencies)
+    contract = contract_factory()
+    original = _input(contract, operator_request="original")
+    start_run(graph, original, _config())
+    conflicting = {**original, **changed}
+    with pytest.raises(RunExecutionError, match=code):
+        start_run(graph, conflicting, _config())
+
+
+def test_existing_thread_rejects_conflicting_contract_and_task(
+    contract_factory,
+    deterministic_dependencies,
+):
+    graph = build_graph(deterministic_dependencies)
+    contract = contract_factory()
+    initial = _input(contract)
+    start_run(graph, initial, _config())
+
+    changed_contract = contract.model_copy(update={"question": "Changed question"})
+    with pytest.raises(RunExecutionError, match="conflicting_contract"):
+        start_run(graph, _input(changed_contract), _config())
+
+    changed_task = contract.model_copy(update={"task_id": "different-task"})
+    with pytest.raises(RunExecutionError, match="conflicting_task"):
+        start_run(graph, _input(changed_task), _config())
+
+
+def test_checkpoint_03_operator_error_is_harmless_before_any_side_effect(
+    contract_factory,
+    deterministic_dependencies,
+):
+    class CountingHypothesisAgent:
+        def __init__(self, inner):
+            self.inner = inner
+            self.calls = 0
+
+        def generate(self, *args, **kwargs):
+            self.calls += 1
+            return self.inner.generate(*args, **kwargs)
+
+    class CountingPlannerAgent:
+        def __init__(self, inner):
+            self.inner = inner
+            self.calls = 0
+
+        def plan(self, *args, **kwargs):
+            self.calls += 1
+            return self.inner.plan(*args, **kwargs)
+
+    class CountingEvaluator:
+        def __init__(self, inner):
+            self.inner = inner
+            self.evaluator_id = inner.evaluator_id
+            self.version = inner.version
+            self.cost_per_experiment = inner.cost_per_experiment
+            self.calls = 0
+
+        def evaluate(self, experiment, contract):
+            self.calls += 1
+            return self.inner.evaluate(experiment, contract)
+
+    class CountingVerifier:
+        def __init__(self, inner):
+            self.inner = inner
+            self.verifier_id = inner.verifier_id
+            self.version = inner.version
+            self.calls = 0
+
+        def verify(self, *args, **kwargs):
+            self.calls += 1
+            return self.inner.verify(*args, **kwargs)
+
+    evaluator = CountingEvaluator(deterministic_dependencies.evaluator)
+    verifier = CountingVerifier(deterministic_dependencies.verifier)
+    hypothesis = CountingHypothesisAgent(deterministic_dependencies.hypothesis_agent)
+    planner = CountingPlannerAgent(deterministic_dependencies.planner_agent)
+    dependencies = replace(
+        deterministic_dependencies,
+        evaluator=evaluator,
+        verifier=verifier,
+        hypothesis_agent=hypothesis,
+        planner_agent=planner,
+    )
+    graph = build_graph(dependencies)
+    initial = _input(contract_factory())
+    first = start_run(graph, initial, _config())
+    event_ids = [
+        item.event_id for item in dependencies.provenance_store.list_events("run-1")
+    ]
+    assert (hypothesis.calls, planner.calls, evaluator.calls, verifier.calls) == (
+        1,
+        1,
+        1,
+        1,
+    )
+
+    with pytest.raises(RunExecutionError, match="thread_already_exists"):
+        start_run(graph, initial, _config())
+
+    inspected = inspect_terminal_run(graph, _config())
+    assert inspected == first
+    assert (hypothesis.calls, planner.calls, evaluator.calls, verifier.calls) == (
+        1,
+        1,
+        1,
+        1,
+    )
+    assert [
+        item.event_id for item in dependencies.provenance_store.list_events("run-1")
+    ] == event_ids

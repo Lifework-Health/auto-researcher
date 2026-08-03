@@ -27,6 +27,7 @@ ALLOWED_CHECKPOINT_TYPES = [
     ("auto_researcher.contracts.models", "ExperimentSpec"),
     ("auto_researcher.contracts.models", "Hypothesis"),
     ("auto_researcher.contracts.models", "ResearchContract"),
+    ("auto_researcher.contracts.models", "RunExecutionIdentity"),
     ("auto_researcher.contracts.models", "SearchBackendResult"),
     ("auto_researcher.contracts.models", "SearchRequest"),
     ("auto_researcher.contracts.models", "VerificationResult"),

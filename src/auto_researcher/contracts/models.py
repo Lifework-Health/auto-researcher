@@ -157,6 +157,20 @@ class ResearchContract(ImmutableDomainModel):
         return self
 
 
+class RunExecutionIdentity(ImmutableDomainModel):
+    """Stable identity bound to one checkpointed LangGraph thread."""
+
+    execution_protocol: str = "run-execution-v2"
+    graph_schema_version: str
+    thread_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    contract_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    task_version: str = Field(min_length=1)
+    contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    initial_input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class Hypothesis(ImmutableDomainModel):
     hypothesis_id: str = Field(min_length=1)
     statement: str = Field(min_length=1)

@@ -13,3 +13,18 @@ __all__ = [
     "task_memory_dependencies",
     "task_sqlite_dependencies",
 ]
+from auto_researcher.runtime.execution import (
+    ExecutionMode,
+    RunExecutionError,
+    inspect_terminal_run,
+    resume_run,
+    start_run,
+)
+
+__all__ = [
+    "ExecutionMode",
+    "RunExecutionError",
+    "inspect_terminal_run",
+    "resume_run",
+    "start_run",
+]

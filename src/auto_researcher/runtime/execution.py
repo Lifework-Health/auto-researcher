@@ -1,0 +1,187 @@
+"""Explicit, identity-safe START, RESUME and REPLAY_INSPECT operations."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Any, Mapping
+
+from langgraph.types import Command
+
+from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.contracts.models import ResearchContract, RunExecutionIdentity
+from auto_researcher.runtime.identity import payload_hash
+
+EXECUTION_PROTOCOL_VERSION = "run-execution-v2"
+GRAPH_SCHEMA_VERSION = "auto-researcher-graph-v1"
+TERMINAL_STATUSES = frozenset(
+    {RunStatus.COMPLETED, RunStatus.STOPPED, RunStatus.FAILED}
+)
+
+
+class ExecutionMode(StrEnum):
+    START = "START"
+    RESUME = "RESUME"
+    REPLAY_INSPECT = "REPLAY_INSPECT"
+
+
+class RunExecutionError(RuntimeError):
+    """Safe runtime rejection with no graph-side effects."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _thread_id(config: Mapping[str, Any]) -> str:
+    configurable = config.get("configurable", {})
+    thread_id = (
+        configurable.get("thread_id") if isinstance(configurable, dict) else None
+    )
+    if not isinstance(thread_id, str) or not thread_id:
+        raise RunExecutionError("thread_id_is_required")
+    return thread_id
+
+
+def _snapshot_values(graph: Any, config: Mapping[str, Any]) -> dict[str, Any]:
+    snapshot = graph.get_state(dict(config))
+    values = getattr(snapshot, "values", None)
+    return dict(values) if values else {}
+
+
+def execution_identity(
+    initial_input: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> RunExecutionIdentity:
+    thread_id = _thread_id(config)
+    supplied_thread = initial_input.get("thread_id")
+    if supplied_thread != thread_id:
+        raise RunExecutionError("conflicting_thread_id")
+    run_id = initial_input.get("run_id")
+    contract = initial_input.get("contract")
+    if not isinstance(run_id, str) or not run_id:
+        raise RunExecutionError("run_id_is_required")
+    if not isinstance(contract, ResearchContract):
+        try:
+            contract = ResearchContract.model_validate(contract)
+        except Exception as exc:
+            raise RunExecutionError("research_contract_is_required") from exc
+    canonical_initial = {
+        key: value
+        for key, value in initial_input.items()
+        if key != "execution_identity"
+    }
+    return RunExecutionIdentity(
+        execution_protocol=EXECUTION_PROTOCOL_VERSION,
+        graph_schema_version=GRAPH_SCHEMA_VERSION,
+        thread_id=thread_id,
+        run_id=run_id,
+        contract_id=contract.contract_id,
+        task_id=contract.task_id,
+        task_version=contract.task_version,
+        contract_hash=payload_hash(contract),
+        initial_input_hash=payload_hash(canonical_initial),
+    )
+
+
+def _stored_identity(values: Mapping[str, Any]) -> RunExecutionIdentity:
+    raw = values.get("execution_identity")
+    if raw is None:
+        raise RunExecutionError("checkpoint_execution_identity_missing")
+    try:
+        identity = RunExecutionIdentity.model_validate(raw)
+    except Exception as exc:
+        raise RunExecutionError("checkpoint_execution_identity_invalid") from exc
+    contract = values.get("contract")
+    if not isinstance(contract, ResearchContract):
+        contract = ResearchContract.model_validate(contract)
+    if (
+        values.get("thread_id") != identity.thread_id
+        or values.get("run_id") != identity.run_id
+        or contract.contract_id != identity.contract_id
+        or contract.task_id != identity.task_id
+        or contract.task_version != identity.task_version
+        or payload_hash(contract) != identity.contract_hash
+    ):
+        raise RunExecutionError("checkpoint_execution_identity_conflict")
+    return identity
+
+
+def _compare_identity(
+    stored: RunExecutionIdentity,
+    requested: RunExecutionIdentity,
+) -> None:
+    if stored.thread_id != requested.thread_id:
+        raise RunExecutionError("conflicting_thread_id")
+    if stored.run_id != requested.run_id:
+        raise RunExecutionError("conflicting_run_id")
+    if (stored.task_id, stored.task_version) != (
+        requested.task_id,
+        requested.task_version,
+    ):
+        raise RunExecutionError("conflicting_task")
+    if (
+        stored.contract_id != requested.contract_id
+        or stored.contract_hash != requested.contract_hash
+    ):
+        raise RunExecutionError("conflicting_contract")
+    if stored.initial_input_hash != requested.initial_input_hash:
+        raise RunExecutionError("conflicting_initial_input")
+
+
+def start_run(
+    graph: Any,
+    initial_input: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Start only a checkpoint thread that has never existed."""
+
+    requested = execution_identity(initial_input, config)
+    existing = _snapshot_values(graph, config)
+    if existing:
+        stored = _stored_identity(existing)
+        _compare_identity(stored, requested)
+        raise RunExecutionError("thread_already_exists_use_resume_or_inspect")
+    payload = dict(initial_input)
+    payload["execution_identity"] = requested
+    return graph.invoke(payload, dict(config))
+
+
+def resume_run(
+    graph: Any,
+    config: Mapping[str, Any],
+    resume_value: Any = None,
+    *,
+    expected_identity: RunExecutionIdentity | None = None,
+) -> dict[str, Any]:
+    """Continue an existing non-terminal checkpoint without new-run input."""
+
+    values = _snapshot_values(graph, config)
+    if not values:
+        raise RunExecutionError("thread_not_found")
+    stored = _stored_identity(values)
+    if expected_identity is not None:
+        _compare_identity(stored, expected_identity)
+    status = RunStatus(values["status"])
+    if status in TERMINAL_STATUSES:
+        raise RunExecutionError("thread_is_terminal_use_inspect")
+    continuation: Any = None if resume_value is None else Command(resume=resume_value)
+    return graph.invoke(continuation, dict(config))
+
+
+def inspect_terminal_run(
+    graph: Any,
+    config: Mapping[str, Any],
+    *,
+    expected_identity: RunExecutionIdentity | None = None,
+) -> dict[str, Any]:
+    """Read a terminal state without invoking any LangGraph node."""
+
+    values = _snapshot_values(graph, config)
+    if not values:
+        raise RunExecutionError("thread_not_found")
+    stored = _stored_identity(values)
+    if expected_identity is not None:
+        _compare_identity(stored, expected_identity)
+    if RunStatus(values["status"]) not in TERMINAL_STATUSES:
+        raise RunExecutionError("thread_is_not_terminal_use_resume")
+    return values

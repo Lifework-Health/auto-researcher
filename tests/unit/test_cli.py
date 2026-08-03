@@ -173,3 +173,82 @@ def test_agent_call_cli_lists_shows_and_authorises_retry(tmp_path):
         )
     finally:
         reopened.close()
+
+
+def test_run_start_inspect_and_terminal_resume_are_explicit_and_safe(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    checkpoint = tmp_path / "checkpoints.sqlite"
+    provenance = tmp_path / "provenance.sqlite"
+    agent_calls = tmp_path / "agent-calls.sqlite"
+    knowledge = tmp_path / "knowledge.sqlite"
+    stores = [
+        "--checkpoint-db",
+        str(checkpoint),
+        "--provenance-db",
+        str(provenance),
+        "--agent-calls-db",
+        str(agent_calls),
+        "--knowledge-retrievals-db",
+        str(knowledge),
+    ]
+    start = runner.invoke(
+        app,
+        [
+            "run",
+            "start",
+            "--run-id",
+            "cli-run",
+            "--thread-id",
+            "cli-thread",
+            *stores,
+        ],
+    )
+    assert start.exit_code == 0, start.stdout
+    assert "Status: COMPLETED" in start.stdout
+
+    duplicate = runner.invoke(
+        app,
+        [
+            "run",
+            "start",
+            "--run-id",
+            "cli-run",
+            "--thread-id",
+            "cli-thread",
+            *stores,
+        ],
+    )
+    assert duplicate.exit_code == 2
+    assert "thread_already_exists_use_resume_or_inspect" in duplicate.stderr
+
+    inspected = runner.invoke(
+        app,
+        [
+            "run",
+            "inspect",
+            "--thread-id",
+            "cli-thread",
+            "--checkpoint-db",
+            str(checkpoint),
+        ],
+    )
+    assert inspected.exit_code == 0, inspected.stdout
+    assert "Execution protocol: run-execution-v2" in inspected.stdout
+    assert "Status: COMPLETED" in inspected.stdout
+
+    resumed = runner.invoke(
+        app,
+        [
+            "run",
+            "resume",
+            "--thread-id",
+            "cli-thread",
+            *stores,
+        ],
+    )
+    assert resumed.exit_code == 2
+    assert "thread_is_terminal_use_inspect" in resumed.stderr
