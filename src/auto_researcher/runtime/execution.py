@@ -12,6 +12,7 @@ from auto_researcher.contracts.models import ResearchContract, RunExecutionIdent
 from auto_researcher.runtime.identity import payload_hash
 
 EXECUTION_PROTOCOL_VERSION = "run-execution-v2"
+EXECUTION_ERROR_VOCABULARY_VERSION = "run-execution-errors-v1"
 GRAPH_SCHEMA_VERSION = "auto-researcher-graph-v1"
 TERMINAL_STATUSES = frozenset(
     {RunStatus.COMPLETED, RunStatus.STOPPED, RunStatus.FAILED}
@@ -113,19 +114,35 @@ def _compare_identity(
     if stored.thread_id != requested.thread_id:
         raise RunExecutionError("conflicting_thread_id")
     if stored.run_id != requested.run_id:
-        raise RunExecutionError("conflicting_run_id")
+        raise RunExecutionError("conflicting_run_identity")
     if (stored.task_id, stored.task_version) != (
         requested.task_id,
         requested.task_version,
     ):
-        raise RunExecutionError("conflicting_task")
+        raise RunExecutionError("conflicting_task_identity")
     if (
         stored.contract_id != requested.contract_id
         or stored.contract_hash != requested.contract_hash
     ):
-        raise RunExecutionError("conflicting_contract")
+        raise RunExecutionError("conflicting_contract_identity")
     if stored.initial_input_hash != requested.initial_input_hash:
-        raise RunExecutionError("conflicting_initial_input")
+        raise RunExecutionError("conflicting_initial_input_identity")
+
+
+def validate_start_run(
+    graph: Any,
+    initial_input: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> RunExecutionIdentity:
+    """Validate START identity without invoking any graph node."""
+
+    requested = execution_identity(initial_input, config)
+    existing = _snapshot_values(graph, config)
+    if existing:
+        stored = _stored_identity(existing)
+        _compare_identity(stored, requested)
+        raise RunExecutionError("thread_already_exists_use_resume_or_inspect")
+    return requested
 
 
 def start_run(
@@ -135,12 +152,7 @@ def start_run(
 ) -> dict[str, Any]:
     """Start only a checkpoint thread that has never existed."""
 
-    requested = execution_identity(initial_input, config)
-    existing = _snapshot_values(graph, config)
-    if existing:
-        stored = _stored_identity(existing)
-        _compare_identity(stored, requested)
-        raise RunExecutionError("thread_already_exists_use_resume_or_inspect")
+    requested = validate_start_run(graph, initial_input, config)
     payload = dict(initial_input)
     payload["execution_identity"] = requested
     return graph.invoke(payload, dict(config))

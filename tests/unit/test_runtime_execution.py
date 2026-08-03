@@ -7,11 +7,16 @@ import pytest
 from auto_researcher.contracts.enums import RunStatus
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.execution import (
+    EXECUTION_ERROR_VOCABULARY_VERSION,
     RunExecutionError,
     inspect_terminal_run,
     resume_run,
     start_run,
 )
+
+
+def test_execution_error_vocabulary_is_public_and_versioned():
+    assert EXECUTION_ERROR_VOCABULARY_VERSION == "run-execution-errors-v1"
 
 
 def _input(contract, *, run_id="run-1", thread_id="thread-1", **extra):
@@ -69,6 +74,28 @@ def test_start_rejects_an_existing_non_terminal_thread_and_resume_continues(
     with pytest.raises(RunExecutionError, match="thread_already_exists"):
         start_run(graph, initial, _config())
 
+    conflicts = [
+        (
+            _input(contract_factory(), run_id="different-run"),
+            "conflicting_run_identity",
+        ),
+        (
+            _input(contract_factory().model_copy(update={"question": "different"})),
+            "conflicting_contract_identity",
+        ),
+        (
+            _input(contract_factory().model_copy(update={"task_id": "different-task"})),
+            "conflicting_task_identity",
+        ),
+        (
+            {**initial, "operator_request": "different"},
+            "conflicting_initial_input_identity",
+        ),
+    ]
+    for conflicting, code in conflicts:
+        with pytest.raises(RunExecutionError, match=code):
+            start_run(graph, conflicting, _config())
+
     resumed_graph = build_graph(deterministic_dependencies)
     final = resume_run(resumed_graph, _config())
     assert final["status"] == RunStatus.COMPLETED
@@ -89,8 +116,8 @@ def test_resume_unknown_and_terminal_threads_are_rejected(
 @pytest.mark.parametrize(
     ("changed", "code"),
     [
-        ({"run_id": "run-2"}, "conflicting_run_id"),
-        ({"operator_request": "changed"}, "conflicting_initial_input"),
+        ({"run_id": "run-2"}, "conflicting_run_identity"),
+        ({"operator_request": "changed"}, "conflicting_initial_input_identity"),
     ],
 )
 def test_existing_thread_rejects_conflicting_identity(
@@ -118,11 +145,11 @@ def test_existing_thread_rejects_conflicting_contract_and_task(
     start_run(graph, initial, _config())
 
     changed_contract = contract.model_copy(update={"question": "Changed question"})
-    with pytest.raises(RunExecutionError, match="conflicting_contract"):
+    with pytest.raises(RunExecutionError, match="conflicting_contract_identity"):
         start_run(graph, _input(changed_contract), _config())
 
     changed_task = contract.model_copy(update={"task_id": "different-task"})
-    with pytest.raises(RunExecutionError, match="conflicting_task"):
+    with pytest.raises(RunExecutionError, match="conflicting_task_identity"):
         start_run(graph, _input(changed_task), _config())
 
 

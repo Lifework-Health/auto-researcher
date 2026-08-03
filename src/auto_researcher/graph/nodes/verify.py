@@ -1,6 +1,7 @@
 """Mandatory automatic verifier invocation."""
 
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.graph.nodes.evaluate import validate_reused_evaluation
 from auto_researcher.provenance.reuse import VerificationReuseRecord
 from auto_researcher.runtime.dependencies import RuntimeDependencies
 from auto_researcher.runtime.identity import payload_hash
@@ -14,6 +15,21 @@ def verify_evidence(
     evaluation = state["evaluation_result"]
     assert experiment is not None and evaluation is not None
     evaluation_hash = payload_hash(evaluation)
+    evaluation_reuse = dependencies.provenance_store.get_evaluation_reuse(
+        state["run_id"],
+        experiment.experiment_id,
+    )
+    evaluation_reuse_identity_hash = None
+    if evaluation.success and evaluation.artefact_references:
+        if evaluation_reuse is None:
+            raise RuntimeError("completed_evaluation_reuse_record_missing")
+        reused_evaluation = validate_reused_evaluation(
+            evaluation_reuse,
+            dependencies,
+        )
+        if reused_evaluation != evaluation:
+            raise RuntimeError("completed_evaluation_artefact_payload_conflict")
+        evaluation_reuse_identity_hash = payload_hash(evaluation_reuse)
     verifier_version = getattr(
         dependencies.verifier,
         "version",
@@ -27,6 +43,7 @@ def verify_evidence(
             "evaluation_payload_hash": evaluation_hash,
             "verifier_version": verifier_version,
             "verification_policy_version": policy_version,
+            "evaluation_reuse_identity_hash": evaluation_reuse_identity_hash,
         }
     )
     existing = dependencies.provenance_store.get_verification_reuse(
@@ -56,6 +73,7 @@ def verify_evidence(
                 result_payload_hash=payload_hash(verification),
                 verifier_version=verifier_version,
                 verification_policy_version=policy_version,
+                evaluation_reuse_identity_hash=evaluation_reuse_identity_hash,
                 result=verification,
             )
         )

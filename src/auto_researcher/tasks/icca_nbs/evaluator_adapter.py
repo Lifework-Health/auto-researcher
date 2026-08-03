@@ -66,6 +66,12 @@ class ICCANBSEvaluatorAdapter:
         self._paths = None
         self._propagation_cache = None
 
+    @property
+    def reuse_version(self) -> str:
+        """Version of the full scientific evaluator used for durable reuse."""
+
+        return f"{self.version}:{self.bindings.code_version}"
+
     def _evaluator_manifest(self) -> dict:
         return {
             "task_id": "icca_nbs",

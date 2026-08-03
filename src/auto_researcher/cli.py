@@ -44,6 +44,7 @@ from auto_researcher.runtime.execution import (
     inspect_terminal_run,
     resume_run,
     start_run,
+    validate_start_run,
 )
 from auto_researcher.tasks import TaskRuntimeContext, default_task_registry
 from auto_researcher.tasks.models import TaskPluginError
@@ -335,21 +336,10 @@ def run(
 ) -> None:
     """Run a registered task through the unchanged LangGraph control plane."""
     try:
-        if checkpoint_db.exists() and _checkpoint_values(checkpoint_db, thread_id):
-            raise RunExecutionError("thread_already_exists_use_resume_or_inspect")
         if mock:
             task_id = "synthetic"
-        registry = default_task_registry()
         search_type = _configured_search_type(task_config)
         raw_config = _load_yaml(task_config) if task_config else {}
-        (
-            model_client,
-            planner_model_client,
-            hypothesis_call_config,
-            planner_call_config,
-            agent_budget_policy,
-            agent_mode,
-        ) = _load_live_agents(raw_config)
         requested_budget = int(
             raw_config.get("search", {}).get("trial_budget", max_cycles)
         )
@@ -366,6 +356,24 @@ def run(
             raise ValueError(
                 f"contract targets task {contract.task_id!r}, not {task_id!r}"
             )
+        config = {"configurable": {"thread_id": thread_id}}
+        initial_input = {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "contract": contract,
+        }
+        if checkpoint_db.exists():
+            with _checkpoint_graph_view(checkpoint_db) as graph_view:
+                validate_start_run(graph_view, initial_input, config)
+        registry = default_task_registry()
+        (
+            model_client,
+            planner_model_client,
+            hypothesis_call_config,
+            planner_call_config,
+            agent_budget_policy,
+            agent_mode,
+        ) = _load_live_agents(raw_config)
         task = registry.get(task_id, contract.task_version)
         knowledge_configuration, knowledge_provider = _load_grounding(
             raw_config,
@@ -387,7 +395,6 @@ def run(
             environment=runtime.get("environment", {}),
             task_options=runtime_options,
         )
-        config = {"configurable": {"thread_id": thread_id}}
         with task_sqlite_dependencies(
             task,
             runtime_context,
@@ -410,7 +417,7 @@ def run(
             graph = build_graph(dependencies)
             final = start_run(
                 graph,
-                {"run_id": run_id, "thread_id": thread_id, "contract": contract},
+                initial_input,
                 config,
             )
     except (

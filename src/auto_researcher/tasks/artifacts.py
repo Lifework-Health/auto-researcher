@@ -55,6 +55,17 @@ class ArtefactBundleIntegrity:
     reason_codes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ArtefactBundleIdentity:
+    """Verified identity of one completely published experiment bundle."""
+
+    bundle_sha256: str
+    schema_version: str
+    result_encoding_version: str
+    references: tuple[str, ...]
+    evaluator_manifest_payload_hash: str
+
+
 def json_safe(value: Any) -> Any:
     """Convert scientific scalar/container types without importing domain packages."""
     if isinstance(value, BaseModel):
@@ -347,3 +358,59 @@ def verify_artefact_bundle(
         return ArtefactBundleIntegrity(
             True, False, {}, None, ("bundle_integrity_metadata_invalid",)
         )
+
+
+def artefact_bundle_identity(
+    context: TaskRuntimeContext,
+    experiment_id: str,
+) -> ArtefactBundleIdentity:
+    """Return a fail-closed identity for a complete, compatible bundle."""
+
+    references = artefact_references(context, experiment_id)
+    if context.output_dir is None or not references:
+        raise ArtefactBundleError("completed_evaluation_artefact_bundle_missing")
+    evaluator_reference = next(
+        (
+            reference
+            for reference in references
+            if Path(reference).name == "evaluator_manifest.json"
+        ),
+        None,
+    )
+    if evaluator_reference is None:
+        raise ArtefactBundleError("completed_evaluation_artefact_bundle_missing")
+    try:
+        manifest = json.loads(
+            (context.output_dir / evaluator_reference).read_text(encoding="utf-8"),
+            parse_constant=_reject_non_standard_json,
+        )
+        metadata = manifest[ARTEFACT_BUNDLE_METADATA_KEY]
+        schema_version = str(metadata["schema_version"])
+        encoding_version = str(metadata["result_encoding_version"])
+        expected_filenames = tuple(metadata["expected_filenames"])
+        completed = metadata["completed"]
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ArtefactBundleError(
+            "completed_evaluation_artefact_bundle_tampered"
+        ) from exc
+    if schema_version != ARTEFACT_BUNDLE_SCHEMA_VERSION:
+        raise ArtefactBundleError("artefact_bundle_schema_incompatible")
+    if encoding_version != SCIENTIFIC_JSON_ENCODING_VERSION:
+        raise ArtefactBundleError("artefact_result_encoding_incompatible")
+    if expected_filenames != ARTEFACT_FILENAMES or completed is not True:
+        raise ArtefactBundleError("completed_evaluation_artefact_bundle_tampered")
+    integrity = verify_artefact_bundle(context, experiment_id)
+    if not integrity.complete:
+        raise ArtefactBundleError("completed_evaluation_artefact_bundle_missing")
+    if not integrity.untampered or integrity.bundle_sha256 is None:
+        raise ArtefactBundleError("completed_evaluation_artefact_bundle_tampered")
+    manifest_hash = integrity.payload_sha256.get("evaluator_manifest.json")
+    if manifest_hash is None:
+        raise ArtefactBundleError("completed_evaluation_artefact_bundle_tampered")
+    return ArtefactBundleIdentity(
+        bundle_sha256=integrity.bundle_sha256,
+        schema_version=schema_version,
+        result_encoding_version=encoding_version,
+        references=references,
+        evaluator_manifest_payload_hash=manifest_hash,
+    )

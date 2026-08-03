@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from threading import Lock
@@ -9,9 +10,12 @@ from threading import Lock
 from auto_researcher.contracts.enums import EventType
 from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.provenance.reuse import (
+    EVALUATION_REUSE_PROTOCOL,
     EvaluationReuseRecord,
     VerificationReuseRecord,
 )
+
+EVALUATION_REUSE_STORE_SCHEMA = "evaluation-reuse-store-v2"
 
 
 class SQLiteProvenanceStore:
@@ -59,6 +63,21 @@ class SQLiteProvenanceStore:
                 PRIMARY KEY(run_id, experiment_id)
             )
             """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS provenance_store_metadata (
+                name TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO provenance_store_metadata(name, value)
+            VALUES ('evaluation_reuse_store_schema', ?)
+            """,
+            (EVALUATION_REUSE_STORE_SCHEMA,),
         )
         self._connection.execute(
             """
@@ -196,7 +215,29 @@ class SQLiteProvenanceStore:
             """,
             (run_id, experiment_id),
         ).fetchone()
-        return EvaluationReuseRecord.model_validate_json(row[0]) if row else None
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("evaluation_reuse_record_invalid") from exc
+        if payload.get("protocol_version") != EVALUATION_REUSE_PROTOCOL:
+            raise ValueError("legacy_evaluation_reuse_record_not_reusable")
+        try:
+            return EvaluationReuseRecord.model_validate(payload)
+        except Exception as exc:
+            raise ValueError("evaluation_reuse_record_invalid") from exc
+
+    def evaluation_reuse_store_schema(self) -> str:
+        row = self._connection.execute(
+            """
+            SELECT value FROM provenance_store_metadata
+            WHERE name = 'evaluation_reuse_store_schema'
+            """
+        ).fetchone()
+        if row is None:
+            raise ValueError("evaluation_reuse_store_schema_missing")
+        return str(row[0])
 
     def append_evaluation_reuse(self, record: EvaluationReuseRecord) -> None:
         self._append_reuse_record(
