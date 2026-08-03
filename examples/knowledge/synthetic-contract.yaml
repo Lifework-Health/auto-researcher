@@ -29,4 +29,5 @@ grounding:
   maximum_retrieval_duration: 10
   knowledge_schema_version: synthetic-v1
   knowledge_content_version: fixture-v1
+  permitted_read_safety_modes: [PRIVILEGE_VERIFIED]
 provenance: SIMULATED

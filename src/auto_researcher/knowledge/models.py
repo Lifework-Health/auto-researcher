@@ -16,8 +16,9 @@ from pydantic import (
     model_validator,
 )
 
-from auto_researcher.contracts.enums import KnowledgeRetrievalStatus
+from auto_researcher.contracts.enums import KnowledgeRetrievalStatus, ReadSafetyMode
 from auto_researcher.contracts.models import FrozenJsonDict
+from auto_researcher.knowledge.read_safety import ReadSafetyAttestation
 
 CURIE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*:[^\s:/][^\s]*$")
 PROHIBITED_PROPERTY_NAMES = frozenset(
@@ -69,6 +70,8 @@ class KnowledgeErrorCode(StrEnum):
     AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
     CONNECTIVITY_FAILED = "CONNECTIVITY_FAILED"
     READ_ONLY_NOT_VERIFIED = "READ_ONLY_NOT_VERIFIED"
+    READ_SAFETY_MODE_NOT_PERMITTED = "READ_SAFETY_MODE_NOT_PERMITTED"
+    ATTESTATION_INVALID = "ATTESTATION_INVALID"
     SCHEMA_MISMATCH = "SCHEMA_MISMATCH"
     CONTENT_VERSION_MISMATCH = "CONTENT_VERSION_MISMATCH"
     UNKNOWN_QUERY_TEMPLATE = "UNKNOWN_QUERY_TEMPLATE"
@@ -76,6 +79,9 @@ class KnowledgeErrorCode(StrEnum):
     QUERY_TIMEOUT = "QUERY_TIMEOUT"
     TRANSIENT_QUERY_FAILURE = "TRANSIENT_QUERY_FAILURE"
     FORBIDDEN_WRITE_DETECTED = "FORBIDDEN_WRITE_DETECTED"
+    OPERATOR_ATTESTED_WRITE_BARRIER_VIOLATION = (
+        "OPERATOR_ATTESTED_WRITE_BARRIER_VIOLATION"
+    )
     RESULT_LIMIT_EXCEEDED = "RESULT_LIMIT_EXCEEDED"
     INVALID_PROVENANCE = "INVALID_PROVENANCE"
     INVALID_IDENTIFIER = "INVALID_IDENTIFIER"
@@ -93,13 +99,15 @@ class KnowledgeProviderConfiguration(KnowledgeModel):
     query_timeout_seconds: float = Field(default=20, gt=0, le=300)
     maximum_records: int = Field(default=100, ge=1, le=10_000)
     maximum_attempts: int = Field(default=2, ge=1, le=3)
+    maximum_graph_hops: int = Field(default=3, ge=0, le=6)
     minimum_assertion_confidence: float | None = Field(
         default=None,
         ge=0,
         le=1,
     )
     allowed_trust_tiers: frozenset[KnowledgeTrustTier] | None = None
-    require_verified_read_only: bool = True
+    read_safety_mode: ReadSafetyMode = ReadSafetyMode.PRIVILEGE_VERIFIED
+    read_safety_attestation: ReadSafetyAttestation | None = None
     enabled: bool = True
 
     @model_validator(mode="after")
@@ -115,6 +123,15 @@ class KnowledgeProviderConfiguration(KnowledgeModel):
             raise ValueError("content_version must be a safe identifier")
         if not simple.fullmatch(self.graph_alias):
             raise ValueError("graph_alias must not contain connection details")
+        if self.read_safety_mode == ReadSafetyMode.OPERATOR_ATTESTED:
+            if self.provider_id != "neo4j" or self.read_safety_attestation is None:
+                raise ValueError(
+                    "operator-attested mode requires Neo4j and an attestation"
+                )
+        elif self.read_safety_attestation is not None:
+            raise ValueError(
+                "an attestation is valid only in OPERATOR_ATTESTED mode"
+            )
         return self
 
 
@@ -133,6 +150,13 @@ class KnowledgeReadinessResult(KnowledgeModel):
     provider_version: str = Field(min_length=1)
     schema_version: str = Field(min_length=1)
     content_version: str = Field(min_length=1)
+    read_safety_mode: ReadSafetyMode = ReadSafetyMode.PRIVILEGE_VERIFIED
+    privilege_verified: bool = False
+    attestation_valid: bool = False
+    attestation_id: str | None = None
+    attestation_version: str | None = None
+    attestation_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    residual_risk: str | None = None
 
     @model_validator(mode="after")
     def ready_has_no_failed_checks(self) -> "KnowledgeReadinessResult":

@@ -12,7 +12,8 @@ grounding:
   database: static
   schema_version: synthetic-v1
   content_version: fixture-v1
-  require_verified_read_only: true
+  read_safety:
+    mode: PRIVILEGE_VERIFIED
   query_timeout_seconds: 10
   maximum_records: 10
   minimum_assertion_confidence: 0.6

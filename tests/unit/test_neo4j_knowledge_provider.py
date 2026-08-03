@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from types import SimpleNamespace
+from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from auto_researcher.knowledge.identity import query_plan_hash
 from auto_researcher.knowledge.models import (
@@ -19,15 +21,16 @@ from auto_researcher.knowledge.providers.neo4j import (
 )
 from auto_researcher.knowledge.templates import default_template_registry
 from tests.conftest import fixed_clock
+from tests.helpers_read_safety import operator_configuration
 
 
 class FakeResult:
-    def __init__(self, rows, *, updates=False):
+    def __init__(self, rows, *, updates=False, system_updates=False):
         self.rows = rows
         self.summary = SimpleNamespace(
             counters=SimpleNamespace(
                 contains_updates=updates,
-                contains_system_updates=False,
+                contains_system_updates=system_updates,
             )
         )
 
@@ -60,7 +63,11 @@ class FakeTransaction:
         rows = (
             self.driver.row if isinstance(self.driver.row, list) else [self.driver.row]
         )
-        return FakeResult(rows, updates=self.driver.report_updates)
+        return FakeResult(
+            rows,
+            updates=self.driver.report_updates,
+            system_updates=self.driver.report_system_updates,
+        )
 
 
 class FakeSession:
@@ -82,9 +89,16 @@ class FakeSession:
 
 
 class FakeDriver:
-    def __init__(self, row, *, report_updates=False):
+    def __init__(
+        self,
+        row,
+        *,
+        report_updates=False,
+        report_system_updates=False,
+    ):
         self.row = row
         self.report_updates = report_updates
+        self.report_system_updates = report_system_updates
         self.queries = []
         self.databases = []
         self.closed = False
@@ -379,3 +393,165 @@ def test_repeated_entities_merge_safe_source_references():
     gene = next(item for item in bundle.entities if item.curie == "HGNC:11998")
     assert gene.source_references == ("source:go:v1", "source:go:v2")
     assert len(bundle.entities) == 3
+
+
+def test_operator_attested_readiness_and_query_audit_are_explicit():
+    configuration = operator_configuration()
+    driver = FakeDriver(_row())
+    provider = Neo4jKnowledgeProvider(
+        configuration,
+        default_template_registry(),
+        driver=driver,
+        clock=fixed_clock,
+        query_factory=lambda text, timeout: text,
+    )
+
+    readiness = provider.readiness(configuration)
+    assert readiness.ready
+    assert readiness.read_safety_mode.value == "OPERATOR_ATTESTED"
+    assert not readiness.privilege_verified
+    assert readiness.attestation_valid
+    assert readiness.residual_risk == (
+        "DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY"
+    )
+    assert any("weaker" in warning for warning in readiness.warnings)
+    assert not any("SHOW USER PRIVILEGES" in query for query, _ in driver.queries)
+
+    bundle = provider.retrieve(_request())
+    metadata = bundle.graph_snapshot.safe_graph_metadata
+    assert metadata["read_safety_mode"] == "OPERATOR_ATTESTED"
+    assert metadata["credential_class"] == "MANAGED_INSTANCE_PRIMARY"
+    assert metadata["residual_risk"] == (
+        "DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY"
+    )
+    assert all(
+        item["zero_updates_confirmed"]
+        and item["zero_system_updates_confirmed"]
+        for item in metadata["query_execution_audit"]
+    )
+
+
+def test_operator_attested_requires_current_attestation():
+    with pytest.raises(ValidationError, match="requires Neo4j and an attestation"):
+        _configuration().model_copy(
+            update={
+                "read_safety_mode": "OPERATOR_ATTESTED",
+                "read_safety_attestation": None,
+            }
+        ).model_validate(
+            {
+                **_configuration().model_dump(mode="python"),
+                "read_safety_mode": "OPERATOR_ATTESTED",
+                "read_safety_attestation": None,
+            }
+        )
+
+    expired = operator_configuration(
+        expires_at=datetime(2026, 7, 30, 11, 0, tzinfo=UTC)
+    )
+    provider = Neo4jKnowledgeProvider(
+        expired,
+        default_template_registry(),
+        driver=FakeDriver(_row()),
+        clock=fixed_clock,
+        query_factory=lambda text, timeout: text,
+    )
+    readiness = provider.readiness(expired)
+    assert not readiness.ready
+    assert not readiness.attestation_valid
+    assert "ATTESTATION_INVALID" in {item.value for item in readiness.errors}
+
+
+def test_operator_attested_rejects_unattested_template_and_update_counters():
+    preflight_only = operator_configuration(
+        template_ids=("generic.schema_preflight@1.0.0",)
+    )
+    provider = Neo4jKnowledgeProvider(
+        preflight_only,
+        default_template_registry(),
+        driver=FakeDriver(_row()),
+        clock=fixed_clock,
+        query_factory=lambda text, timeout: text,
+    )
+    assert provider.readiness(preflight_only).ready
+    with pytest.raises(KnowledgeProviderError, match="ATTESTATION_INVALID"):
+        provider.retrieve(_request())
+
+    for driver in (
+        FakeDriver(_row(), report_updates=True),
+        FakeDriver(_row(), report_system_updates=True),
+    ):
+        configuration = operator_configuration()
+        provider = Neo4jKnowledgeProvider(
+            configuration,
+            default_template_registry(),
+            driver=driver,
+            clock=fixed_clock,
+            query_factory=lambda text, timeout: text,
+        )
+        with pytest.raises(
+            KnowledgeProviderError,
+            match="OPERATOR_ATTESTED_WRITE_BARRIER_VIOLATION",
+        ):
+            provider.retrieve(_request())
+
+
+def test_privilege_verified_fails_when_privileges_unavailable_or_admin_like():
+    class PrivilegeUnavailableSession(FakeSession):
+        def run(self, query):
+            raise RuntimeError("safe fixture")
+
+    class PrivilegeUnavailableDriver(FakeDriver):
+        def session(self, *, database):
+            self.databases.append(database)
+            return PrivilegeUnavailableSession(self)
+
+    configuration = _configuration()
+    unavailable = Neo4jKnowledgeProvider(
+        configuration,
+        default_template_registry(),
+        driver=PrivilegeUnavailableDriver(_row()),
+        clock=fixed_clock,
+    ).readiness(configuration)
+    assert not unavailable.ready
+    assert not unavailable.privilege_verified
+
+    class AdminPrivilegeSession(FakeSession):
+        def run(self, query):
+            return FakeResult(
+                [{"access": "GRANTED", "action": "create index"}]
+            )
+
+    class AdminPrivilegeDriver(FakeDriver):
+        def session(self, *, database):
+            self.databases.append(database)
+            return AdminPrivilegeSession(self)
+
+    admin_like = Neo4jKnowledgeProvider(
+        configuration,
+        default_template_registry(),
+        driver=AdminPrivilegeDriver(_row()),
+        clock=fixed_clock,
+    ).readiness(configuration)
+    assert not admin_like.ready
+    assert not admin_like.privilege_verified
+
+    class AllPrivilegesSession(FakeSession):
+        def run(self, query):
+            return FakeResult(
+                [{"access": "GRANTED", "action": "all database privileges"}]
+            )
+
+    class AllPrivilegesDriver(FakeDriver):
+        def session(self, *, database):
+            self.databases.append(database)
+            return AllPrivilegesSession(self)
+
+    all_privileges = Neo4jKnowledgeProvider(
+        configuration,
+        default_template_registry(),
+        driver=AllPrivilegesDriver(_row()),
+        clock=fixed_clock,
+    ).readiness(configuration)
+    assert not all_privileges.ready
+    assert not all_privileges.privilege_verified

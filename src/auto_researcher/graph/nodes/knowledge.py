@@ -4,6 +4,7 @@ from auto_researcher.contracts.enums import (
     KnowledgeGroundingMode,
     KnowledgeRetrievalStatus,
     RunStatus,
+    ReadSafetyMode,
 )
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.knowledge.identity import content_hash, retrieval_id
@@ -62,6 +63,16 @@ def retrieve_knowledge(
             required,
             KnowledgeErrorCode.PROVIDER_NOT_CONFIGURED.value,
         )
+    if configuration.read_safety_mode not in requirement.permitted_read_safety_modes:
+        return _unavailable(
+            required,
+            KnowledgeErrorCode.READ_SAFETY_MODE_NOT_PERMITTED.value,
+        )
+    if configuration.read_safety_mode == ReadSafetyMode.UNVERIFIED:
+        return _unavailable(
+            required,
+            KnowledgeErrorCode.READ_ONLY_NOT_VERIFIED.value,
+        )
     try:
         plan = dependencies.task.create_knowledge_query_plan(
             state["contract"],
@@ -98,6 +109,24 @@ def retrieve_knowledge(
                 "query_plan": plan.model_dump(mode="json"),
                 "template_hashes": template_hashes,
                 "grounding_policy_hash": policy_digest,
+                "read_safety": {
+                    "mode": configuration.read_safety_mode.value,
+                    "attestation_id": (
+                        configuration.read_safety_attestation.attestation_id
+                        if configuration.read_safety_attestation
+                        else None
+                    ),
+                    "attestation_version": (
+                        configuration.read_safety_attestation.attestation_version
+                        if configuration.read_safety_attestation
+                        else None
+                    ),
+                    "attestation_hash": (
+                        configuration.read_safety_attestation.attestation_hash
+                        if configuration.read_safety_attestation
+                        else None
+                    ),
+                },
             }
         )
         request_id = retrieval_id(

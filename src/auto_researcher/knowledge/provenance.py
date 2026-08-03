@@ -13,7 +13,42 @@ from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.knowledge.store import KnowledgeRetrievalStore
 from auto_researcher.provenance.protocols import ProvenanceStore
 
-CODE_VERSION = "auto-researcher-v2.1-pr5"
+CODE_VERSION = "auto-researcher-v2.1-pr5.5"
+
+
+def _read_safety_outputs(bundle) -> tuple[str, ...]:
+    if bundle is None:
+        return ()
+    metadata = bundle.graph_snapshot.safe_graph_metadata
+    outputs = (
+        f"read_safety_mode:{metadata.get('read_safety_mode', 'none')}",
+        f"attestation_id:{metadata.get('attestation_id', 'none')}",
+        f"attestation_version:{metadata.get('attestation_version', 'none')}",
+        f"attestation_hash:{metadata.get('attestation_hash', 'none')}",
+        f"platform:{metadata.get('platform', 'none')}",
+        f"service_tier:{metadata.get('service_tier', 'none')}",
+        f"credential_class:{metadata.get('credential_class', 'none')}",
+        f"privilege_introspection:{metadata.get('privilege_introspection', 'none')}",
+        f"residual_risk:{metadata.get('residual_risk', 'none')}",
+    )
+    audit = metadata.get("query_execution_audit", ())
+    if not isinstance(audit, (list, tuple)):
+        return outputs
+    executions = []
+    for item in audit:
+        if not isinstance(item, dict):
+            continue
+        executions.extend(
+            (
+                f"executed_template:{item.get('template_id', 'none')}",
+                f"executed_template_hash:{item.get('template_hash', 'none')}",
+                "zero_updates_confirmed:"
+                f"{str(bool(item.get('zero_updates_confirmed'))).lower()}",
+                "zero_system_updates_confirmed:"
+                f"{str(bool(item.get('zero_system_updates_confirmed'))).lower()}",
+            )
+        )
+    return outputs + tuple(executions)
 
 
 def _event_type(status: KnowledgeRetrievalStatus) -> EventType | None:
@@ -71,6 +106,7 @@ def append_knowledge_retrieval_events(
             ),
             f"bundle_id:{bundle.bundle_id if bundle else 'none'}",
             f"bundle_hash:{bundle.bundle_hash if bundle else 'none'}",
+            *_read_safety_outputs(bundle),
             f"error_codes:{','.join(item.value for item in record.errors) or 'none'}",
             f"retry_of:{record.retry_of_retrieval_id or 'none'}",
         )

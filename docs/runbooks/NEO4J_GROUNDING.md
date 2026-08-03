@@ -9,7 +9,7 @@ adapter only where grounding is needed:
 .venv/bin/pip install -e '.[knowledge-neo4j]'
 ```
 
-PR 5 pins `neo4j==6.2.0`. Create a dedicated database account with only the
+PR 5 pins `neo4j==6.2.0`. Prefer a dedicated database account with only the
 minimum traversal privileges needed by the registered templates. Do not reuse
 loader/admin credentials. Supply connection values only at runtime:
 
@@ -41,6 +41,7 @@ grounding:
   maximum_retrieval_duration: 20
   knowledge_schema_version: knowledge-graph-auto-v0.1
   knowledge_content_version: backbone-2026-06
+  permitted_read_safety_modes: [PRIVILEGE_VERIFIED]
 ```
 
 The task YAML selects a configuration no weaker than that contract:
@@ -53,7 +54,8 @@ grounding:
   database: neo4j
   schema_version: knowledge-graph-auto-v0.1
   content_version: backbone-2026-06
-  require_verified_read_only: true
+  read_safety:
+    mode: PRIVILEGE_VERIFIED
   query_timeout_seconds: 20
   maximum_records: 100
   maximum_attempts: 2
@@ -70,6 +72,21 @@ grounding:
 
 Seeds must be stable identifiers. Patient-derived lists, patient IDs, mutation
 matrix values and clinical rows are prohibited.
+
+`permitted_read_safety_modes` is a contract ceiling. Runtime configuration may
+select only a listed mode; it cannot silently downgrade or reinterpret the
+contract. The closed modes in `knowledge-read-safety-v2` are:
+
+- `PRIVILEGE_VERIFIED`: the effective database privileges are visible and no
+  write, schema or administrative privilege is present.
+- `OPERATOR_ATTESTED`: a time-bounded operator attestation authorises the
+  compensating query-level controls described below. This is weaker than
+  database-enforced read-only access.
+- `UNVERIFIED`: no read-safety assurance. It cannot satisfy required grounding.
+
+The removed `require_verified_read_only: false` setting is rejected because it
+is ambiguous. A legacy value of `true` continues to mean
+`PRIVILEGE_VERIFIED` only; new configurations should use the explicit mode.
 
 ## Readiness and schema preflight
 
@@ -92,11 +109,78 @@ able to execute those two procedures. Missing `INCLUDES`, required labels or
 stable projected identifiers fail closed. The inspected profile uses
 `Signature-[:INCLUDES]->Gene`; Network nodes are metadata-only.
 
-To independently confirm least privilege, review `SHOW CURRENT USER
-PRIVILEGES` as an administrator and verify no `WRITE`, `CREATE`, `DELETE` or
-property-setting grant exists for this account. Also monitor server query logs
+To independently confirm least privilege, review `SHOW USER PRIVILEGES AS
+COMMANDS` as an administrator and verify no graph write, schema write or
+administrative grant exists for this account. Also monitor server query logs
 for the registered template hashes. Do not grant writes merely to make the
 readiness check pass.
+
+## AuraDB Professional operator attestation
+
+Aura project `Viewer` and Aura Tool authentication are control-plane and
+hosted-tool identities; they are not external Python-driver database
+credentials. AuraDB Professional external driver access therefore uses a
+native instance credential. When its effective privilege set cannot be
+inspected or constrained to read-only, classify it honestly as
+`MANAGED_INSTANCE_PRIMARY`. Never describe that credential as a read-only
+identity.
+
+`OPERATOR_ATTESTED` is available only when the research contract explicitly
+permits it. Copy the credential-free example attestation to a protected
+operator-controlled location outside source control, replace every placeholder,
+bind it to the exact graph, schema, content version, caps and registered
+template hashes, and obtain the named review. The attestation must:
+
+- identify AuraDB Professional, the graph alias and the native credential
+  class without containing a URI, username, password or token;
+- be immutable, deterministically hashed, unexpired and versioned;
+- list every permitted versioned template and all prohibited capabilities;
+- state `DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY` as residual risk;
+- be renewed whenever its expiry, graph identity, schema/content version,
+  query caps, database name or template registry changes.
+
+Configure it explicitly:
+
+```yaml
+grounding:
+  mode: REQUIRED
+  provider: neo4j
+  graph_alias: cell-biology-grounding
+  database: neo4j
+  schema_version: knowledge-graph-auto-v0.1
+  content_version: backbone-2026-06
+  read_safety:
+    mode: OPERATOR_ATTESTED
+    attestation_file: /protected/operator/read-safety-attestation.yaml
+  query_timeout_seconds: 20
+  maximum_records: 100
+  maximum_attempts: 2
+```
+
+Validate and inspect the credential-free record before readiness:
+
+```bash
+auto-researcher knowledge attestation validate \
+  --file /protected/operator/read-safety-attestation.yaml
+auto-researcher knowledge attestation inspect \
+  --file /protected/operator/read-safety-attestation.yaml
+```
+
+These commands validate shape, expiry and the attestation content hash. Runtime
+readiness additionally validates the configuration hash and registered template
+hashes. They do not approve, sign or renew an attestation.
+
+In operator-attested mode the provider accepts only registered, statically
+linted templates through explicit read transactions. It enforces timeout, row
+and hop caps, runs the registered schema preflight, requires both data and system
+update counters to be present and zero, validates the final bundle, and records
+the safe execution audit. Any missing counter, unattested template, hash drift,
+expired attestation or update signal fails closed. These barriers reduce risk;
+they do not change the native credential's database permissions.
+
+Use `PRIVILEGE_VERIFIED` instead whenever database-enforced least privilege is
+available. Move to an Aura tier or deployment supporting dedicated database
+RBAC when database-enforced read-only access is a hard requirement.
 
 ## Templates and bundle inspection
 
@@ -146,7 +230,13 @@ change its status.
 - `AUTHENTICATION_FAILED` or `CONNECTIVITY_FAILED`: review account/database and
   network policy; raw driver messages are intentionally suppressed.
 - `READ_ONLY_NOT_VERIFIED`: confirm the privilege view is available to the
-  account or use an operator-reviewed setting; no test write is attempted.
+  account. Do not perform a test write.
+- `READ_SAFETY_MODE_NOT_PERMITTED`: the runtime selected a weaker mode than the
+  research contract allows.
+- `ATTESTATION_INVALID`: inspect only the safe validation codes; renew or
+  replace the attestation rather than bypassing the check.
+- `OPERATOR_ATTESTED_WRITE_BARRIER_VIOLATION`: an update counter was missing or
+  non-zero. Stop; do not retry with the same retrieval identity.
 - `SCHEMA_MISMATCH`: compare the deployment with the registered schema profile.
 - `CONTENT_VERSION_MISMATCH`: align reviewed contract and runtime labels.
 - `QUERY_TIMEOUT` or `RESULT_LIMIT_EXCEEDED`: narrow task-owned seeds; do not
@@ -154,6 +244,7 @@ change its status.
 - `BUNDLE_VALIDATION_FAILED`: inspect the safe validation summary.
 
 Aura tiers and roles may restrict privilege introspection, query logging or
-test-database creation. Live Aura validation is optional and must be explicitly
+test-database creation. Project Viewer access does not establish a Python-driver
+read-only identity. Live Aura validation is optional and must be explicitly
 enabled outside ordinary CI. No successful live test should be reported unless
 it actually ran.

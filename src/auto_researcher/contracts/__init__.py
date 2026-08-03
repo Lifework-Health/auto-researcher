@@ -10,6 +10,7 @@ from auto_researcher.contracts.enums import (
     ProposalSource,
     ProviderErrorCode,
     ProvenanceKind,
+    ReadSafetyMode,
     RunStatus,
     SearchType,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "ProposalSource",
     "ProviderErrorCode",
     "ProvenanceKind",
+    "ReadSafetyMode",
     "ResearchContract",
     "RunStatus",
     "SearchBackendResult",

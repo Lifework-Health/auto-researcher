@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import UTC, datetime
 
 from auto_researcher.agents.models import (
     ModelCallConfig,
@@ -15,6 +16,7 @@ from auto_researcher.contracts.enums import (
     KnowledgeGroundingMode,
     KnowledgeRetrievalStatus,
     ProvenanceKind,
+    ReadSafetyMode,
     RunStatus,
     SearchType,
 )
@@ -39,6 +41,7 @@ from auto_researcher.tasks.synthetic import (
 )
 from tests.conftest import fixed_clock
 from tests.fakes_icca import make_fake_icca_bindings
+from tests.helpers_read_safety import operator_configuration
 from tests.unit.test_neo4j_knowledge_provider import FakeDriver, _row
 
 
@@ -328,6 +331,51 @@ def test_optional_unavailable_continues_but_required_stops_before_model_call(tmp
     assert required_client.calls == []
 
 
+def test_optional_unverified_continues_ungrounded_without_provider_call(tmp_path):
+    contract = _synthetic_contract(KnowledgeGroundingMode.OPTIONAL)
+    contract = contract.model_copy(
+        update={
+            "grounding": contract.grounding.model_copy(
+                update={
+                    "permitted_read_safety_modes": frozenset(
+                        {ReadSafetyMode.UNVERIFIED}
+                    )
+                }
+            )
+        }
+    )
+    configuration = KnowledgeProviderConfiguration(
+        provider_id="static",
+        graph_alias="unverified-fixture",
+        database="static",
+        schema_version="synthetic-v1",
+        content_version="fixture-v1",
+        maximum_records=10,
+        read_safety_mode=ReadSafetyMode.UNVERIFIED,
+    )
+    provider = StaticKnowledgeProvider(configuration, clock=fixed_clock)
+    client = ContextAwareFakeClient(cite_knowledge=False)
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(run_id="unverified", output_dir=tmp_path),
+        contract,
+        default_synthetic_configuration(),
+        model_client=client,
+        hypothesis_call_config=_call_config(),
+        planner_call_config=_call_config(),
+        knowledge_provider=provider,
+        knowledge_configuration=configuration,
+        clock=fixed_clock,
+    )
+
+    final = _invoke(dependencies, contract, "unverified")
+    assert final["status"] == RunStatus.COMPLETED
+    assert final["knowledge_retrieval_status"] == KnowledgeRetrievalStatus.FAILED
+    assert final["knowledge_errors"] == ["READ_ONLY_NOT_VERIFIED"]
+    assert provider.calls == 0
+    assert len(client.calls) == 2
+
+
 def test_disabled_grounding_makes_no_provider_call_and_topology_is_unchanged(tmp_path):
     contract = _synthetic_contract(KnowledgeGroundingMode.DISABLED)
     configuration = KnowledgeProviderConfiguration(
@@ -368,8 +416,11 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
     for filename in ("Combined_binary_matrix.csv", "Combined_clinical.csv"):
         (tmp_path / filename).write_text("fixture,data\n", encoding="utf-8")
     requirement = KnowledgeGroundingRequirement(
-        mode="OPTIONAL",
+        mode="REQUIRED",
         permitted_providers=frozenset({"neo4j"}),
+        permitted_read_safety_modes=frozenset(
+            {ReadSafetyMode.OPERATOR_ATTESTED}
+        ),
         maximum_query_records=10,
         knowledge_schema_version="knowledge-graph-auto-v0.1",
         knowledge_content_version="backbone-test",
@@ -394,14 +445,7 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
         grounding=requirement,
         provenance=ProvenanceKind.REAL,
     )
-    configuration = KnowledgeProviderConfiguration(
-        provider_id="neo4j",
-        graph_alias="cell-biology",
-        database="neo4j",
-        schema_version="knowledge-graph-auto-v0.1",
-        content_version="backbone-test",
-        maximum_records=10,
-    )
+    configuration = operator_configuration()
     driver = FakeDriver(_row())
     provider = Neo4jKnowledgeProvider(
         configuration,
@@ -445,7 +489,11 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
         clock=fixed_clock,
     )
     final = _invoke(dependencies, contract, "icca-knowledge")
-    assert final["status"] == RunStatus.COMPLETED
+    assert final["status"] == RunStatus.COMPLETED, (
+        final["knowledge_errors"],
+        final["stop_reason"],
+        driver.queries,
+    )
     assert (
         final["active_hypothesis"].grounding_status
         == GroundingStatus.KNOWLEDGE_GROUNDED
@@ -453,6 +501,19 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
     assert final["knowledge_bundle_reference"].reference_ids
     assert any("nested_labels" in query for query, _ in driver.queries)
     assert "retrieve_knowledge" in final["executed_nodes"]
+    knowledge_event = next(
+        event
+        for event in dependencies.provenance_store.list_events("icca-knowledge")
+        if event.event_type.value == "KNOWLEDGE_RETRIEVAL_COMPLETED"
+    )
+    provenance_text = "\n".join(knowledge_event.output_references)
+    assert "read_safety_mode:OPERATOR_ATTESTED" in provenance_text
+    assert "credential_class:MANAGED_INSTANCE_PRIMARY" in provenance_text
+    assert "zero_updates_confirmed:true" in provenance_text
+    assert "zero_system_updates_confirmed:true" in provenance_text
+    assert "password" not in provenance_text.casefold()
+    assert "neo4j+s://" not in provenance_text
+    assert "@lifework" not in provenance_text
     queries_before_replay = len(driver.queries)
     connectivity_before_replay = driver.connectivity_calls
     replayed = retrieve_knowledge(
@@ -462,3 +523,91 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
     assert replayed["knowledge_retrieval_status"] == KnowledgeRetrievalStatus.COMPLETED
     assert len(driver.queries) == queries_before_replay
     assert driver.connectivity_calls == connectivity_before_replay
+
+
+def test_required_expired_operator_attestation_stops_before_models_and_evaluator(
+    tmp_path,
+):
+    for filename in ("Combined_binary_matrix.csv", "Combined_clinical.csv"):
+        (tmp_path / filename).write_text("fixture,data\n", encoding="utf-8")
+    requirement = KnowledgeGroundingRequirement(
+        mode="REQUIRED",
+        permitted_providers=frozenset({"neo4j"}),
+        permitted_read_safety_modes=frozenset(
+            {ReadSafetyMode.OPERATOR_ATTESTED}
+        ),
+        maximum_query_records=10,
+        knowledge_schema_version="knowledge-graph-auto-v0.1",
+        knowledge_content_version="backbone-test",
+    )
+    contract = ResearchContract(
+        contract_id="icca-expired-attestation",
+        schema_version="1.0",
+        task_id="icca_nbs",
+        task_version="1.0",
+        objective_version="0.9",
+        primary_metric="stability_objective",
+        task_constraints_version="1.0",
+        question="Which bounded configuration is eligible?",
+        objective="maximise stability",
+        constraints={},
+        allowed_search_types=frozenset({SearchType.DIRECT}),
+        evaluator_id="icca-nbs-v2-evaluator",
+        verifier_id="deterministic-verifier",
+        maximum_cycles=1,
+        maximum_experiments=1,
+        maximum_cost=2,
+        grounding=requirement,
+        provenance=ProvenanceKind.REAL,
+    )
+    configuration = operator_configuration(
+        expires_at=datetime(2026, 7, 30, 11, 0, tzinfo=UTC)
+    )
+    provider = Neo4jKnowledgeProvider(
+        configuration,
+        default_template_registry(),
+        driver=FakeDriver(_row()),
+        clock=fixed_clock,
+        query_factory=lambda text, timeout: text,
+    )
+    client = ContextAwareFakeClient(icca=True)
+    bindings, evaluator_calls = make_fake_icca_bindings()
+    dependencies = task_memory_dependencies(
+        ICCANBSTask(bindings),
+        TaskRuntimeContext(
+            run_id="expired-attestation",
+            data_dir=tmp_path,
+            workspace_dir=tmp_path,
+            output_dir=tmp_path / "output-expired",
+            task_options={
+                "grounding": {
+                    "include_network_catalog": False,
+                    "gene_curies": ["HGNC:11998"],
+                    "gene_seed_provenance": "CURATED",
+                    "include_pathways": True,
+                }
+            },
+            manifest_created_at=fixed_clock(),
+        ),
+        contract,
+        {
+            "network": "Ideker",
+            "alignment": "Intersect",
+            "alpha": 0.7,
+            "K": 5,
+            "r": 10,
+        },
+        model_client=client,
+        hypothesis_call_config=_call_config(),
+        planner_call_config=_call_config(),
+        knowledge_provider=provider,
+        knowledge_configuration=configuration,
+        clock=fixed_clock,
+    )
+
+    final = _invoke(dependencies, contract, "expired-attestation")
+    assert final["status"] == RunStatus.STOPPED
+    assert final["stop_reason"] == "required_knowledge_unavailable"
+    assert final["knowledge_errors"] == ["ATTESTATION_INVALID"]
+    assert client.calls == []
+    assert evaluator_calls["evaluate"] == 0
