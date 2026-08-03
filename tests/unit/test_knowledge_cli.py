@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
 from typer.testing import CliRunner
 
 from auto_researcher.cli import app
 from auto_researcher.contracts.enums import KnowledgeRetrievalStatus
 from auto_researcher.knowledge.store import SQLiteKnowledgeRetrievalStore
+from tests.helpers_read_safety import operator_configuration
 from tests.unit.test_knowledge_replay import _runtime
 
 
@@ -115,3 +117,37 @@ def test_knowledge_cli_lists_readiness_shows_and_retries_safely(tmp_path):
     )
     assert retried.exit_code == 0
     assert "linked to ambiguous-retrieval" in retried.stdout
+
+
+def test_attestation_cli_reports_only_safe_identity_and_risk(tmp_path):
+    attestation = operator_configuration().read_safety_attestation
+    assert attestation is not None
+    path = tmp_path / "attestation.yaml"
+    path.write_text(
+        yaml.safe_dump(attestation.model_dump(mode="json"), sort_keys=True),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    validated = runner.invoke(
+        app,
+        ["knowledge", "attestation", "validate", "--file", str(path)],
+    )
+    assert validated.exit_code == 0, validated.stdout
+    assert "Valid: true" in validated.stdout
+    assert "PROFESSIONAL" in validated.stdout
+    assert "DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY" in validated.stdout
+    assert "password" not in validated.stdout.casefold()
+    assert "neo4j+s://" not in validated.stdout
+    assert "@" not in validated.stdout.split("Templates:", 1)[0]
+
+    tampered = attestation.model_copy(update={"attestation_hash": "1" * 64})
+    path.write_text(
+        yaml.safe_dump(tampered.model_dump(mode="json"), sort_keys=True),
+        encoding="utf-8",
+    )
+    rejected = runner.invoke(
+        app,
+        ["knowledge", "attestation", "inspect", "--file", str(path)],
+    )
+    assert rejected.exit_code == 1
+    assert "ATTESTATION_HASH_MISMATCH" in rejected.stdout

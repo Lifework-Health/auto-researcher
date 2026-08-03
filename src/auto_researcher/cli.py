@@ -20,6 +20,7 @@ from auto_researcher.agents.models import (
 )
 from auto_researcher.contracts.enums import (
     KnowledgeGroundingMode,
+    ReadSafetyMode,
     RunStatus,
     SearchType,
 )
@@ -28,6 +29,11 @@ from auto_researcher.graph.builder import build_graph
 from auto_researcher.knowledge.models import KnowledgeProviderConfiguration
 from auto_researcher.knowledge.providers.neo4j import Neo4jKnowledgeProvider
 from auto_researcher.knowledge.providers.static import StaticKnowledgeProvider
+from auto_researcher.knowledge.read_safety import (
+    ReadSafetyAttestation,
+    attestation_content_hash,
+    validate_operator_attestation,
+)
 from auto_researcher.knowledge.schemas.knowledge_graph_auto_v0_1 import (
     KnowledgeGraphAutoProfile,
 )
@@ -72,8 +78,13 @@ knowledge_retrievals_app = typer.Typer(
     no_args_is_help=True,
     help="Inspect or explicitly retry knowledge retrievals.",
 )
+knowledge_attestation_app = typer.Typer(
+    no_args_is_help=True,
+    help="Validate or safely inspect operator read-safety attestations.",
+)
 app.add_typer(knowledge_app, name="knowledge")
 knowledge_app.add_typer(knowledge_retrievals_app, name="retrievals")
+knowledge_app.add_typer(knowledge_attestation_app, name="attestation")
 DEFAULT_DATA_DIR = Path(".auto-researcher")
 
 
@@ -244,6 +255,50 @@ def _load_grounding(
     )
     if confidence < contract.grounding.minimum_assertion_confidence:
         raise ValueError("runtime grounding confidence threshold weakens the contract")
+    read_safety = raw.get("read_safety", {})
+    if not isinstance(read_safety, dict):
+        raise ValueError("grounding.read_safety must be a mapping")
+    legacy_read_only = raw.get("require_verified_read_only")
+    if legacy_read_only is False:
+        raise ValueError(
+            "require_verified_read_only=false is ambiguous; select an explicit "
+            "read-safety mode"
+        )
+    if legacy_read_only not in (None, True, False):
+        raise ValueError("require_verified_read_only must be a boolean")
+    safety_mode = ReadSafetyMode(
+        read_safety.get("mode", ReadSafetyMode.PRIVILEGE_VERIFIED.value)
+    )
+    if legacy_read_only is True and safety_mode != ReadSafetyMode.PRIVILEGE_VERIFIED:
+        raise ValueError(
+            "require_verified_read_only=true cannot be combined with another "
+            "read-safety mode"
+        )
+    if safety_mode not in contract.grounding.permitted_read_safety_modes:
+        raise ValueError("runtime read-safety mode weakens the research contract")
+    if (
+        mode == KnowledgeGroundingMode.REQUIRED
+        and safety_mode == ReadSafetyMode.UNVERIFIED
+    ):
+        raise ValueError("UNVERIFIED cannot satisfy REQUIRED grounding")
+    allowed_read_safety_keys = {"mode", "attestation_file"}
+    if set(read_safety) - allowed_read_safety_keys:
+        raise ValueError("grounding.read_safety contains unknown fields")
+    attestation = None
+    if safety_mode == ReadSafetyMode.OPERATOR_ATTESTED:
+        if provider_id != "neo4j":
+            raise ValueError("OPERATOR_ATTESTED is restricted to Neo4j")
+        attestation_file = read_safety.get("attestation_file")
+        if not isinstance(attestation_file, (str, Path)) or not str(
+            attestation_file
+        ).strip():
+            raise ValueError("OPERATOR_ATTESTED requires an attestation file")
+        attestation = ReadSafetyAttestation.model_validate(
+            _load_yaml(Path(attestation_file))
+        )
+    elif "attestation_file" in read_safety:
+        raise ValueError("attestation_file requires OPERATOR_ATTESTED mode")
+    templates = default_template_registry()
     configuration = KnowledgeProviderConfiguration(
         provider_id=provider_id,
         graph_alias=raw.get("graph_alias", provider_id),
@@ -265,12 +320,25 @@ def _load_grounding(
             contract.grounding.maximum_query_records,
         ),
         maximum_attempts=raw.get("maximum_attempts", 2),
+        maximum_graph_hops=contract.grounding.maximum_graph_hops,
         minimum_assertion_confidence=confidence,
         allowed_trust_tiers=allowed_tiers,
-        require_verified_read_only=raw.get("require_verified_read_only", True),
+        read_safety_mode=safety_mode,
+        read_safety_attestation=attestation,
         enabled=raw.get("enabled", True),
     )
-    templates = default_template_registry()
+    if attestation is not None:
+        attestation_errors = validate_operator_attestation(
+            attestation,
+            configuration,
+            templates,
+            now=utc_now(),
+        )
+        if attestation_errors:
+            raise ValueError(
+                "invalid operator read-safety attestation: "
+                + ",".join(attestation_errors)
+            )
     if provider_id == "static":
         provider = StaticKnowledgeProvider(configuration, clock=utc_now)
     elif provider_id == "neo4j":
@@ -804,6 +872,73 @@ def retry_agent_call(
     )
 
 
+def _attestation_report(path: Path) -> tuple[ReadSafetyAttestation | None, tuple[str, ...]]:
+    try:
+        attestation = ReadSafetyAttestation.model_validate(_load_yaml(path))
+    except (OSError, ValueError):
+        return None, ("ATTESTATION_SCHEMA_INVALID",)
+    errors = []
+    if attestation.attestation_hash != attestation_content_hash(attestation):
+        errors.append("ATTESTATION_HASH_MISMATCH")
+    now = utc_now()
+    if now < attestation.reviewed_at:
+        errors.append("ATTESTATION_NOT_YET_VALID")
+    if now >= attestation.expires_at:
+        errors.append("ATTESTATION_EXPIRED")
+    return attestation, tuple(errors)
+
+
+def _print_attestation_report(
+    attestation: ReadSafetyAttestation | None,
+    errors: tuple[str, ...],
+) -> None:
+    if attestation is None:
+        typer.echo("Valid: false")
+        for error in errors:
+            typer.echo(f"error\t{error}")
+        return
+    typer.echo(f"Attestation: {attestation.attestation_id}")
+    typer.echo(f"Version: {attestation.attestation_version}")
+    typer.echo(f"Platform: {attestation.platform.value}")
+    typer.echo(f"Service tier: {attestation.service_tier.value}")
+    typer.echo(f"Graph alias: {attestation.graph_alias}")
+    typer.echo(f"Expires: {attestation.expires_at.isoformat()}")
+    typer.echo(
+        "Templates: " + ",".join(attestation.permitted_query_template_ids)
+    )
+    typer.echo(f"Configuration hash: {attestation.configuration_hash}")
+    typer.echo(f"Attestation hash: {attestation.attestation_hash}")
+    typer.echo(f"Residual risk: {attestation.residual_risk_code.value}")
+    typer.echo(f"Residual risk statement: {attestation.residual_risk_statement}")
+    typer.echo(f"Valid: {str(not errors).lower()}")
+    for error in errors:
+        typer.echo(f"error\t{error}")
+
+
+@knowledge_attestation_app.command("validate")
+def validate_knowledge_attestation(
+    file: Path = typer.Option(..., "--file", exists=True, dir_okay=False),
+) -> None:
+    """Validate attestation shape, deterministic hash and expiry."""
+
+    attestation, errors = _attestation_report(file)
+    _print_attestation_report(attestation, errors)
+    if errors:
+        raise typer.Exit(code=1)
+
+
+@knowledge_attestation_app.command("inspect")
+def inspect_knowledge_attestation(
+    file: Path = typer.Option(..., "--file", exists=True, dir_okay=False),
+) -> None:
+    """Print only credential-free attestation identity and risk fields."""
+
+    attestation, errors = _attestation_report(file)
+    _print_attestation_report(attestation, errors)
+    if errors:
+        raise typer.Exit(code=1)
+
+
 @knowledge_app.command("providers")
 def list_knowledge_providers() -> None:
     """List built-in provider adapters without opening any connection."""
@@ -843,6 +978,14 @@ def knowledge_readiness(
     typer.echo(f"Provider: {result.provider_id}@{result.provider_version}")
     typer.echo(f"Schema: {result.schema_version}")
     typer.echo(f"Content: {result.content_version}")
+    typer.echo(f"Read safety mode: {result.read_safety_mode.value}")
+    typer.echo(f"Privilege verified: {str(result.privilege_verified).lower()}")
+    typer.echo(f"Attestation valid: {str(result.attestation_valid).lower()}")
+    if result.attestation_id is not None:
+        typer.echo(f"Attestation: {result.attestation_id}@{result.attestation_version}")
+        typer.echo(f"Attestation hash: {result.attestation_hash}")
+    if result.residual_risk is not None:
+        typer.echo(f"Residual risk: {result.residual_risk}")
     typer.echo(f"Ready: {str(result.ready).lower()}")
     for check in result.checks:
         typer.echo(f"{check.code}\tpassed={str(check.passed).lower()}\t{check.message}")

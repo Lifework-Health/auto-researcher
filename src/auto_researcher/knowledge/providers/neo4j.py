@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 from typing import Any
 
+from auto_researcher.contracts.enums import ReadSafetyMode
 from auto_researcher.knowledge.identity import (
     assertion_id,
     bundle_content_hash,
@@ -30,12 +31,19 @@ from auto_researcher.knowledge.models import (
     KnowledgeValidationResult,
 )
 from auto_researcher.knowledge.protocols import KnowledgeProviderError
-from auto_researcher.knowledge.templates import KnowledgeQueryTemplateRegistry
+from auto_researcher.knowledge.read_safety import (
+    ReadSafetyResidualRisk,
+    validate_operator_attestation,
+)
+from auto_researcher.knowledge.templates import (
+    KnowledgeQueryTemplateRegistry,
+    lint_read_only_cypher,
+)
 
 
 class Neo4jKnowledgeProvider:
     provider_id = "neo4j"
-    provider_version = "6.2.0-adapter-v1"
+    provider_version = "6.2.0-adapter-v2"
 
     def __init__(
         self,
@@ -144,12 +152,22 @@ class Neo4jKnowledgeProvider:
                     )
                 )
                 errors.append(self._safe_error(exc))
-        read_only_verified = False
-        if configured and not errors:
+        mode = configuration.read_safety_mode
+        privilege_verified = False
+        attestation_valid = False
+        attestation = configuration.read_safety_attestation
+        checks.append(
+            KnowledgeReadinessCheck(
+                code="read_safety_mode",
+                passed=mode != ReadSafetyMode.UNVERIFIED,
+                message=f"Read-safety mode is {mode.value}.",
+            )
+        )
+        if configured and not errors and mode == ReadSafetyMode.PRIVILEGE_VERIFIED:
             try:
                 with self._driver.session(database=configuration.database) as session:
                     result = session.run(
-                        "SHOW CURRENT USER PRIVILEGES "
+                        "SHOW USER PRIVILEGES "
                         "YIELD access, action "
                         "RETURN access, action ORDER BY action"
                     )
@@ -161,29 +179,110 @@ class Neo4jKnowledgeProvider:
                     for row in rows
                     if str(row.get("access", "")).casefold() == "granted"
                 }
-                read_only_verified = not any(
-                    token in action
-                    for action in granted
-                    for token in ("write", "create", "delete", "set property")
-                )
+                permitted = {
+                    "access",
+                    "execute function",
+                    "execute procedure",
+                    "match",
+                    "read",
+                    "show privilege",
+                    "traverse",
+                }
+                privilege_verified = bool(granted) and granted.issubset(permitted)
             except Exception:
                 warnings.append(
-                    "Read-only privilege verification is unavailable; no test write was attempted."
+                    "Privilege inspection is unavailable; no test write was attempted."
                 )
-        checks.append(
-            KnowledgeReadinessCheck(
-                code="read_only_privileges",
-                passed=(
-                    read_only_verified or not configuration.require_verified_read_only
-                ),
-                message=(
-                    "Configured account exposes no granted write privileges."
-                    if read_only_verified
-                    else "Read-only privileges could not be verified."
-                ),
+            checks.append(
+                KnowledgeReadinessCheck(
+                    code="read_only_privileges",
+                    passed=privilege_verified,
+                    message=(
+                        "Effective privileges expose no write, schema or administrative grants."
+                        if privilege_verified
+                        else "Effective read-only privileges could not be verified."
+                    ),
+                )
             )
-        )
-        if configuration.require_verified_read_only and not read_only_verified:
+            if not privilege_verified:
+                errors.append(KnowledgeErrorCode.READ_ONLY_NOT_VERIFIED)
+        elif configured and not errors and mode == ReadSafetyMode.OPERATOR_ATTESTED:
+            assert attestation is not None
+            attestation_errors = validate_operator_attestation(
+                attestation,
+                configuration,
+                self._templates,
+                now=self._clock(),
+            )
+            attestation_valid = not attestation_errors
+            checks.append(
+                KnowledgeReadinessCheck(
+                    code="operator_attestation",
+                    passed=attestation_valid,
+                    message=(
+                        "Operator attestation identity, expiry and hashes are valid."
+                        if attestation_valid
+                        else "Operator attestation validation failed."
+                    ),
+                )
+            )
+            controls_valid = attestation_valid and not self._operator_control_errors()
+            checks.append(
+                KnowledgeReadinessCheck(
+                    code="operator_compensating_controls",
+                    passed=controls_valid,
+                    message=(
+                        "Registered-template read barriers are enforced."
+                        if controls_valid
+                        else "Operator-attested compensating controls are incomplete."
+                    ),
+                )
+            )
+            schema_ready = False
+            if controls_valid:
+                template = self._templates.get(
+                    "generic.schema_preflight",
+                    "1.0.0",
+                )
+                try:
+                    rows = self._execute_read(
+                        template,
+                        {"limit": 1},
+                        deadline=(
+                            self._monotonic()
+                            + configuration.query_timeout_seconds
+                        ),
+                        execution_audit=[],
+                    )
+                    schema_ready = len(rows) == 1 and isinstance(
+                        rows[0].get("labels"),
+                        (list, tuple),
+                    ) and isinstance(
+                        rows[0].get("relationships"),
+                        (list, tuple),
+                    )
+                except Exception:
+                    schema_ready = False
+            checks.append(
+                KnowledgeReadinessCheck(
+                    code="schema_preflight",
+                    passed=schema_ready,
+                    message=(
+                        "Registered schema preflight completed without updates."
+                        if schema_ready
+                        else "Registered schema preflight did not pass."
+                    ),
+                )
+            )
+            warnings.append(
+                "OPERATOR_ATTESTED is weaker than database-enforced read-only RBAC; "
+                "the managed primary credential retains residual capability risk."
+            )
+            if not attestation_valid or not controls_valid:
+                errors.append(KnowledgeErrorCode.ATTESTATION_INVALID)
+            if not schema_ready:
+                errors.append(KnowledgeErrorCode.SCHEMA_MISMATCH)
+        elif mode == ReadSafetyMode.UNVERIFIED:
             errors.append(KnowledgeErrorCode.READ_ONLY_NOT_VERIFIED)
         return KnowledgeReadinessResult(
             ready=not errors,
@@ -194,14 +293,64 @@ class Neo4jKnowledgeProvider:
             provider_version=self.provider_version,
             schema_version=configuration.schema_version,
             content_version=configuration.content_version,
+            read_safety_mode=mode,
+            privilege_verified=privilege_verified,
+            attestation_valid=attestation_valid,
+            attestation_id=(attestation.attestation_id if attestation else None),
+            attestation_version=(
+                attestation.attestation_version if attestation else None
+            ),
+            attestation_hash=(attestation.attestation_hash if attestation else None),
+            residual_risk=(
+                ReadSafetyResidualRisk.DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY.value
+                if mode == ReadSafetyMode.OPERATOR_ATTESTED
+                else None
+            ),
         )
+
+    def _operator_control_errors(self) -> tuple[str, ...]:
+        configuration = self.configuration
+        attestation = configuration.read_safety_attestation
+        if attestation is None:
+            return ("ATTESTATION_MISSING",)
+        errors: list[str] = []
+        if "generic.schema_preflight@1.0.0" not in set(
+            attestation.permitted_query_template_ids
+        ):
+            errors.append("SCHEMA_PREFLIGHT_NOT_ATTESTED")
+        for identity in attestation.permitted_query_template_ids:
+            template_id, version = identity.rsplit("@", 1)
+            try:
+                template = self._templates.get(template_id, version)
+                lint_read_only_cypher(template.cypher)
+            except (KeyError, ValueError):
+                errors.append("TEMPLATE_NOT_REGISTERED_OR_READ_ONLY")
+                continue
+            if template.maximum_hops > configuration.maximum_graph_hops:
+                errors.append("TEMPLATE_HOP_LIMIT_EXCEEDED")
+        if not configuration.database or configuration.query_timeout_seconds <= 0:
+            errors.append("READ_EXECUTION_NOT_BOUNDED")
+        return tuple(dict.fromkeys(errors))
 
     def retrieve(self, request: KnowledgeRetrievalRequest) -> KnowledgeBundle:
         if self._driver is None:
             raise KnowledgeProviderError(
                 KnowledgeErrorCode.PROVIDER_NOT_CONFIGURED.value
             )
+        self._assert_operator_attestation_current()
+        if (
+            request.provider_id != self.provider_id
+            or request.graph_alias != self.configuration.graph_alias
+            or request.schema_version != self.configuration.schema_version
+            or request.content_version != self.configuration.content_version
+            or request.query_plan.maximum_total_records
+            > self.configuration.maximum_records
+        ):
+            raise KnowledgeProviderError(
+                KnowledgeErrorCode.BUNDLE_VALIDATION_FAILED.value
+            )
         all_rows: list[dict[str, Any]] = []
+        execution_audit: list[dict[str, Any]] = []
         deadline = (
             self._monotonic() + self.configuration.query_timeout_seconds
         )
@@ -228,6 +377,14 @@ class Neo4jKnowledgeProvider:
                 raise KnowledgeProviderError(
                     KnowledgeErrorCode.UNKNOWN_QUERY_TEMPLATE.value
                 )
+            self._assert_template_attested(template)
+            if (
+                item.maximum_records > self.configuration.maximum_records
+                or template.maximum_hops > self.configuration.maximum_graph_hops
+            ):
+                raise KnowledgeProviderError(
+                    KnowledgeErrorCode.RESULT_LIMIT_EXCEEDED.value
+                )
             required_labels.update(template.allowed_labels)
             required_relationships.update(template.allowed_relationships)
             prepared.append((template, parameters, item.maximum_records))
@@ -236,13 +393,15 @@ class Neo4jKnowledgeProvider:
             required_labels=required_labels,
             required_relationships=required_relationships,
             deadline=deadline,
+            execution_audit=execution_audit,
         )
         for template, parameters, maximum_records in prepared:
             try:
                 rows = self._execute_read(
-                    template.cypher,
+                    template,
                     parameters,
                     deadline=deadline,
+                    execution_audit=execution_audit,
                 )
             except KnowledgeProviderError:
                 raise
@@ -264,6 +423,7 @@ class Neo4jKnowledgeProvider:
                 required_labels=required_labels,
                 required_relationships=required_relationships,
                 preflight_metadata=preflight_metadata,
+                execution_audit=execution_audit,
             )
         except KnowledgeProviderError:
             raise
@@ -279,6 +439,7 @@ class Neo4jKnowledgeProvider:
         required_labels: set[str],
         required_relationships: set[str],
         deadline: float,
+        execution_audit: list[dict[str, Any]],
     ) -> dict[str, Any]:
         template = self._templates.get("generic.schema_preflight", "1.0.0")
         key = f"{template.template_id}@{template.version}"
@@ -286,11 +447,13 @@ class Neo4jKnowledgeProvider:
             raise KnowledgeProviderError(
                 KnowledgeErrorCode.UNKNOWN_QUERY_TEMPLATE.value
             )
+        self._assert_template_attested(template)
         try:
             rows = self._execute_read(
-                template.cypher,
+                template,
                 {"limit": 1},
                 deadline=deadline,
+                execution_audit=execution_audit,
             )
         except KnowledgeProviderError:
             raise
@@ -325,11 +488,13 @@ class Neo4jKnowledgeProvider:
 
     def _execute_read(
         self,
-        cypher: str,
+        template: Any,
         parameters: dict[str, Any],
         *,
         deadline: float,
+        execution_audit: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        self._assert_template_attested(template)
         for attempt in range(1, self.configuration.maximum_attempts + 1):
             remaining = deadline - self._monotonic()
             if remaining <= 0:
@@ -339,12 +504,20 @@ class Neo4jKnowledgeProvider:
 
             def work(transaction):
                 result = transaction.run(
-                    self._query(cypher, remaining),
+                    self._query(template.cypher, remaining),
                     parameters,
                 )
                 rows = [_safe_plain(dict(record)) for record in result]
                 summary = result.consume()
                 self._assert_no_updates(summary)
+                execution_audit.append(
+                    {
+                        "template_id": f"{template.template_id}@{template.version}",
+                        "template_hash": template.cypher_sha256,
+                        "zero_updates_confirmed": True,
+                        "zero_system_updates_confirmed": True,
+                    }
+                )
                 return rows
 
             managed_work = work
@@ -374,12 +547,60 @@ class Neo4jKnowledgeProvider:
 
     def _assert_no_updates(self, summary: Any) -> None:
         counters = getattr(summary, "counters", None)
+        strict = (
+            self.configuration.read_safety_mode
+            == ReadSafetyMode.OPERATOR_ATTESTED
+        )
+        if strict and (
+            counters is None
+            or not hasattr(counters, "contains_updates")
+            or not hasattr(counters, "contains_system_updates")
+        ):
+            raise KnowledgeProviderError(
+                KnowledgeErrorCode.OPERATOR_ATTESTED_WRITE_BARRIER_VIOLATION.value
+            )
         if counters and (
             bool(getattr(counters, "contains_updates", False))
             or bool(getattr(counters, "contains_system_updates", False))
         ):
+            code = (
+                KnowledgeErrorCode.OPERATOR_ATTESTED_WRITE_BARRIER_VIOLATION
+                if strict
+                else KnowledgeErrorCode.FORBIDDEN_WRITE_DETECTED
+            )
+            raise KnowledgeProviderError(code.value)
+
+    def _assert_operator_attestation_current(self) -> None:
+        mode = self.configuration.read_safety_mode
+        if mode == ReadSafetyMode.UNVERIFIED:
             raise KnowledgeProviderError(
-                KnowledgeErrorCode.FORBIDDEN_WRITE_DETECTED.value
+                KnowledgeErrorCode.READ_ONLY_NOT_VERIFIED.value
+            )
+        if mode != ReadSafetyMode.OPERATOR_ATTESTED:
+            return
+        attestation = self.configuration.read_safety_attestation
+        assert attestation is not None
+        errors = validate_operator_attestation(
+            attestation,
+            self.configuration,
+            self._templates,
+            now=self._clock(),
+        )
+        if errors or self._operator_control_errors():
+            raise KnowledgeProviderError(KnowledgeErrorCode.ATTESTATION_INVALID.value)
+
+    def _assert_template_attested(self, template: Any) -> None:
+        if (
+            self.configuration.read_safety_mode
+            != ReadSafetyMode.OPERATOR_ATTESTED
+        ):
+            return
+        attestation = self.configuration.read_safety_attestation
+        assert attestation is not None
+        identity = f"{template.template_id}@{template.version}"
+        if identity not in set(attestation.permitted_query_template_ids):
+            raise KnowledgeProviderError(
+                KnowledgeErrorCode.ATTESTATION_INVALID.value
             )
 
     def _bundle_from_rows(
@@ -390,6 +611,7 @@ class Neo4jKnowledgeProvider:
         required_labels: set[str],
         required_relationships: set[str],
         preflight_metadata: dict[str, Any],
+        execution_audit: list[dict[str, Any]],
     ) -> KnowledgeBundle:
         bundle_id = stable_identifier("knowledge-bundle", request.retrieval_id)
         sources: dict[str, KnowledgeSource] = {}
@@ -495,6 +717,7 @@ class Neo4jKnowledgeProvider:
             "required_labels": sorted(required_labels),
             "required_relationships": sorted(required_relationships),
         }
+        attestation = self.configuration.read_safety_attestation
         bundle = KnowledgeBundle(
             bundle_id=bundle_id,
             retrieval_id=request.retrieval_id,
@@ -510,6 +733,37 @@ class Neo4jKnowledgeProvider:
                     "required_labels": sorted(required_labels),
                     "required_relationships": sorted(required_relationships),
                     **preflight_metadata,
+                    "read_safety_mode": self.configuration.read_safety_mode.value,
+                    "privilege_introspection": (
+                        "SUCCEEDED"
+                        if self.configuration.read_safety_mode
+                        == ReadSafetyMode.PRIVILEGE_VERIFIED
+                        else "UNAVAILABLE_MANAGED_SERVICE_LIMITATION"
+                    ),
+                    "attestation_id": (
+                        attestation.attestation_id if attestation else "none"
+                    ),
+                    "attestation_version": (
+                        attestation.attestation_version if attestation else "none"
+                    ),
+                    "attestation_hash": (
+                        attestation.attestation_hash if attestation else "none"
+                    ),
+                    "platform": (
+                        attestation.platform.value if attestation else "none"
+                    ),
+                    "service_tier": (
+                        attestation.service_tier.value if attestation else "none"
+                    ),
+                    "credential_class": (
+                        attestation.credential_class.value if attestation else "none"
+                    ),
+                    "residual_risk": (
+                        attestation.residual_risk_code.value
+                        if attestation
+                        else "none"
+                    ),
+                    "query_execution_audit": execution_audit,
                 },
                 returned_content_hash=content_hash(safe_content),
             ),

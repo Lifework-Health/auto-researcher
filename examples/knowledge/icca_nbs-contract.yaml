@@ -26,4 +26,5 @@ grounding:
   maximum_retrieval_duration: 20
   knowledge_schema_version: knowledge-graph-auto-v0.1
   knowledge_content_version: backbone-2026-06
+  permitted_read_safety_modes: [PRIVILEGE_VERIFIED, OPERATOR_ATTESTED]
 provenance: REAL

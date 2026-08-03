@@ -1,0 +1,33 @@
+read_safety_contract_version: knowledge-read-safety-v2
+attestation_id: replace-with-safe-attestation-id
+attestation_version: 1.0.0
+platform: NEO4J_AURA
+service_tier: PROFESSIONAL
+provider_id: neo4j
+graph_alias: cell-biology-grounding
+schema_version: knowledge-graph-auto-v0.1
+content_version: backbone-2026-06
+identity_class: NATIVE_INSTANCE_CREDENTIAL
+credential_class: MANAGED_INSTANCE_PRIMARY
+reviewed_at: 2099-01-01T00:00:00Z
+expires_at: 2099-04-01T00:00:00Z
+reviewer: replace-with-safe-reviewer-id
+evidence_references:
+  - adr-operator-attested-read-safety
+permitted_query_template_ids:
+  - generic.schema_preflight@1.0.0
+  - icca_nbs.disease_context@1.0.0
+  - icca_nbs.gene_signature_pathway@1.0.0
+  - icca_nbs.network_catalog@1.0.0
+prohibited_capabilities:
+  - ADMIN_PROCEDURE
+  - ARBITRARY_CYPHER
+  - GRAPH_WRITE
+  - MODEL_GENERATED_CYPHER
+  - SCHEMA_WRITE
+residual_risk_statement: >-
+  The managed primary credential is not database-enforced read-only; bounded
+  registered templates and post-query counters reduce but do not remove risk.
+residual_risk_code: DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY
+configuration_hash: 0000000000000000000000000000000000000000000000000000000000000000
+attestation_hash: 0000000000000000000000000000000000000000000000000000000000000000

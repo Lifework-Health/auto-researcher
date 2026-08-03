@@ -25,6 +25,7 @@ from auto_researcher.contracts.enums import (
     KnowledgeGroundingMode,
     ProposalSource,
     ProvenanceKind,
+    ReadSafetyMode,
     SearchType,
 )
 
@@ -97,6 +98,9 @@ class KnowledgeGroundingRequirement(ImmutableDomainModel):
     maximum_retrieval_duration: float = Field(default=20.0, gt=0, le=300)
     knowledge_schema_version: str = Field(default="none", min_length=1)
     knowledge_content_version: str = Field(default="none", min_length=1)
+    permitted_read_safety_modes: frozenset[ReadSafetyMode] = Field(
+        default_factory=lambda: frozenset({ReadSafetyMode.PRIVILEGE_VERIFIED})
+    )
 
     @model_validator(mode="after")
     def enabled_modes_require_providers(self) -> "KnowledgeGroundingRequirement":
@@ -105,6 +109,11 @@ class KnowledgeGroundingRequirement(ImmutableDomainModel):
             raise ValueError("unknown knowledge trust tier")
         if any(not provider.strip() for provider in self.permitted_providers):
             raise ValueError("knowledge provider IDs cannot be empty")
+        if (
+            self.mode != KnowledgeGroundingMode.DISABLED
+            and not self.permitted_read_safety_modes
+        ):
+            raise ValueError("enabled grounding requires a read-safety mode")
         if (
             self.mode != KnowledgeGroundingMode.DISABLED
             and not self.permitted_providers

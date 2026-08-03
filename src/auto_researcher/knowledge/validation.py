@@ -69,10 +69,26 @@ class KnowledgeBundleValidator:
         if any(ABSOLUTE_PATH.search(value) for value in string_values):
             reasons.append("absolute_runtime_path")
         field_names = {item.casefold() for item in _field_names(payload)}
-        if field_names & {"password", "neo4j_uri", "credential", "credentials"} or any(
+        if field_names & {
+            "password",
+            "neo4j_uri",
+            "credential",
+            "credentials",
+            "username",
+            "access_token",
+            "secret",
+            "uri",
+        } or any(
             any(
                 token in value.casefold()
-                for token in ("password", "neo4j_uri", "credential")
+                for token in (
+                    "password=",
+                    "neo4j_uri",
+                    "access_token",
+                    "secret=",
+                    "neo4j+s://",
+                    "bolt://",
+                )
             )
             for value in string_values
         ):

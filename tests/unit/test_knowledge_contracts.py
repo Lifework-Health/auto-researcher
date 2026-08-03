@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from auto_researcher.cli import _load_grounding
-from auto_researcher.contracts.enums import KnowledgeGroundingMode
+from auto_researcher.contracts.enums import KnowledgeGroundingMode, ReadSafetyMode
 from auto_researcher.contracts.models import KnowledgeGroundingRequirement
 from auto_researcher.knowledge.identity import (
     assertion_id,
@@ -30,6 +30,7 @@ from auto_researcher.tasks.synthetic import default_synthetic_contract
 from auto_researcher.tasks.icca_nbs.knowledge import icca_query_plan
 from auto_researcher.tasks.models import TaskRuntimeContext
 from tests.fakes_icca import make_fake_icca_bindings
+from tests.helpers_read_safety import operator_configuration
 
 
 def _grounded_contract(mode=KnowledgeGroundingMode.OPTIONAL):
@@ -87,6 +88,147 @@ def test_configuration_rejects_credentials_and_runtime_cannot_weaken_contract():
             },
             _grounded_contract(),
         )
+
+
+def test_runtime_read_safety_mode_cannot_weaken_contract():
+    contract = _grounded_contract()
+    with pytest.raises(ValueError, match="weakens"):
+        _load_grounding(
+            {
+                "grounding": {
+                    "mode": "OPTIONAL",
+                    "provider": "static",
+                    "read_safety": {"mode": "UNVERIFIED"},
+                }
+            },
+            contract,
+        )
+    with pytest.raises(ValueError, match="ambiguous"):
+        _load_grounding(
+            {
+                "grounding": {
+                    "mode": "OPTIONAL",
+                    "provider": "static",
+                    "require_verified_read_only": False,
+                }
+            },
+            contract,
+        )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _load_grounding(
+            {
+                "grounding": {
+                    "mode": "OPTIONAL",
+                    "provider": "static",
+                    "require_verified_read_only": True,
+                    "read_safety": {"mode": "UNVERIFIED"},
+                }
+            },
+            contract.model_copy(
+                update={
+                    "grounding": contract.grounding.model_copy(
+                        update={
+                            "permitted_read_safety_modes": frozenset(
+                                {ReadSafetyMode.UNVERIFIED}
+                            )
+                        }
+                    )
+                }
+            ),
+        )
+
+
+def test_required_unverified_and_missing_operator_attestation_fail_closed():
+    required = _grounded_contract(KnowledgeGroundingMode.REQUIRED).model_copy(
+        update={
+            "grounding": KnowledgeGroundingRequirement(
+                mode="REQUIRED",
+                permitted_providers=frozenset({"neo4j"}),
+                permitted_read_safety_modes=frozenset(
+                    {ReadSafetyMode.OPERATOR_ATTESTED, ReadSafetyMode.UNVERIFIED}
+                ),
+                maximum_query_records=10,
+                knowledge_schema_version="knowledge-graph-auto-v0.1",
+                knowledge_content_version="backbone-test",
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="UNVERIFIED"):
+        _load_grounding(
+            {
+                "grounding": {
+                    "mode": "REQUIRED",
+                    "provider": "neo4j",
+                    "read_safety": {"mode": "UNVERIFIED"},
+                }
+            },
+            required,
+        )
+    with pytest.raises(ValueError, match="attestation file"):
+        _load_grounding(
+            {
+                "grounding": {
+                    "mode": "REQUIRED",
+                    "provider": "neo4j",
+                    "read_safety": {"mode": "OPERATOR_ATTESTED"},
+                }
+            },
+            required,
+        )
+
+
+def test_valid_operator_attestation_loads_without_credentials(tmp_path):
+    attested = operator_configuration()
+    attestation = attested.read_safety_attestation
+    assert attestation is not None
+    attestation_path = tmp_path / "attestation.yaml"
+    import yaml
+
+    attestation_path.write_text(
+        yaml.safe_dump(attestation.model_dump(mode="json"), sort_keys=True),
+        encoding="utf-8",
+    )
+    contract = _grounded_contract().model_copy(
+        update={
+            "grounding": KnowledgeGroundingRequirement(
+                mode="OPTIONAL",
+                permitted_providers=frozenset({"neo4j"}),
+                permitted_read_safety_modes=frozenset(
+                    {ReadSafetyMode.PRIVILEGE_VERIFIED, ReadSafetyMode.OPERATOR_ATTESTED}
+                ),
+                maximum_query_records=10,
+                maximum_graph_hops=3,
+                maximum_retrieval_duration=5,
+                knowledge_schema_version="knowledge-graph-auto-v0.1",
+                knowledge_content_version="backbone-test",
+            )
+        }
+    )
+    configuration, provider = _load_grounding(
+        {
+            "grounding": {
+                "mode": "OPTIONAL",
+                "provider": "neo4j",
+                "graph_alias": "cell-biology",
+                "database": "neo4j",
+                "schema_version": "knowledge-graph-auto-v0.1",
+                "content_version": "backbone-test",
+                "query_timeout_seconds": 5,
+                "maximum_records": 10,
+                "maximum_attempts": 2,
+                "read_safety": {
+                    "mode": "OPERATOR_ATTESTED",
+                    "attestation_file": str(attestation_path),
+                },
+            }
+        },
+        contract,
+    )
+    try:
+        assert configuration.read_safety_mode == ReadSafetyMode.OPERATOR_ATTESTED
+        assert configuration.read_safety_attestation == attestation
+    finally:
+        provider.close()
 
 
 def test_identifiers_are_stable_and_internal_properties_are_rejected():

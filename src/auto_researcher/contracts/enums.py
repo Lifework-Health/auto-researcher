@@ -29,6 +29,14 @@ class KnowledgeGroundingMode(StrEnum):
     REQUIRED = "REQUIRED"
 
 
+class ReadSafetyMode(StrEnum):
+    """Closed assurance vocabulary for external knowledge reads."""
+
+    PRIVILEGE_VERIFIED = "PRIVILEGE_VERIFIED"
+    OPERATOR_ATTESTED = "OPERATOR_ATTESTED"
+    UNVERIFIED = "UNVERIFIED"
+
+
 class KnowledgeRetrievalStatus(StrEnum):
     DISABLED = "DISABLED"
     RESERVED = "RESERVED"

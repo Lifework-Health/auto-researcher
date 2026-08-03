@@ -9,6 +9,7 @@ from auto_researcher.knowledge.models import (
 )
 from auto_researcher.knowledge.protocols import KnowledgeProvider
 from auto_researcher.knowledge.registry import KnowledgeProviderRegistry
+from auto_researcher.knowledge.read_safety import ReadSafetyAttestation
 
 __all__ = [
     "KnowledgeBundle",
@@ -18,4 +19,5 @@ __all__ = [
     "KnowledgeProviderConfiguration",
     "KnowledgeProviderRegistry",
     "KnowledgeQueryPlan",
+    "ReadSafetyAttestation",
 ]

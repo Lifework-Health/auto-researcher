@@ -13,7 +13,8 @@ grounding:
   schema_version: knowledge-graph-auto-v0.1
   content_version: backbone-2026-06
   read_safety:
-    mode: PRIVILEGE_VERIFIED
+    mode: OPERATOR_ATTESTED
+    attestation_file: /local/secure/path/read-safety-attestation.yaml
   query_timeout_seconds: 20
   maximum_records: 100
   maximum_attempts: 2
