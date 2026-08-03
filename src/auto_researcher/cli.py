@@ -32,6 +32,7 @@ from auto_researcher.knowledge.providers.static import StaticKnowledgeProvider
 from auto_researcher.knowledge.read_safety import (
     ReadSafetyAttestation,
     attestation_content_hash,
+    parse_read_safety_attestation,
     validate_operator_attestation,
 )
 from auto_researcher.knowledge.schemas.knowledge_graph_auto_v0_1 import (
@@ -94,7 +95,27 @@ def _mock_contract(max_cycles: int) -> ResearchContract:
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    class UniqueKeySafeLoader(yaml.SafeLoader):
+        pass
+
+    def construct_unique_mapping(loader, node, deep=False):
+        loader.flatten_mapping(node)
+        mapping = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in mapping:
+                raise ValueError("duplicate YAML mapping key")
+            mapping[key] = loader.construct_object(value_node, deep=deep)
+        return mapping
+
+    UniqueKeySafeLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        construct_unique_mapping,
+    )
+    value = yaml.load(
+        path.read_text(encoding="utf-8"),
+        Loader=UniqueKeySafeLoader,
+    )
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain a YAML mapping")
     return value
@@ -289,13 +310,12 @@ def _load_grounding(
         if provider_id != "neo4j":
             raise ValueError("OPERATOR_ATTESTED is restricted to Neo4j")
         attestation_file = read_safety.get("attestation_file")
-        if not isinstance(attestation_file, (str, Path)) or not str(
-            attestation_file
-        ).strip():
+        if (
+            not isinstance(attestation_file, (str, Path))
+            or not str(attestation_file).strip()
+        ):
             raise ValueError("OPERATOR_ATTESTED requires an attestation file")
-        attestation = ReadSafetyAttestation.model_validate(
-            _load_yaml(Path(attestation_file))
-        )
+        attestation = parse_read_safety_attestation(_load_yaml(Path(attestation_file)))
     elif "attestation_file" in read_safety:
         raise ValueError("attestation_file requires OPERATOR_ATTESTED mode")
     templates = default_template_registry()
@@ -872,14 +892,36 @@ def retry_agent_call(
     )
 
 
-def _attestation_report(path: Path) -> tuple[ReadSafetyAttestation | None, tuple[str, ...]]:
+def _attestation_report(
+    path: Path,
+) -> tuple[ReadSafetyAttestation | None, tuple[str, ...]]:
     try:
-        attestation = ReadSafetyAttestation.model_validate(_load_yaml(path))
-    except (OSError, ValueError):
+        payload = _load_yaml(path)
+    except OSError:
+        return None, ("ATTESTATION_SCHEMA_INVALID",)
+    except ValueError as exc:
+        if "duplicate YAML mapping key" in str(exc):
+            return None, ("ATTESTATION_CANONICALIZATION_FAILED",)
+        return None, ("ATTESTATION_SCHEMA_INVALID",)
+    try:
+        attestation = parse_read_safety_attestation(payload)
+    except ValueError as exc:
+        for code in (
+            "LEGACY_ATTESTATION_REGENERATION_REQUIRED",
+            "ATTESTATION_DUPLICATE_UNORDERED_VALUE",
+            "ATTESTATION_CANONICALIZATION_FAILED",
+        ):
+            if code in str(exc):
+                return None, (code,)
         return None, ("ATTESTATION_SCHEMA_INVALID",)
     errors = []
-    if attestation.attestation_hash != attestation_content_hash(attestation):
-        errors.append("ATTESTATION_HASH_MISMATCH")
+    try:
+        calculated_hash = attestation_content_hash(attestation)
+    except ValueError:
+        errors.append("ATTESTATION_CANONICALIZATION_FAILED")
+    else:
+        if attestation.attestation_hash != calculated_hash:
+            errors.append("ATTESTATION_HASH_MISMATCH")
     now = utc_now()
     if now < attestation.reviewed_at:
         errors.append("ATTESTATION_NOT_YET_VALID")
@@ -899,12 +941,16 @@ def _print_attestation_report(
         return
     typer.echo(f"Attestation: {attestation.attestation_id}")
     typer.echo(f"Version: {attestation.attestation_version}")
+    typer.echo(f"Attestation hash algorithm: {attestation.attestation_hash_algorithm}")
+    typer.echo(
+        f"Configuration hash algorithm: {attestation.configuration_hash_algorithm}"
+    )
     typer.echo(f"Platform: {attestation.platform.value}")
     typer.echo(f"Service tier: {attestation.service_tier.value}")
     typer.echo(f"Graph alias: {attestation.graph_alias}")
     typer.echo(f"Expires: {attestation.expires_at.isoformat()}")
     typer.echo(
-        "Templates: " + ",".join(attestation.permitted_query_template_ids)
+        "Templates: " + ",".join(sorted(attestation.permitted_query_template_ids))
     )
     typer.echo(f"Configuration hash: {attestation.configuration_hash}")
     typer.echo(f"Attestation hash: {attestation.attestation_hash}")

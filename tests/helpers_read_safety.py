@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from auto_researcher.contracts.enums import ReadSafetyMode
 from auto_researcher.knowledge.models import KnowledgeProviderConfiguration
 from auto_researcher.knowledge.read_safety import (
+    CANONICAL_HASH_ALGORITHM,
     ProhibitedCapability,
     ReadSafetyAttestation,
     read_safety_configuration_hash,
@@ -28,6 +29,8 @@ def operator_configuration(
     draft = ReadSafetyAttestation(
         attestation_id="aura-professional-review",
         attestation_version="1.0.0",
+        attestation_hash_algorithm=CANONICAL_HASH_ALGORITHM,
+        configuration_hash_algorithm=CANONICAL_HASH_ALGORITHM,
         platform="NEO4J_AURA",
         service_tier="PROFESSIONAL",
         provider_id="neo4j",

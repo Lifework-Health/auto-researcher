@@ -126,6 +126,16 @@ def retrieve_knowledge(
                         if configuration.read_safety_attestation
                         else None
                     ),
+                    "attestation_hash_algorithm": (
+                        configuration.read_safety_attestation.attestation_hash_algorithm
+                        if configuration.read_safety_attestation
+                        else None
+                    ),
+                    "configuration_hash_algorithm": (
+                        configuration.read_safety_attestation.configuration_hash_algorithm
+                        if configuration.read_safety_attestation
+                        else None
+                    ),
                 },
             }
         )
