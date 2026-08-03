@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import typer
@@ -36,6 +38,13 @@ from auto_researcher.runtime.dependencies import (
     task_sqlite_dependencies,
     utc_now,
 )
+from auto_researcher.runtime.checkpoints import sqlite_checkpointer
+from auto_researcher.runtime.execution import (
+    RunExecutionError,
+    inspect_terminal_run,
+    resume_run,
+    start_run,
+)
 from auto_researcher.tasks import TaskRuntimeContext, default_task_registry
 from auto_researcher.tasks.models import TaskPluginError
 from auto_researcher.tasks.synthetic import (
@@ -44,6 +53,11 @@ from auto_researcher.tasks.synthetic import (
 )
 
 app = typer.Typer(no_args_is_help=True, help="Run task plugins on Auto Researcher.")
+run_app = typer.Typer(
+    no_args_is_help=True,
+    help="Start, resume or safely inspect checkpointed research runs.",
+)
+app.add_typer(run_app, name="run")
 agent_calls_app = typer.Typer(
     no_args_is_help=True,
     help="Inspect or explicitly retry durable live-agent calls.",
@@ -289,7 +303,7 @@ def _nested_keys(value) -> set[str]:
     return keys
 
 
-@app.command()
+@run_app.command("start")
 def run(
     task_id: str = typer.Option("synthetic", "--task"),
     contract_path: Path | None = typer.Option(None, "--contract"),
@@ -320,10 +334,12 @@ def run(
     ),
 ) -> None:
     """Run a registered task through the unchanged LangGraph control plane."""
-    if mock:
-        task_id = "synthetic"
-    registry = default_task_registry()
     try:
+        if checkpoint_db.exists() and _checkpoint_values(checkpoint_db, thread_id):
+            raise RunExecutionError("thread_already_exists_use_resume_or_inspect")
+        if mock:
+            task_id = "synthetic"
+        registry = default_task_registry()
         search_type = _configured_search_type(task_config)
         raw_config = _load_yaml(task_config) if task_config else {}
         (
@@ -392,11 +408,18 @@ def run(
             search_type=search_type,
         ) as dependencies:
             graph = build_graph(dependencies)
-            final = graph.invoke(
+            final = start_run(
+                graph,
                 {"run_id": run_id, "thread_id": thread_id, "contract": contract},
                 config,
             )
-    except (TaskPluginError, ValueError, FileNotFoundError, RuntimeError) as exc:
+    except (
+        TaskPluginError,
+        RunExecutionError,
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+    ) as exc:
         typer.echo(f"Task setup failed: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
@@ -487,6 +510,177 @@ def run(
         typer.echo(f"Study artefacts: {', '.join(study.artefact_references) or 'none'}")
     if final["status"] == RunStatus.FAILED:
         raise typer.Exit(code=1)
+
+
+@contextmanager
+def _checkpoint_graph_view(path: Path):
+    if not path.exists():
+        raise RunExecutionError("thread_not_found")
+    saver, connection = sqlite_checkpointer(path.expanduser().resolve())
+
+    class CheckpointGraphView:
+        def get_state(self, config):
+            item = saver.get_tuple(config)
+            values = item.checkpoint["channel_values"] if item is not None else {}
+            return SimpleNamespace(values=values)
+
+    try:
+        yield CheckpointGraphView()
+    finally:
+        connection.close()
+
+
+def _checkpoint_values(path: Path, thread_id: str) -> dict[str, Any]:
+    config = {"configurable": {"thread_id": thread_id}}
+    with _checkpoint_graph_view(path) as graph:
+        snapshot = graph.get_state(config)
+        return dict(snapshot.values) if snapshot.values else {}
+
+
+@run_app.command("inspect")
+def inspect_run(
+    thread_id: str = typer.Option(..., "--thread-id"),
+    checkpoint_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "checkpoints.sqlite",
+        "--checkpoint-db",
+    ),
+) -> None:
+    """Read a terminal checkpoint without executing a graph node."""
+
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        with _checkpoint_graph_view(checkpoint_db) as graph:
+            final = inspect_terminal_run(graph, config)
+    except (RunExecutionError, ValueError, FileNotFoundError) as exc:
+        typer.echo(f"Run inspection failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    identity = final["execution_identity"]
+    evaluation = final.get("evaluation_result")
+    verification = final.get("verification_result")
+    typer.echo(f"Execution protocol: {identity.execution_protocol}")
+    typer.echo(f"Thread: {identity.thread_id}")
+    typer.echo(f"Run: {identity.run_id}")
+    typer.echo(f"Task: {identity.task_id}@{identity.task_version}")
+    typer.echo(f"Status: {final['status'].value}")
+    typer.echo(f"Stop reason: {final.get('stop_reason') or 'none'}")
+    typer.echo(f"Primary score: {evaluation.primary_score if evaluation else 'n/a'}")
+    typer.echo(
+        f"Evidence: {verification.evidence_status.value if verification else 'n/a'}"
+    )
+
+
+@run_app.command("resume")
+def resume_cli(
+    thread_id: str = typer.Option(..., "--thread-id"),
+    task_config: Path | None = typer.Option(None, "--task-config"),
+    checkpoint_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "checkpoints.sqlite",
+        "--checkpoint-db",
+    ),
+    provenance_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "provenance.sqlite",
+        "--provenance-db",
+    ),
+    optuna_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "optuna.sqlite",
+        "--optuna-db",
+    ),
+    agent_calls_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "agent-calls.sqlite",
+        "--agent-calls-db",
+    ),
+    knowledge_retrievals_db: Path = typer.Option(
+        DEFAULT_DATA_DIR / "knowledge-retrievals.sqlite",
+        "--knowledge-retrievals-db",
+    ),
+    approval: bool | None = typer.Option(
+        None,
+        "--approve/--reject",
+        help="Resume an explicit human-approval interrupt.",
+    ),
+) -> None:
+    """Continue a non-terminal checkpoint using a None graph input."""
+
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        checkpoint = _checkpoint_values(checkpoint_db, thread_id)
+        if not checkpoint:
+            raise RunExecutionError("thread_not_found")
+        if RunStatus(checkpoint["status"]) in {
+            RunStatus.COMPLETED,
+            RunStatus.STOPPED,
+            RunStatus.FAILED,
+        }:
+            raise RunExecutionError("thread_is_terminal_use_inspect")
+        contract = ResearchContract.model_validate(checkpoint["contract"])
+        run_id = str(checkpoint["run_id"])
+        raw_config = _load_yaml(task_config) if task_config else {}
+        search_type = _configured_search_type(task_config)
+        (
+            model_client,
+            planner_model_client,
+            hypothesis_call_config,
+            planner_call_config,
+            agent_budget_policy,
+            _,
+        ) = _load_live_agents(raw_config)
+        task = default_task_registry().get(contract.task_id, contract.task_version)
+        knowledge_configuration, knowledge_provider = _load_grounding(
+            raw_config,
+            contract,
+        )
+        experiment, runtime = _load_task_configuration(
+            task_config,
+            contract.task_id,
+            contract.task_version,
+        )
+        runtime_options = dict(runtime.get("options", {}))
+        if isinstance(raw_config.get("grounding"), dict):
+            runtime_options["grounding"] = dict(raw_config["grounding"])
+        runtime_context = TaskRuntimeContext(
+            run_id=run_id,
+            data_dir=runtime.get("data_dir"),
+            workspace_dir=runtime.get("workspace_dir"),
+            output_dir=runtime.get("output_dir", DEFAULT_DATA_DIR),
+            environment=runtime.get("environment", {}),
+            task_options=runtime_options,
+        )
+        with task_sqlite_dependencies(
+            task,
+            runtime_context,
+            contract,
+            experiment,
+            checkpoint_db,
+            provenance_db,
+            optuna_db if search_type == SearchType.OPTUNA else None,
+            agent_calls_db,
+            knowledge_retrievals_db,
+            model_client=model_client,
+            planner_model_client=planner_model_client,
+            hypothesis_call_config=hypothesis_call_config,
+            planner_call_config=planner_call_config,
+            agent_budget_policy=agent_budget_policy,
+            knowledge_provider=knowledge_provider,
+            knowledge_configuration=knowledge_configuration,
+            search_type=search_type,
+        ) as dependencies:
+            final = resume_run(
+                build_graph(dependencies),
+                config,
+                resume_value=({"approved": approval} if approval is not None else None),
+            )
+    except (
+        TaskPluginError,
+        RunExecutionError,
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+    ) as exc:
+        typer.echo(f"Run resume failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Run: {run_id}")
+    typer.echo(f"Status: {final['status'].value}")
+    typer.echo(f"Stop reason: {final.get('stop_reason') or 'none'}")
 
 
 @app.command("tasks")

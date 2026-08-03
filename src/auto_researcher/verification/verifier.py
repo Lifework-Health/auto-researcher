@@ -18,6 +18,7 @@ from auto_researcher.tasks.protocols import VerificationPolicy
 @runtime_checkable
 class Verifier(Protocol):
     verifier_id: str
+    version: str
 
     def verify(
         self,
@@ -31,6 +32,7 @@ class Verifier(Protocol):
 
 class DeterministicVerifier:
     verifier_id = "deterministic-verifier"
+    version = "deterministic-verifier-v1"
 
     def __init__(
         self,

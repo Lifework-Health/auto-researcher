@@ -9,8 +9,64 @@ from auto_researcher.graph.state import ResearchState
 from auto_researcher.knowledge.models import KnowledgeBundleReference
 from auto_researcher.knowledge.provenance import append_knowledge_retrieval_events
 from auto_researcher.runtime.dependencies import RuntimeDependencies
+from auto_researcher.runtime.identity import payload_hash
 
-CODE_VERSION = "auto-researcher-v2.1-pr5"
+CODE_VERSION = "auto-researcher-v2.1-pr5.3"
+PROVENANCE_SEMANTIC_VERSION = "provenance-events-v2"
+
+
+def _semantic_identity(
+    event_type: EventType,
+    state: ResearchState,
+    dependencies: RuntimeDependencies,
+) -> tuple[str, str] | None:
+    run_id = state["run_id"]
+    hypothesis = state.get("active_hypothesis")
+    request = state.get("search_request")
+    experiment = state.get("experiment_spec")
+    evaluation = state.get("evaluation_result")
+    verification = state.get("verification_result")
+    base: dict[str, str] = {
+        "schema": PROVENANCE_SEMANTIC_VERSION,
+        "run_id": run_id,
+        "event_type": event_type.value,
+    }
+    scientific_payload = None
+    if event_type == EventType.HYPOTHESIS_PROPOSED and hypothesis is not None:
+        base["hypothesis_id"] = hypothesis.hypothesis_id
+        scientific_payload = hypothesis
+    elif event_type == EventType.SEARCH_PLANNED and request is not None:
+        base["search_request_id"] = request.request_id
+        scientific_payload = request
+    elif event_type == EventType.EXPERIMENT_PREPARED and experiment is not None:
+        base["experiment_id"] = experiment.experiment_id
+        scientific_payload = experiment
+    elif event_type == EventType.EVALUATION_OBSERVED and evaluation is not None:
+        base.update(
+            {
+                "experiment_id": evaluation.experiment_id,
+                "evaluator_version": evaluation.evaluator_version,
+            }
+        )
+        scientific_payload = evaluation
+    elif event_type == EventType.EVIDENCE_VERIFIED and verification is not None:
+        base.update(
+            {
+                "experiment_id": verification.experiment_id,
+                "verifier_version": getattr(
+                    dependencies.verifier,
+                    "version",
+                    dependencies.verifier.verifier_id,
+                ),
+                "verification_policy_version": (
+                    dependencies.verification_policy.policy_id
+                ),
+            }
+        )
+        scientific_payload = verification
+    if scientific_payload is None:
+        return None
+    return payload_hash(base), payload_hash(scientific_payload)
 
 
 def record_provenance(
@@ -203,8 +259,17 @@ def record_provenance(
             code_version=CODE_VERSION,
             provenance=provenance,
         )
-        dependencies.provenance_store.append_event(event)
-        event_ids.append(event.event_id)
+        semantic = _semantic_identity(event_type, state, dependencies)
+        if semantic is None:
+            dependencies.provenance_store.append_event(event)
+            stored = event
+        else:
+            stored, _ = dependencies.provenance_store.append_semantic_event(
+                event,
+                semantic[0],
+                semantic[1],
+            )
+        event_ids.append(stored.event_id)
     return {
         "decision_event_ids": event_ids,
         "executed_nodes": ["record_provenance"],

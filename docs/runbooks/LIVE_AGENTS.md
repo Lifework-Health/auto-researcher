@@ -53,7 +53,7 @@ Set:
 ## Run and inspect
 
 ```bash
-.venv/bin/auto-researcher run \
+.venv/bin/auto-researcher run start \
   --task synthetic \
   --contract examples/tasks/synthetic/contract.yaml \
   --task-config /path/to/synthetic-with-live-agents.yaml \

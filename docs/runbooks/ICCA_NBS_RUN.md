@@ -38,7 +38,7 @@ placeholder runtime paths locally. Then run:
 
 ```bash
 .venv/bin/auto-researcher tasks
-.venv/bin/auto-researcher run \
+.venv/bin/auto-researcher run start \
   --task icca_nbs \
   --contract examples/tasks/icca_nbs/contract.yaml \
   --task-config examples/tasks/icca_nbs/task.yaml \

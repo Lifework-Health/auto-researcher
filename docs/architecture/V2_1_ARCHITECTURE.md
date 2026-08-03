@@ -209,6 +209,28 @@ supply a different evaluator, configuration, manifests, metrics, constraints,
 and policy. It requires no graph change; see
 [MRI_SEGMENTATION_EXAMPLE.md](../task_plugins/MRI_SEGMENTATION_EXAMPLE.md).
 
+## Run execution and replay safety
+
+`run-execution-v2` exposes a closed `START`, `RESUME`, and `REPLAY_INSPECT`
+vocabulary. `START` accepts initial input only for a thread with no checkpoint.
+`RESUME` continues a non-terminal thread with `None`, or with LangGraph's
+`Command(resume=...)` for an explicit interrupt value. `REPLAY_INSPECT` reads a
+terminal `StateSnapshot` and never invokes the graph.
+
+Each checkpoint stores a stable execution identity containing thread ID, run
+ID, contract/task identity, canonical contract hash, graph schema version, and
+canonical initial-input hash. A conflicting caller fails before a graph node or
+external dependency can run. Supplying a fresh dictionary to an existing
+LangGraph thread is a new execution and is never treated as replay.
+
+`provenance-events-v2` gives hypothesis, plan, experiment, evaluation, and
+verification events deterministic semantic identities. Identical events return
+the original event; conflicting scientific payloads fail closed. The
+`evaluation-reuse-v1` ledger additionally reuses an identical per-run result
+only after the completed four-file artefact bundle and its hashes pass
+verification. Verification reuse is bound to the evaluation hash, verifier
+version, and task policy version.
+
 ## Data custody and persistence
 
 iCCA manifests contain only source filenames, sizes, SHA256 hashes, a combined
