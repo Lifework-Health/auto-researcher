@@ -10,9 +10,11 @@ The runtime now provides `start_run`, `resume_run`, and
 CLI exposes matching `run start`, `run resume`, and `run inspect` commands.
 
 Lifecycle events use `provenance-events-v2` semantic keys. A persistent
-`evaluation-reuse-v1` ledger prevents repeated per-run evaluator or verifier
-work and verifies the existing artefact bundle before returning a result. This
-is defence in depth; the terminal-thread guard remains primary.
+`evaluation-reuse-v1` originally prevented repeated per-run evaluator or
+verifier work and verified the current artefact bundle before returning a
+result. Corrective PR 5.4 supersedes it with `evaluation-reuse-v2`, which also
+binds reuse to the original bundle identity. This is defence in depth; the
+terminal-thread guard remains primary.
 
 All validation is offline. This PR does not change iCCA science, scientific
 JSON, the artefact bundle, grounding, model prompts, or task configuration.

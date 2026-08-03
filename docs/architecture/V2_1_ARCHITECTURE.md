@@ -226,10 +226,20 @@ LangGraph thread is a new execution and is never treated as replay.
 `provenance-events-v2` gives hypothesis, plan, experiment, evaluation, and
 verification events deterministic semantic identities. Identical events return
 the original event; conflicting scientific payloads fail closed. The
-`evaluation-reuse-v1` ledger additionally reuses an identical per-run result
-only after the completed four-file artefact bundle and its hashes pass
-verification. Verification reuse is bound to the evaluation hash, verifier
-version, and task policy version.
+`evaluation-reuse-v2` additionally reuses an identical successful per-run
+result only after the completed four-file artefact bundle passes verification.
+The durable record binds reuse to the original bundle hash, schema, scientific
+JSON encoding, exact references, evaluator-manifest payload hash, result hash,
+experiment hash, evaluator version, dataset version, code version, and
+completion timestamp. A different internally valid bundle cannot replace that
+identity. Failed, missing, partial, tampered, legacy-v1, schema-incompatible,
+or encoding-incompatible evidence is non-reusable and never triggers evaluator
+repair. Verification reuse references this authoritative evaluation record and
+remains bound to the evaluation hash, verifier version, and task policy version.
+
+START identity errors are the stable `run-execution-errors-v1` public
+vocabulary: `conflicting_run_identity`, `conflicting_contract_identity`,
+`conflicting_task_identity`, and `conflicting_initial_input_identity`.
 
 ## Data custody and persistence
 

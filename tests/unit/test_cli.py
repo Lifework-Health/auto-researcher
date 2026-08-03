@@ -12,6 +12,7 @@ from auto_researcher.agents.models import AgentCallRecord, ModelPricing
 from auto_researcher.cli import _load_live_agents, _load_task_configuration, app
 from auto_researcher.contracts.enums import AgentCallStatus, AgentRole
 from auto_researcher.runtime.dependencies import memory_dependencies
+from auto_researcher.runtime.execution import RunExecutionError
 
 
 def test_task_configuration_identity_requires_matching_id_and_version(tmp_path):
@@ -252,3 +253,65 @@ def test_run_start_inspect_and_terminal_resume_are_explicit_and_safe(
     )
     assert resumed.exit_code == 2
     assert "thread_is_terminal_use_inspect" in resumed.stderr
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "conflicting_run_identity",
+        "conflicting_contract_identity",
+        "conflicting_task_identity",
+        "conflicting_initial_input_identity",
+    ],
+)
+def test_start_cli_preserves_stable_runtime_error_codes(
+    tmp_path,
+    monkeypatch,
+    code,
+):
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    checkpoint = tmp_path / "checkpoints.sqlite"
+    provenance = tmp_path / "provenance.sqlite"
+    stores = [
+        "--checkpoint-db",
+        str(checkpoint),
+        "--provenance-db",
+        str(provenance),
+        "--agent-calls-db",
+        str(tmp_path / "agent-calls.sqlite"),
+        "--knowledge-retrievals-db",
+        str(tmp_path / "knowledge.sqlite"),
+    ]
+    first = runner.invoke(
+        app,
+        [
+            "run",
+            "start",
+            "--run-id",
+            "cli-run",
+            "--thread-id",
+            "cli-thread",
+            *stores,
+        ],
+    )
+    assert first.exit_code == 0, first.stdout
+
+    def reject(*args, **kwargs):
+        raise RunExecutionError(code)
+
+    monkeypatch.setattr("auto_researcher.cli.validate_start_run", reject)
+    rejected = runner.invoke(
+        app,
+        [
+            "run",
+            "start",
+            "--run-id",
+            "cli-run",
+            "--thread-id",
+            "cli-thread",
+            *stores,
+        ],
+    )
+    assert rejected.exit_code == 2
+    assert rejected.stderr.strip().endswith(code)
