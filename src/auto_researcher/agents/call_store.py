@@ -17,8 +17,25 @@ class AgentCallStore(Protocol):
     def append(self, record: AgentCallRecord) -> None: ...
     def records_for_call(self, call_id: str) -> tuple[AgentCallRecord, ...]: ...
     def latest(self, call_id: str) -> AgentCallRecord | None: ...
-    def list_records(self, run_id: str | None = None) -> tuple[AgentCallRecord, ...]: ...
-    def create_retry(self, call_id: str, *, created_at: datetime) -> AgentCallRecord: ...
+    def list_records(
+        self, run_id: str | None = None
+    ) -> tuple[AgentCallRecord, ...]: ...
+    def create_retry(
+        self, call_id: str, *, created_at: datetime
+    ) -> AgentCallRecord: ...
+    def reserve(
+        self,
+        record: AgentCallRecord,
+        *,
+        maximum_calls: int,
+        maximum_total_cost: float,
+    ) -> tuple[AgentCallRecord, bool]: ...
+    def transition(
+        self,
+        record: AgentCallRecord,
+        *,
+        expected_status: AgentCallStatus,
+    ) -> bool: ...
 
 
 class InMemoryAgentCallStore:
@@ -29,11 +46,7 @@ class InMemoryAgentCallStore:
     def append(self, record: AgentCallRecord) -> None:
         with self._lock:
             existing = next(
-                (
-                    item
-                    for item in self._records
-                    if item.record_id == record.record_id
-                ),
+                (item for item in self._records if item.record_id == record.record_id),
                 None,
             )
             if existing is not None:
@@ -55,11 +68,53 @@ class InMemoryAgentCallStore:
     def list_records(self, run_id: str | None = None) -> tuple[AgentCallRecord, ...]:
         with self._lock:
             return tuple(
-                item for item in self._records if run_id is None or item.run_id == run_id
+                item
+                for item in self._records
+                if run_id is None or item.run_id == run_id
             )
 
     def create_retry(self, call_id: str, *, created_at: datetime) -> AgentCallRecord:
         return _create_retry(self, call_id, created_at=created_at)
+
+    def reserve(
+        self,
+        record: AgentCallRecord,
+        *,
+        maximum_calls: int,
+        maximum_total_cost: float,
+    ) -> tuple[AgentCallRecord, bool]:
+        with self._lock:
+            return _reserve_locked(
+                self._records,
+                record,
+                maximum_calls=maximum_calls,
+                maximum_total_cost=maximum_total_cost,
+                append=self._records.append,
+            )
+
+    def transition(
+        self,
+        record: AgentCallRecord,
+        *,
+        expected_status: AgentCallStatus,
+    ) -> bool:
+        with self._lock:
+            latest = next(
+                (
+                    item
+                    for item in reversed(self._records)
+                    if item.call_id == record.call_id
+                ),
+                None,
+            )
+            if latest == record:
+                return True
+            if latest is not None and latest.record_id == record.record_id:
+                raise ValueError("model_call_completion_conflict")
+            if latest is None or latest.status != expected_status:
+                return False
+            self.append(record)
+            return True
 
 
 class SQLiteAgentCallStore:
@@ -77,11 +132,25 @@ class SQLiteAgentCallStore:
             )
             """
         )
+        columns = {
+            row[1]
+            for row in self._connection.execute(
+                "PRAGMA table_info(agent_call_records)"
+            ).fetchall()
+        }
+        if "semantic_key" not in columns:
+            self._connection.execute(
+                "ALTER TABLE agent_call_records ADD COLUMN semantic_key TEXT"
+            )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS agent_call_id_idx ON agent_call_records(call_id)"
         )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS agent_call_run_idx ON agent_call_records(run_id)"
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS agent_call_semantic_idx "
+            "ON agent_call_records(semantic_key)"
         )
         self._connection.commit()
 
@@ -105,6 +174,11 @@ class SQLiteAgentCallStore:
                 """,
                 (record.record_id, record.call_id, record.run_id, payload),
             )
+            if record.semantic_key is not None:
+                self._connection.execute(
+                    "UPDATE agent_call_records SET semantic_key = ? WHERE record_id = ?",
+                    (record.semantic_key, record.record_id),
+                )
             self._connection.commit()
 
     def records_for_call(self, call_id: str) -> tuple[AgentCallRecord, ...]:
@@ -133,6 +207,94 @@ class SQLiteAgentCallStore:
     def create_retry(self, call_id: str, *, created_at: datetime) -> AgentCallRecord:
         return _create_retry(self, call_id, created_at=created_at)
 
+    def reserve(
+        self,
+        record: AgentCallRecord,
+        *,
+        maximum_calls: int,
+        maximum_total_cost: float,
+    ) -> tuple[AgentCallRecord, bool]:
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._connection.execute(
+                    "SELECT payload FROM agent_call_records ORDER BY sequence"
+                ).fetchall()
+                records = [AgentCallRecord.model_validate_json(row[0]) for row in rows]
+
+                def insert(item: AgentCallRecord) -> None:
+                    self._connection.execute(
+                        "INSERT INTO agent_call_records"
+                        "(record_id, call_id, run_id, payload, semantic_key) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            item.record_id,
+                            item.call_id,
+                            item.run_id,
+                            item.model_dump_json(),
+                            item.semantic_key,
+                        ),
+                    )
+
+                result = _reserve_locked(
+                    records,
+                    record,
+                    maximum_calls=maximum_calls,
+                    maximum_total_cost=maximum_total_cost,
+                    append=insert,
+                )
+                self._connection.commit()
+                return result
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def transition(
+        self,
+        record: AgentCallRecord,
+        *,
+        expected_status: AgentCallStatus,
+    ) -> bool:
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT payload FROM agent_call_records WHERE call_id = ? "
+                    "ORDER BY sequence DESC LIMIT 1",
+                    (record.call_id,),
+                ).fetchone()
+                latest = (
+                    AgentCallRecord.model_validate_json(row[0])
+                    if row is not None
+                    else None
+                )
+                if latest == record:
+                    self._connection.rollback()
+                    return True
+                if latest is not None and latest.record_id == record.record_id:
+                    self._connection.rollback()
+                    raise ValueError("model_call_completion_conflict")
+                if latest is None or latest.status != expected_status:
+                    self._connection.rollback()
+                    return False
+                self._connection.execute(
+                    "INSERT INTO agent_call_records"
+                    "(record_id, call_id, run_id, payload, semantic_key) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        record.record_id,
+                        record.call_id,
+                        record.run_id,
+                        record.model_dump_json(),
+                        record.semantic_key,
+                    ),
+                )
+                self._connection.commit()
+                return True
+            except Exception:
+                self._connection.rollback()
+                raise
+
     def close(self) -> None:
         self._connection.close()
 
@@ -156,9 +318,7 @@ def _create_retry(
         )
     )
     children = tuple(
-        child
-        for child_id in child_ids
-        if (child := store.latest(child_id)) is not None
+        child for child_id in child_ids if (child := store.latest(child_id)) is not None
     )
     if any(child.status == AgentCallStatus.COMPLETED for child in children):
         raise ValueError("the retry lineage already contains a completed call")
@@ -206,3 +366,54 @@ def _create_retry(
 
 def stable_record_id(call_id: str, status: AgentCallStatus, ordinal: int) -> str:
     return f"{call_id}:{ordinal}:{status.value.lower()}"
+
+
+def _reserve_locked(
+    records: list[AgentCallRecord],
+    record: AgentCallRecord,
+    *,
+    maximum_calls: int,
+    maximum_total_cost: float,
+    append,
+) -> tuple[AgentCallRecord, bool]:
+    same_semantic = [
+        item for item in records if item.semantic_key == record.semantic_key
+    ]
+    if same_semantic:
+        existing_call_ids = {item.call_id for item in same_semantic}
+        if existing_call_ids != {record.call_id}:
+            raise ValueError("model_call_identity_conflict")
+        latest = same_semantic[-1]
+        identity_fields = (
+            "approval_hash",
+            "budget_identity",
+            "provider",
+            "model_id",
+            "prompt_name",
+            "prompt_version",
+            "input_payload_hash",
+            "response_schema_version",
+        )
+        if any(
+            getattr(latest, field) != getattr(record, field)
+            for field in identity_fields
+        ):
+            raise ValueError("model_call_identity_conflict")
+        return latest, False
+    latest_by_call: dict[str, AgentCallRecord] = {}
+    for item in records:
+        latest_by_call[item.call_id] = item
+    budget_records = [
+        item
+        for item in latest_by_call.values()
+        if item.budget_identity == record.budget_identity
+        and item.role == record.role
+        and item.status != AgentCallStatus.FAILED_BEFORE_DISPATCH
+    ]
+    if len(budget_records) >= maximum_calls:
+        raise ValueError("model_call_budget_exhausted")
+    reserved_cost = sum(item.maximum_reserved_cost for item in budget_records)
+    if reserved_cost + record.maximum_reserved_cost > maximum_total_cost + 1e-12:
+        raise ValueError("model_call_cost_limit_exceeded")
+    append(record)
+    return record, True

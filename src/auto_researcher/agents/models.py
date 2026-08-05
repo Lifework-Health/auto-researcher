@@ -256,6 +256,20 @@ class AgentCallRecord(AgentModel):
     response_hash: str | None = None
     retry_of_call_id: str | None = None
     provider_request_started: bool = False
+    # Optional agent-call-store-v2 fields. They remain optional so v1 hypothesis and
+    # planner records deserialize without reinterpretation.
+    semantic_key: str | None = None
+    approval_id: str | None = None
+    approval_hash: str | None = None
+    budget_identity: str | None = None
+    input_payload_hash: str | None = None
+    maximum_reserved_cost: float = Field(default=0, ge=0)
+    reservation_timestamp: AwareDatetime | None = None
+    dispatch_timestamp: AwareDatetime | None = None
+    completion_timestamp: AwareDatetime | None = None
+    completion_identity: str | None = None
+    finish_reason: str | None = None
+    replayed: bool = False
 
     @model_validator(mode="after")
     def status_payload_is_consistent(self) -> "AgentCallRecord":
@@ -269,13 +283,37 @@ class AgentCallRecord(AgentModel):
             raise ValueError(
                 "completed calls require structured output and response hash"
             )
-        if self.status == AgentCallStatus.FAILED and self.error_code is None:
+        if (
+            self.status
+            in {
+                AgentCallStatus.FAILED,
+                AgentCallStatus.FAILED_BEFORE_DISPATCH,
+                AgentCallStatus.FAILED_CONFIRMED,
+                AgentCallStatus.OUTCOME_UNKNOWN,
+                AgentCallStatus.REJECTED,
+            }
+            and self.error_code is None
+        ):
             raise ValueError("failed calls require a safe error code")
         if (
             self.status == AgentCallStatus.RESERVED
             and self.structured_output is not None
         ):
             raise ValueError("reserved calls cannot contain structured output")
+        if self.role == AgentRole.OPENEVOLVE_MUTATION:
+            required = {
+                "semantic_key": self.semantic_key,
+                "approval_id": self.approval_id,
+                "approval_hash": self.approval_hash,
+                "budget_identity": self.budget_identity,
+                "input_payload_hash": self.input_payload_hash,
+            }
+            if any(value is None for value in required.values()):
+                raise ValueError("OpenEvolve mutation calls require v2 identity fields")
+            if self.status == AgentCallStatus.COMPLETED and (
+                self.completion_timestamp is None or self.completion_identity is None
+            ):
+                raise ValueError("completed mutation calls require completion identity")
         return self
 
 
