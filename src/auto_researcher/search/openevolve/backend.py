@@ -110,7 +110,13 @@ class OpenEvolveBackend:
         }
         if not required.issubset(raw):
             raise ValueError("openevolve_finite_configuration_required")
-        if raw["sandbox_policy_id"] != "openevolve-sandbox-v1":
+        runner_id = getattr(self.sandbox_runner, "runner_id", "")
+        expected_sandbox = (
+            "openevolve-hardened-executor-v1"
+            if runner_id == "openevolve-hardened-executor-v1"
+            else "openevolve-sandbox-v1"
+        )
+        if raw["sandbox_policy_id"] != expected_sandbox:
             raise ValueError("openevolve_sandbox_policy_unavailable")
         if raw["evaluator_identity"] != self.evaluator_identity:
             raise ValueError("openevolve_evaluator_identity_mismatch")

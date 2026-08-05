@@ -63,6 +63,10 @@ ALLOWED_CHECKPOINT_TYPES = [
     ("auto_researcher.search.openevolve.models", "OpenEvolveBudgetState"),
     ("auto_researcher.search.openevolve.models", "OpenEvolvePopulationState"),
     ("auto_researcher.search.openevolve.models", "OpenEvolveSearchResult"),
+    (
+        "auto_researcher.search.openevolve.upstream_models",
+        "UpstreamOpenEvolveAdapterState",
+    ),
 ]
 
 

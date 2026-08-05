@@ -1,0 +1,3 @@
+# Auto Researcher model bridge
+
+`AutoResearcherOpenEvolveModelBridge` exposes only a structured mutation request. Its identity-bound reservation records provider, model, prompt version, output cap and response hash. Repeating a completed reservation reuses the response; it never calls upstream provider classes, passes credentials, requests chain of thought, persists rendered prompts or permits hidden retries. PR 7 tests use deterministic and fake clients only. Future live use must replace the in-memory fixture reservation with the existing durable model-call store without weakening these constraints.
