@@ -24,6 +24,25 @@
 11. Test configuration, readiness, evaluator mapping, policy outcomes, JSON
     safety, artefacts, provenance, and the complete shared graph.
 
+## Adding an OpenEvolve surface
+
+Only tasks that implement the runtime-checkable `OpenEvolveCapableTask` protocol
+may advertise `OPENEVOLVE`. Return an `EvolvableComponent` whose versioned spec
+declares exactly one safe relative mutable file, one entry point, its immutable
+signature, input/output schemas, allowed imports/dependencies, source-size cap,
+seed source, and bounded mutation context. Convert a validated preparation result
+to the task's ordinary `ExperimentSpec`; do not implement a second evaluator or
+verifier path.
+
+Keep datasets, split construction, evaluator/verifier code and identities,
+objectives, eligibility gates, contracts, budgets, and framework files outside
+the mutable surface. Bind the task's finite OpenEvolve configuration to its
+actual evaluator and verifier identities. Test seed preparation, invalid source,
+candidate conversion, negative scientific results, replay, and artefact tamper
+handling. A future MRI plugin can expose one bounded loss, augmentation,
+thresholding, or model-block file through this interface, while training and
+data handling remain task-owned and immutable.
+
 Acceptance requires comparing the new task with the synthetic task using the same
 `build_graph()`: topology and executed node sequence must remain identical. Do
 not add task-ID conditionals to graph code.

@@ -299,15 +299,15 @@ class BudgetState(ImmutableDomainModel):
     maximum_cost: float = Field(ge=0)
     cycles_used: int = Field(default=0, ge=0)
     experiments_used: int = Field(default=0, ge=0)
-    cost_used: float = Field(default=0, ge=0)
+    cost_used: float = Field(default=0.0, ge=0)
     model_calls_used: int = Field(default=0, ge=0)
     model_input_tokens_used: int = Field(default=0, ge=0)
     model_output_tokens_used: int = Field(default=0, ge=0)
     model_cache_tokens_used: int = Field(default=0, ge=0)
     model_cache_creation_tokens_used: int = Field(default=0, ge=0)
     model_cache_read_tokens_used: int = Field(default=0, ge=0)
-    model_cost_used: float = Field(default=0, ge=0)
-    evaluator_cost_used: float = Field(default=0, ge=0)
+    model_cost_used: float = Field(default=0.0, ge=0)
+    evaluator_cost_used: float = Field(default=0.0, ge=0)
     exhausted: bool = False
     exhaustion_reason: str | None = None
 

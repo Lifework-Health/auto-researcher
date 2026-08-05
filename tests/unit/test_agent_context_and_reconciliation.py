@@ -31,6 +31,7 @@ from auto_researcher.tasks.synthetic import (
     SyntheticTask,
     default_synthetic_configuration,
     default_synthetic_contract,
+    default_synthetic_openevolve_configuration,
 )
 
 
@@ -225,6 +226,73 @@ def test_planner_reconciliation_applies_contract_approval_and_stable_id():
             call_id="call-3",
             prompt_version="1.0.0",
         )
+
+
+def test_planner_reconciliation_accepts_task_owned_openevolve_configuration():
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.OPENEVOLVE}),
+        maximum_experiments=4,
+    )
+    configuration = default_synthetic_openevolve_configuration()
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        contract,
+        configuration,
+        search_type=SearchType.OPENEVOLVE,
+    )
+    initial = {
+        "run_id": "openevolve-context-run",
+        "thread_id": "openevolve-context-thread",
+        "contract": contract,
+        "status": "RUNNING",
+        "cycle": 0,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=1,
+        ),
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    state = {**initial, **supervisor_prepare(initial)}
+    hypothesis_context = dependencies.agent_context_assembler.hypothesis_context(
+        state,
+        dependencies.task_agent_context,
+    )
+    state["active_hypothesis"] = HypothesisReconciler().reconcile(
+        HypothesisProposal(
+            statement="A bounded source replacement may improve the objective.",
+            rationale="Offline compatibility test.",
+            predicted_subspace={"model_family": ["tree", "neural"]},
+            expected_observation="objective_score increases",
+            falsification_condition="objective_score does not increase",
+            confidence=0.4,
+        ),
+        hypothesis_context,
+        call_id="call-openevolve-hypothesis",
+        prompt_version="1.0.0",
+    )
+    planner_context = dependencies.agent_context_assembler.planner_context(
+        state,
+        dependencies.task_agent_context,
+        dependencies.search_capabilities,
+    )
+    request = PlannerReconciler(dependencies.task, contract).reconcile(
+        PlannerProposal(
+            search_type=SearchType.OPENEVOLVE,
+            target="objective_score",
+            proposed_search_space=configuration,
+            requested_experiment_budget=4,
+            rationale="Use the finite task-owned component.",
+        ),
+        planner_context,
+        call_id="call-openevolve-planner",
+        prompt_version="1.0.0",
+    )
+    assert request.search_type == SearchType.OPENEVOLVE
+    assert request.search_space == configuration
 
 
 def test_empty_relevance_cannot_ground_hypothesis_or_plan():

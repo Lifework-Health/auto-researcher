@@ -34,7 +34,9 @@ def search_router(
             message=f"{request.search_type.value} is unavailable",
         )
     else:
-        capability = dependencies.search_capabilities[request.search_type]
+        capability = dependencies.search_backend_registry.capability(
+            request.search_type
+        )
         result = SearchBackendResult(
             requested_type=request.search_type,
             available=capability.available,

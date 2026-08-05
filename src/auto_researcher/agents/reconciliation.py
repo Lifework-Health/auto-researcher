@@ -20,7 +20,11 @@ from auto_researcher.contracts.enums import (
 )
 from auto_researcher.contracts.models import Hypothesis, ResearchContract, SearchRequest
 from auto_researcher.knowledge.models import KnowledgeContextReference
-from auto_researcher.tasks.protocols import OptunaCapableTask, ResearchTask
+from auto_researcher.tasks.protocols import (
+    OpenEvolveCapableTask,
+    OptunaCapableTask,
+    ResearchTask,
+)
 
 
 class ReconciliationError(ValueError):
@@ -198,6 +202,11 @@ class PlannerReconciler:
                 )
             except (TypeError, ValueError) as exc:
                 raise ReconciliationError("invalid_optuna_narrowing") from exc
+        elif search_type == SearchType.OPENEVOLVE:
+            if not isinstance(self._task, OpenEvolveCapableTask):
+                raise ReconciliationError("task_not_openevolve_capable")
+            if not isinstance(search_space.get("openevolve"), dict):
+                raise ReconciliationError("invalid_openevolve_configuration")
         else:
             raise ReconciliationError("unsupported_pr4_search_type")
         knowledge_by_id = {

@@ -56,12 +56,24 @@ def test_proposals_cannot_supply_trusted_platform_fields():
         )
     with pytest.raises(ValidationError):
         PlannerProposal(
-            search_type=SearchType.OPENEVOLVE,
+            search_type=SearchType.DIRECT,
             target="metric",
             proposed_search_space={},
             requested_experiment_budget=1,
             rationale="summary",
+            request_id="invented",
         )
+
+
+def test_planner_proposal_supports_openevolve_without_platform_identities():
+    proposal = PlannerProposal(
+        search_type=SearchType.OPENEVOLVE,
+        target="bounded scoring transformation",
+        proposed_search_space={"openevolve": {"population_size": 1}},
+        requested_experiment_budget=1,
+        rationale="offline bounded search",
+    )
+    assert proposal.search_type == SearchType.OPENEVOLVE
 
 
 def test_context_hash_is_canonical():

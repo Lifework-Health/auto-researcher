@@ -154,8 +154,8 @@ def _load_task_configuration(
     selected = dict(selected)
     if search is not None:
         kind = selected.pop("type", None)
-        if kind != SearchType.OPTUNA.value:
-            raise ValueError("PR 3 search section type must be OPTUNA")
+        if kind not in {SearchType.OPTUNA.value, SearchType.OPENEVOLVE.value}:
+            raise ValueError("search section type must be OPTUNA or OPENEVOLVE")
     return selected, runtime
 
 
@@ -163,7 +163,15 @@ def _configured_search_type(path: Path | None) -> SearchType:
     if path is None:
         return SearchType.DIRECT
     payload = _load_yaml(path)
-    return SearchType.OPTUNA if "search" in payload else SearchType.DIRECT
+    search = payload.get("search")
+    if search is None:
+        return SearchType.DIRECT
+    if not isinstance(search, dict):
+        raise ValueError("task config search section must be a mapping")
+    try:
+        return SearchType(search.get("type"))
+    except ValueError as exc:
+        raise ValueError("task config has an unsupported search type") from exc
 
 
 def _load_live_agents(payload: dict[str, Any]):
@@ -428,9 +436,14 @@ def run(
             task_id = "synthetic"
         search_type = _configured_search_type(task_config)
         raw_config = _load_yaml(task_config) if task_config else {}
-        requested_budget = int(
-            raw_config.get("search", {}).get("trial_budget", max_cycles)
-        )
+        raw_search = raw_config.get("search", {})
+        requested_budget = int(raw_search.get("trial_budget", max_cycles))
+        if search_type == SearchType.OPENEVOLVE:
+            requested_budget = int(
+                raw_search.get("openevolve", {}).get(
+                    "maximum_candidate_evaluations", max_cycles
+                )
+            )
         contract = (
             ResearchContract.model_validate(_load_yaml(contract_path))
             if contract_path
@@ -603,6 +616,20 @@ def run(
         typer.echo(f"Best overall diagnostic score: {study.best_overall_score}")
         typer.echo(f"Study finish reason: {study.finish_reason}")
         typer.echo(f"Study artefacts: {', '.join(study.artefact_references) or 'none'}")
+    evolution = final.get("openevolve_search_result")
+    if evolution is not None:
+        typer.echo(f"OpenEvolve contract hash: {evolution.search_contract_hash}")
+        typer.echo(f"Candidates evaluated: {evolution.candidates_evaluated}")
+        typer.echo(f"Candidates failed: {evolution.candidates_failed}")
+        typer.echo(
+            f"Best candidates: {', '.join(evolution.best_candidate_ids) or 'none'}"
+        )
+        typer.echo(f"Feasible candidate: {evolution.feasible_candidate_found}")
+        typer.echo(f"OpenEvolve stop reason: {evolution.stop_reason}")
+        typer.echo(
+            "OpenEvolve artefacts: "
+            f"{', '.join(evolution.artefact_references) or 'none'}"
+        )
     if final["status"] == RunStatus.FAILED:
         raise typer.Exit(code=1)
 

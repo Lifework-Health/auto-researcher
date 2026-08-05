@@ -13,6 +13,7 @@ from auto_researcher.contracts.models import (
     SearchRequest,
 )
 from auto_researcher.search.optuna.models import OptunaStudySpec
+from auto_researcher.search.openevolve.protocols import EvolvableComponent
 from auto_researcher.search.protocols import SearchCapability
 from auto_researcher.knowledge.models import (
     KnowledgeGroundingPolicy,
@@ -88,6 +89,17 @@ class OptunaCapableTask(Protocol):
         contract: ResearchContract,
         request: SearchRequest,
     ) -> OptunaStudySpec: ...
+
+
+@runtime_checkable
+class OpenEvolveCapableTask(Protocol):
+    """Optional task-owned mutable surface for bounded program search."""
+
+    def create_evolvable_component(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+    ) -> EvolvableComponent: ...
 
 
 @runtime_checkable

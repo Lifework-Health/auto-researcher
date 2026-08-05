@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from auto_researcher.contracts.enums import SearchType
-from auto_researcher.contracts.models import ExperimentSpec, ResearchContract, SearchRequest
+from auto_researcher.contracts.models import (
+    ExperimentSpec,
+    ResearchContract,
+    SearchRequest,
+)
 
 
 @runtime_checkable
@@ -23,7 +27,7 @@ class OptunaSearchBackend(SearchBackend, Protocol):
 
 
 class OpenEvolveSearchBackend(SearchBackend, Protocol):
-    """Reserved program-search boundary; no implementation exists yet."""
+    """Bounded program-search boundary implemented by the PR 6 subgraph."""
 
 
 @dataclass(frozen=True)
