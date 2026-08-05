@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from langgraph.types import Command
 
-from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.contracts.enums import ReadSafetyMode, RunStatus
 from auto_researcher.contracts.models import ResearchContract, RunExecutionIdentity
 from auto_researcher.runtime.identity import payload_hash
 
@@ -88,13 +88,15 @@ def _stored_identity(values: Mapping[str, Any]) -> RunExecutionIdentity:
     raw = values.get("execution_identity")
     if raw is None:
         raise RunExecutionError("checkpoint_execution_identity_missing")
-    try:
-        identity = RunExecutionIdentity.model_validate(raw)
-    except Exception as exc:
-        raise RunExecutionError("checkpoint_execution_identity_invalid") from exc
+    if type(raw) is not RunExecutionIdentity:
+        raise RunExecutionError("checkpoint_execution_identity_invalid")
+    identity = raw
     contract = values.get("contract")
-    if not isinstance(contract, ResearchContract):
-        contract = ResearchContract.model_validate(contract)
+    if type(contract) is not ResearchContract or any(
+        type(mode) is not ReadSafetyMode
+        for mode in contract.grounding.permitted_read_safety_modes
+    ):
+        raise RunExecutionError("checkpoint_execution_identity_invalid")
     if (
         values.get("thread_id") != identity.thread_id
         or values.get("run_id") != identity.run_id

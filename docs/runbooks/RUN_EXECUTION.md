@@ -40,6 +40,14 @@ auto-researcher run inspect \
 threads. `INSPECT` requires a terminal thread and performs no provider, model,
 evaluator, verifier, artefact, checkpoint, or provenance write.
 
+Checkpoint reconstruction uses a closed qualified-type allowlist. In
+particular, operator-attested contracts restore
+`auto_researcher.contracts.enums.ReadSafetyMode` as the exact enum class rather
+than a string. The runtime rejects untyped contract or execution-identity
+mappings and read-safety string substitutions before identity comparison.
+Provider configuration and operator-attestation objects are not constructed by
+INSPECT.
+
 START rejections use the stable public vocabulary `run-execution-errors-v1`:
 
 | Conflict | Error code |
@@ -84,3 +92,9 @@ state fails closed without rerunning the evaluator.
 `evaluation-reuse-v1` rows and checkpoint 03 are legacy inputs. They are not
 silently upgraded from whatever artefacts happen to exist and cannot be used as
 v2 reusable evidence. Start a fresh run under the current protocol.
+
+Corrective PR 5.7 is serialization-compatible with already persisted
+operator-attested `run-execution-v2` checkpoints: after deploying the corrected
+allowlist, a terminal checkpoint can be inspected without changing its database
+or artefacts. No new run identity is required solely for this reconstruction
+fix.

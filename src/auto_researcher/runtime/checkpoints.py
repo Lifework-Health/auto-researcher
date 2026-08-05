@@ -18,6 +18,7 @@ ALLOWED_CHECKPOINT_TYPES = [
     ("auto_researcher.contracts.enums", "KnowledgeRetrievalStatus"),
     ("auto_researcher.contracts.enums", "ProvenanceKind"),
     ("auto_researcher.contracts.enums", "ProposalSource"),
+    ("auto_researcher.contracts.enums", "ReadSafetyMode"),
     ("auto_researcher.contracts.enums", "RunStatus"),
     ("auto_researcher.contracts.enums", "SearchType"),
     ("auto_researcher.contracts.models", "ApprovalRequest"),
