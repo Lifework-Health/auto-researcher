@@ -182,13 +182,17 @@ def record_provenance(
             )
         )
     if experiment:
+        search_type = request.search_type.value if request else "DIRECT"
         rows.append(
             (
                 EventType.EXPERIMENT_PREPARED,
-                "direct_search",
+                f"{search_type.lower()}_search",
                 (experiment.search_request_id,),
                 (experiment.experiment_id,),
-                "Prepared one deterministic DIRECT experiment without evaluating it.",
+                (
+                    "Prepared one task-owned experiment without evaluating it; "
+                    f"the selected generic backend was {search_type}."
+                ),
                 experiment.provenance,
             )
         )

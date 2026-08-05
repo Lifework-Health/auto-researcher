@@ -25,6 +25,16 @@ from auto_researcher.search.optuna.models import (
     OptunaTrialOutcome,
 )
 from auto_researcher.knowledge.models import KnowledgeBundleReference
+from auto_researcher.search.openevolve.models import (
+    CandidatePreparationResult,
+    CandidateValidationResult,
+    MutationReservation,
+    OpenEvolveCandidate,
+    OpenEvolveCandidateCollection,
+    OpenEvolvePopulationState,
+    OpenEvolveSearchContract,
+    OpenEvolveSearchResult,
+)
 
 
 class ResearchState(TypedDict):
@@ -58,3 +68,11 @@ class ResearchState(TypedDict):
     knowledge_bundle_reference: NotRequired[KnowledgeBundleReference | None]
     knowledge_errors: Annotated[list[str], operator.add]
     knowledge_warnings: Annotated[list[str], operator.add]
+    openevolve_search_contract: NotRequired[OpenEvolveSearchContract | None]
+    openevolve_population_state: NotRequired[OpenEvolvePopulationState | None]
+    openevolve_candidates: NotRequired[OpenEvolveCandidateCollection]
+    openevolve_current_candidate: NotRequired[OpenEvolveCandidate | None]
+    openevolve_mutation_reservation: NotRequired[MutationReservation | None]
+    openevolve_validation_result: NotRequired[CandidateValidationResult | None]
+    openevolve_preparation_result: NotRequired[CandidatePreparationResult | None]
+    openevolve_search_result: NotRequired[OpenEvolveSearchResult | None]

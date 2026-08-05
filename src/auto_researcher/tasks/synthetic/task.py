@@ -50,7 +50,9 @@ class SyntheticTask:
             display_name="Deterministic synthetic landscape",
             domain="synthetic",
             description="Offline task proving domain-neutral orchestration.",
-            supported_search_types=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+            supported_search_types=frozenset(
+                {SearchType.DIRECT, SearchType.OPTUNA, SearchType.OPENEVOLVE}
+            ),
             evaluator_id="synthetic-evaluator",
             verification_policy_id="synthetic-policy-v1",
             configuration_schema_version="1.0",
@@ -158,6 +160,9 @@ class SyntheticTask:
                     "study_summary",
                     "trials_summary",
                     "selected_trial",
+                    "openevolve_search",
+                    "openevolve_candidate",
+                    "openevolve_lineage",
                 }
             ),
             prohibited_artefact_types=frozenset({"raw_input_data"}),
@@ -239,6 +244,18 @@ class SyntheticTask:
             dict(request.search_space),
             request_experiment_budget=request.experiment_budget,
         )
+
+    def create_evolvable_component(
+        self,
+        contract: ResearchContract,
+        runtime_context: TaskRuntimeContext,
+    ):
+        from auto_researcher.tasks.synthetic.openevolve import (
+            SyntheticEvolvableComponent,
+        )
+
+        self.validate_contract(contract)
+        return SyntheticEvolvableComponent()
 
 
 def default_synthetic_configuration() -> dict[str, JsonValue]:

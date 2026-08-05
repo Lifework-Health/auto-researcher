@@ -303,7 +303,6 @@ class AgentContextAssembler:
                     if capability.available
                     and search_type in state["contract"].allowed_search_types
                     and search_type in task_context.available_search_types
-                    and search_type != SearchType.OPENEVOLVE
                 ),
                 key=lambda item: item.value,
             )

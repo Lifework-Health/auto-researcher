@@ -62,12 +62,23 @@ def route_after_human(
 
 def route_search_backend(
     state: ResearchState,
-) -> Literal["direct_search", "optuna_prepare_study", "unavailable_backend"]:
+) -> Literal[
+    "direct_search",
+    "optuna_prepare_study",
+    "initialise_openevolve",
+    "unavailable_backend",
+]:
     backend = state["search_backend_result"]
     if backend and backend.available and backend.requested_type == SearchType.DIRECT:
         return "direct_search"
     if backend and backend.available and backend.requested_type == SearchType.OPTUNA:
         return "optuna_prepare_study"
+    if (
+        backend
+        and backend.available
+        and backend.requested_type == SearchType.OPENEVOLVE
+    ):
+        return "initialise_openevolve"
     return "unavailable_backend"
 
 
@@ -89,11 +100,52 @@ def route_after_optuna_prepare(
 
 def route_after_verification(
     state: ResearchState,
-) -> Literal["record_provenance", "optuna_tell_trial"]:
+) -> Literal[
+    "record_provenance",
+    "optuna_tell_trial",
+    "record_openevolve_candidate",
+]:
     request = state.get("search_request")
     if request is not None and request.search_type == SearchType.OPTUNA:
         return "optuna_tell_trial"
+    if request is not None and request.search_type == SearchType.OPENEVOLVE:
+        return "record_openevolve_candidate"
     return "record_provenance"
+
+
+def route_after_openevolve_validation(
+    state: ResearchState,
+) -> Literal["prepare_openevolve_candidate", "record_openevolve_candidate"]:
+    result = state["openevolve_validation_result"]
+    assert result is not None
+    return (
+        "prepare_openevolve_candidate"
+        if result.status.value == "VALID"
+        else "record_openevolve_candidate"
+    )
+
+
+def route_after_openevolve_preparation(
+    state: ResearchState,
+) -> Literal["evaluate_experiment", "record_openevolve_candidate"]:
+    result = state["openevolve_preparation_result"]
+    return (
+        "evaluate_experiment"
+        if result is not None and result.execution_status.value == "COMPLETED"
+        else "record_openevolve_candidate"
+    )
+
+
+def route_after_openevolve_decision(
+    state: ResearchState,
+) -> Literal["select_openevolve_parent", "finalise_openevolve"]:
+    population = state["openevolve_population_state"]
+    assert population is not None
+    return (
+        "finalise_openevolve"
+        if population.stopping_status == "STOPPED"
+        else "select_openevolve_parent"
+    )
 
 
 def route_after_optuna_decision(

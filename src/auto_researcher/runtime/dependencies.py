@@ -50,7 +50,11 @@ from auto_researcher.provenance.protocols import ProvenanceStore
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.checkpoints import memory_checkpointer, sqlite_checkpointer
 from auto_researcher.search.direct import DirectSearchBackend
+from auto_researcher.search.openevolve.backend import OpenEvolveBackend
+from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
+from auto_researcher.search.openevolve.sandbox import LocalSandboxRunner
 from auto_researcher.search.protocols import SearchBackend, SearchCapability
+from auto_researcher.search.registry import SearchBackendRegistry
 from auto_researcher.search.optuna.backend import OptunaAskTellBackend
 from auto_researcher.search.optuna.storage import (
     OptunaStorageHandle,
@@ -67,6 +71,7 @@ from auto_researcher.tasks.models import (
 )
 from auto_researcher.tasks.protocols import (
     AgentContextCapableTask,
+    OpenEvolveCapableTask,
     OptunaCapableTask,
     ResearchTask,
     VerificationPolicy,
@@ -103,8 +108,10 @@ class RuntimeDependencies:
     runtime_context: TaskRuntimeContext
     experiment_metadata: ExperimentMetadata
     search_capabilities: dict[SearchType, SearchCapability]
+    search_backend_registry: SearchBackendRegistry
     optuna_backend: OptunaAskTellBackend | None = None
     optuna_storage_handle: OptunaStorageHandle | None = None
+    openevolve_backend: OpenEvolveBackend | None = None
 
 
 def utc_now() -> datetime:
@@ -189,6 +196,7 @@ def _assemble_task_dependencies(
     task_evaluator = evaluator or task.create_evaluator(context)
     if task_evaluator.evaluator_id != metadata.evaluator_id:
         raise ValueError("task evaluator does not match experiment metadata")
+    selected_verifier = verifier or DeterministicVerifier(policy)
     optuna_installed = importlib.util.find_spec("optuna") is not None
     optuna_capable = isinstance(task, OptunaCapableTask)
     optuna_permitted = SearchType.OPTUNA in contract.allowed_search_types
@@ -220,11 +228,53 @@ def _assemble_task_dependencies(
         and optuna_permitted
         and optuna_storage_handle is not None
     )
-    capabilities = {
-        SearchType.DIRECT: SearchCapability(
+    openevolve_capable = isinstance(task, OpenEvolveCapableTask)
+    openevolve_permitted = SearchType.OPENEVOLVE in contract.allowed_search_types
+    openevolve_backend: OpenEvolveBackend | None = None
+    if openevolve_capable and openevolve_permitted:
+        component = task.create_evolvable_component(contract, context)
+        verifier_identity = f"{selected_verifier.version}@{policy.policy_id}"
+        workspace_root = (
+            context.workspace_dir / "openevolve-sandboxes"
+            if context.workspace_dir is not None
+            else None
+        )
+        openevolve_backend = OpenEvolveBackend(
+            component,
+            metadata,
+            verifier_identity,
+            DeterministicMutationOperator(),
+            LocalSandboxRunner(workspace_root),
+        )
+        if search_type == SearchType.OPENEVOLVE:
+            validation_request = SearchRequest(
+                request_id="runtime-capability-validation",
+                hypothesis_id="runtime-capability-validation",
+                search_type=SearchType.OPENEVOLVE,
+                target="validate task-owned OpenEvolve mutable surface",
+                search_space=experiment_configuration,
+                experiment_budget=int(
+                    experiment_configuration.get(
+                        "trial_budget", contract.maximum_experiments
+                    )
+                ),
+                rationale="Validate finite OpenEvolve configuration before execution.",
+            )
+            openevolve_backend.create_search_contract(validation_request, contract)
+    openevolve_available = openevolve_backend is not None
+    direct_backend = DirectSearchBackend(
+        metadata,
+        task.normalise_configuration,
+    )
+    registry = SearchBackendRegistry()
+    registry.register(
+        SearchCapability(
             SearchType.DIRECT, True, "BACKEND_AVAILABLE", "DIRECT backend selected"
         ),
-        SearchType.OPTUNA: SearchCapability(
+        direct_backend,
+    )
+    registry.register(
+        SearchCapability(
             SearchType.OPTUNA,
             optuna_available,
             "BACKEND_AVAILABLE" if optuna_available else "BACKEND_UNAVAILABLE",
@@ -234,13 +284,26 @@ def _assemble_task_dependencies(
                 else "OPTUNA requires an Optuna-capable task and the hpo extra"
             ),
         ),
-        SearchType.OPENEVOLVE: SearchCapability(
-            SearchType.OPENEVOLVE,
-            False,
-            "BACKEND_UNAVAILABLE",
-            "OPENEVOLVE is reserved for a later PR",
+        (
+            OptunaAskTellBackend(optuna_storage_handle.storage)
+            if optuna_available and optuna_storage_handle
+            else None
         ),
-    }
+    )
+    registry.register(
+        SearchCapability(
+            SearchType.OPENEVOLVE,
+            openevolve_available,
+            "BACKEND_AVAILABLE" if openevolve_available else "BACKEND_UNAVAILABLE",
+            (
+                "OPENEVOLVE bounded program-search backend selected"
+                if openevolve_available
+                else "OPENEVOLVE requires a compatible task-owned evolvable component"
+            ),
+        ),
+        openevolve_backend,
+    )
+    capabilities = registry.capabilities()
     call_store = agent_call_store or InMemoryAgentCallStore()
     retrieval_store = knowledge_retrieval_store or InMemoryKnowledgeRetrievalStore()
     template_registry = knowledge_template_registry or default_template_registry()
@@ -358,16 +421,13 @@ def _assemble_task_dependencies(
                         "trial_budget", contract.maximum_experiments
                     )
                 )
-                if search_type == SearchType.OPTUNA
+                if search_type in {SearchType.OPTUNA, SearchType.OPENEVOLVE}
                 else 1
             ),
         ),
-        direct_search_backend=DirectSearchBackend(
-            metadata,
-            task.normalise_configuration,
-        ),
+        direct_search_backend=direct_backend,
         evaluator=task_evaluator,
-        verifier=verifier or DeterministicVerifier(policy),
+        verifier=selected_verifier,
         provenance_store=provenance_store,
         agent_call_store=call_store,
         knowledge_retrieval_store=retrieval_store,
@@ -390,12 +450,14 @@ def _assemble_task_dependencies(
         runtime_context=context,
         experiment_metadata=metadata,
         search_capabilities=capabilities,
+        search_backend_registry=registry,
         optuna_backend=(
             OptunaAskTellBackend(optuna_storage_handle.storage)
             if optuna_available and optuna_storage_handle
             else None
         ),
         optuna_storage_handle=optuna_storage_handle,
+        openevolve_backend=openevolve_backend,
     )
 
 
@@ -595,6 +657,7 @@ def memory_dependencies(
         SyntheticTask,
         default_synthetic_configuration,
         default_synthetic_contract,
+        default_synthetic_openevolve_configuration,
     )
 
     return task_memory_dependencies(
@@ -602,11 +665,19 @@ def memory_dependencies(
         TaskRuntimeContext(),
         default_synthetic_contract(
             search_types=frozenset({search_type}),
-            maximum_experiments=8 if search_type == SearchType.OPTUNA else 1,
+            maximum_experiments=(
+                8
+                if search_type == SearchType.OPTUNA
+                else 4
+                if search_type == SearchType.OPENEVOLVE
+                else 1
+            ),
         ),
         (
             {"trial_budget": 8}
             if search_type == SearchType.OPTUNA
+            else default_synthetic_openevolve_configuration()
+            if search_type == SearchType.OPENEVOLVE
             else default_synthetic_configuration()
         ),
         hypothesis_agent=hypothesis_agent,

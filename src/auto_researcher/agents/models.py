@@ -123,8 +123,12 @@ class PlannerProposal(AgentModel):
 
     @model_validator(mode="after")
     def only_supported_search_types(self) -> "PlannerProposal":
-        if self.search_type not in {SearchType.DIRECT, SearchType.OPTUNA}:
-            raise ValueError("planner proposals support only DIRECT or OPTUNA")
+        if self.search_type not in {
+            SearchType.DIRECT,
+            SearchType.OPTUNA,
+            SearchType.OPENEVOLVE,
+        }:
+            raise ValueError("planner proposal search type is unsupported")
         return self
 
 
