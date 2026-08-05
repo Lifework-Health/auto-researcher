@@ -35,3 +35,26 @@ reuse is deliberately excluded. Public START identity conflicts use
 `run-execution-errors-v1`: `conflicting_run_identity`,
 `conflicting_contract_identity`, `conflicting_task_identity`, and
 `conflicting_initial_input_identity`.
+
+## Checkpoint reconstruction boundary
+
+Replay inspection depends on exact reconstruction of the immutable domain
+types used to calculate execution identity. LangGraph checkpoint decoding is
+therefore restricted to an explicit symbol allowlist. PR 5.7 adds only
+`auto_researcher.contracts.enums.ReadSafetyMode`, because it is nested in the
+checkpointed research contract. Other operator-attestation types remain outside
+the checkpoint type graph and are not allowlisted.
+
+The decoder does not use wildcard modules, dynamic checkpoint-controlled
+imports, pickle, or untyped-dictionary fallbacks. Stored execution identities,
+contracts, and read-safety enum members must have exact allowlisted class
+identity. Fresh-process regression coverage proves that an operator-attested
+terminal checkpoint returns an identical state through `REPLAY_INSPECT`, while
+duplicate START, identity conflicts, and terminal RESUME are rejected before
+graph or dependency execution and without persistence changes.
+
+Canonical execution hashing recurses through the Python-mode representation of
+domain models so frozensets remain visible to the canonicalizer. Closed enum
+sets use enum declaration order and primitive sets use canonical lexical order;
+the resulting identity is stable across Python hash seeds and preserves the
+already persisted checkpoint 04c contract hash.
