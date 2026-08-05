@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from auto_researcher.knowledge.identity import query_plan_hash
 from auto_researcher.knowledge.models import (
+    KnowledgeErrorCode,
     KnowledgeProviderConfiguration,
     KnowledgeQueryPlan,
     KnowledgeRetrievalRequest,
@@ -411,9 +412,7 @@ def test_operator_attested_readiness_and_query_audit_are_explicit():
     assert readiness.read_safety_mode.value == "OPERATOR_ATTESTED"
     assert not readiness.privilege_verified
     assert readiness.attestation_valid
-    assert readiness.residual_risk == (
-        "DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY"
-    )
+    assert readiness.residual_risk == ("DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY")
     assert any("weaker" in warning for warning in readiness.warnings)
     assert not any("SHOW USER PRIVILEGES" in query for query, _ in driver.queries)
 
@@ -421,12 +420,9 @@ def test_operator_attested_readiness_and_query_audit_are_explicit():
     metadata = bundle.graph_snapshot.safe_graph_metadata
     assert metadata["read_safety_mode"] == "OPERATOR_ATTESTED"
     assert metadata["credential_class"] == "MANAGED_INSTANCE_PRIMARY"
-    assert metadata["residual_risk"] == (
-        "DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY"
-    )
+    assert metadata["residual_risk"] == ("DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY")
     assert all(
-        item["zero_updates_confirmed"]
-        and item["zero_system_updates_confirmed"]
+        item["zero_updates_confirmed"] and item["zero_system_updates_confirmed"]
         for item in metadata["query_execution_audit"]
     )
 
@@ -460,6 +456,31 @@ def test_operator_attested_requires_current_attestation():
     assert not readiness.ready
     assert not readiness.attestation_valid
     assert "ATTESTATION_INVALID" in {item.value for item in readiness.errors}
+
+
+def test_operator_readiness_rejects_hash_or_runtime_configuration_drift():
+    configuration = operator_configuration()
+    attestation = configuration.read_safety_attestation
+    assert attestation is not None
+    tampered_attestation = attestation.model_copy(
+        update={"residual_risk_statement": "Changed but credential-free risk."}
+    )
+    tampered = configuration.model_copy(
+        update={"read_safety_attestation": tampered_attestation}
+    )
+    changed_runtime = configuration.model_copy(update={"maximum_records": 9})
+
+    for changed in (tampered, changed_runtime):
+        readiness = Neo4jKnowledgeProvider(
+            changed,
+            default_template_registry(),
+            driver=FakeDriver(_row()),
+            clock=fixed_clock,
+            query_factory=lambda text, timeout: text,
+        ).readiness(changed)
+        assert not readiness.ready
+        assert not readiness.attestation_valid
+        assert KnowledgeErrorCode.ATTESTATION_INVALID in readiness.errors
 
 
 def test_operator_attested_rejects_unattested_template_and_update_counters():
@@ -518,9 +539,7 @@ def test_privilege_verified_fails_when_privileges_unavailable_or_admin_like():
 
     class AdminPrivilegeSession(FakeSession):
         def run(self, query):
-            return FakeResult(
-                [{"access": "GRANTED", "action": "create index"}]
-            )
+            return FakeResult([{"access": "GRANTED", "action": "create index"}])
 
     class AdminPrivilegeDriver(FakeDriver):
         def session(self, *, database):

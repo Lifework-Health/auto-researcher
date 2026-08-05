@@ -72,6 +72,12 @@ class KnowledgeErrorCode(StrEnum):
     READ_ONLY_NOT_VERIFIED = "READ_ONLY_NOT_VERIFIED"
     READ_SAFETY_MODE_NOT_PERMITTED = "READ_SAFETY_MODE_NOT_PERMITTED"
     ATTESTATION_INVALID = "ATTESTATION_INVALID"
+    ATTESTATION_CANONICALIZATION_FAILED = "ATTESTATION_CANONICALIZATION_FAILED"
+    ATTESTATION_DUPLICATE_UNORDERED_VALUE = "ATTESTATION_DUPLICATE_UNORDERED_VALUE"
+    CONFIGURATION_HASH_MISMATCH = "CONFIGURATION_HASH_MISMATCH"
+    LEGACY_ATTESTATION_REGENERATION_REQUIRED = (
+        "LEGACY_ATTESTATION_REGENERATION_REQUIRED"
+    )
     SCHEMA_MISMATCH = "SCHEMA_MISMATCH"
     CONTENT_VERSION_MISMATCH = "CONTENT_VERSION_MISMATCH"
     UNKNOWN_QUERY_TEMPLATE = "UNKNOWN_QUERY_TEMPLATE"
@@ -129,9 +135,7 @@ class KnowledgeProviderConfiguration(KnowledgeModel):
                     "operator-attested mode requires Neo4j and an attestation"
                 )
         elif self.read_safety_attestation is not None:
-            raise ValueError(
-                "an attestation is valid only in OPERATOR_ATTESTED mode"
-            )
+            raise ValueError("an attestation is valid only in OPERATOR_ATTESTED mode")
         return self
 
 
@@ -315,9 +319,7 @@ class KnowledgeReference(KnowledgeModel):
 
     _subject = field_validator("subject_curie")(_validate_curie)
     _object = field_validator("object_curie")(_validate_curie)
-    _safe_text = field_validator("concise_claim", "citation_label")(
-        _validate_safe_text
-    )
+    _safe_text = field_validator("concise_claim", "citation_label")(_validate_safe_text)
 
 
 class KnowledgeGraphSnapshot(KnowledgeModel):

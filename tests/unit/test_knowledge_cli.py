@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
 from typer.testing import CliRunner
@@ -136,6 +139,7 @@ def test_attestation_cli_reports_only_safe_identity_and_risk(tmp_path):
     assert "Valid: true" in validated.stdout
     assert "PROFESSIONAL" in validated.stdout
     assert "DATABASE_CREDENTIAL_NOT_ENFORCED_READ_ONLY" in validated.stdout
+    assert "canonical-json-sha256-v1" in validated.stdout
     assert "password" not in validated.stdout.casefold()
     assert "neo4j+s://" not in validated.stdout
     assert "@" not in validated.stdout.split("Templates:", 1)[0]
@@ -151,3 +155,87 @@ def test_attestation_cli_reports_only_safe_identity_and_risk(tmp_path):
     )
     assert rejected.exit_code == 1
     assert "ATTESTATION_HASH_MISMATCH" in rejected.stdout
+
+
+def test_attestation_cli_is_cross_process_and_yaml_order_stable(tmp_path):
+    attestation = operator_configuration().read_safety_attestation
+    assert attestation is not None
+    payload = attestation.model_dump(mode="json")
+    payload = dict(reversed(tuple(payload.items())))
+    for field in (
+        "evidence_references",
+        "permitted_query_template_ids",
+        "prohibited_capabilities",
+    ):
+        payload[field] = list(reversed(payload[field]))
+    path = tmp_path / "reordered-attestation.yaml"
+    path.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True).rstrip(),
+        encoding="utf-8",
+    )
+    executable = Path(sys.executable).parent / "auto-researcher"
+    outputs = []
+    for seed, action in (("2", "validate"), ("999", "inspect")):
+        completed = subprocess.run(
+            [
+                str(executable),
+                "knowledge",
+                "attestation",
+                action,
+                "--file",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        outputs.append(completed.stdout)
+
+    for output in outputs:
+        assert "Valid: true" in output
+        assert f"Attestation hash: {attestation.attestation_hash}" in output
+        assert f"Configuration hash: {attestation.configuration_hash}" in output
+
+
+def test_attestation_cli_rejects_legacy_duplicate_and_ambiguous_yaml(tmp_path):
+    attestation = operator_configuration().read_safety_attestation
+    assert attestation is not None
+    runner = CliRunner()
+
+    legacy = attestation.model_dump(mode="json")
+    legacy.pop("attestation_hash_algorithm")
+    legacy.pop("configuration_hash_algorithm")
+    path = tmp_path / "legacy.yaml"
+    path.write_text(yaml.safe_dump(legacy), encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["knowledge", "attestation", "validate", "--file", str(path)],
+    )
+    assert result.exit_code == 1
+    assert "LEGACY_ATTESTATION_REGENERATION_REQUIRED" in result.stdout
+
+    duplicate = attestation.model_dump(mode="json")
+    duplicate["permitted_query_template_ids"] = [
+        "generic.schema_preflight@1.0.0",
+        "generic.schema_preflight@1.0.0",
+    ]
+    path.write_text(yaml.safe_dump(duplicate), encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["knowledge", "attestation", "validate", "--file", str(path)],
+    )
+    assert result.exit_code == 1
+    assert "ATTESTATION_DUPLICATE_UNORDERED_VALUE" in result.stdout
+
+    valid_yaml = yaml.safe_dump(attestation.model_dump(mode="json"))
+    path.write_text(
+        valid_yaml + "\nattestation_id: duplicate-id\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        ["knowledge", "attestation", "validate", "--file", str(path)],
+    )
+    assert result.exit_code == 1
+    assert "ATTESTATION_CANONICALIZATION_FAILED" in result.stdout

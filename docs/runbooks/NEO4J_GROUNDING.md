@@ -170,6 +170,38 @@ These commands validate shape, expiry and the attestation content hash. Runtime
 readiness additionally validates the configuration hash and registered template
 hashes. They do not approve, sign or renew an attestation.
 
+Both commands report:
+
+```text
+Attestation hash algorithm: canonical-json-sha256-v1
+Configuration hash algorithm: canonical-json-sha256-v1
+```
+
+Generate both hashes through the current library implementation; never copy or
+invent a digest. The canonical creation order is: validate the credential-free
+logical payload, bind its exact provider configuration and registered template
+hashes, calculate the configuration hash, seal the attestation hash, then write
+stable human-readable YAML. Reordered YAML keys, alternate quoting, final
+newlines and reordered values in the three unordered fields do not change the
+identity.
+
+The unordered fields are `evidence_references`,
+`permitted_query_template_ids` and `prohibited_capabilities`; write them in
+lexical order for readability. Other YAML lists remain ordered when their order
+has procedural or scientific meaning. Duplicate unordered values, duplicate
+YAML mapping keys, naive timestamps and non-finite numbers fail closed.
+
+Attestation and configuration hashes have distinct versioned domain envelopes.
+The attestation hash includes review and expiry but excludes its own hash and the
+local file path. The configuration hash binds the explicit database,
+graph/schema/content identity, caps, policy and exact template hashes. See ADR
+014 for the complete included/excluded field boundary.
+
+Any pre-fix attestation without both algorithm fields must be regenerated. The
+safe error is `LEGACY_ATTESTATION_REGENERATION_REQUIRED`; do not add the fields
+to an old file and reuse its stored digest. This affects no credential or graph
+state.
+
 In operator-attested mode the provider accepts only registered, statically
 linted templates through explicit read transactions. It enforces timeout, row
 and hop caps, runs the registered schema preflight, requires both data and system

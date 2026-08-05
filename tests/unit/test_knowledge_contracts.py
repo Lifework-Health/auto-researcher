@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
+import yaml
 
 from auto_researcher.cli import _load_grounding
 from auto_researcher.contracts.enums import KnowledgeGroundingMode, ReadSafetyMode
@@ -182,8 +183,6 @@ def test_valid_operator_attestation_loads_without_credentials(tmp_path):
     attestation = attested.read_safety_attestation
     assert attestation is not None
     attestation_path = tmp_path / "attestation.yaml"
-    import yaml
-
     attestation_path.write_text(
         yaml.safe_dump(attestation.model_dump(mode="json"), sort_keys=True),
         encoding="utf-8",
@@ -194,7 +193,10 @@ def test_valid_operator_attestation_loads_without_credentials(tmp_path):
                 mode="OPTIONAL",
                 permitted_providers=frozenset({"neo4j"}),
                 permitted_read_safety_modes=frozenset(
-                    {ReadSafetyMode.PRIVILEGE_VERIFIED, ReadSafetyMode.OPERATOR_ATTESTED}
+                    {
+                        ReadSafetyMode.PRIVILEGE_VERIFIED,
+                        ReadSafetyMode.OPERATOR_ATTESTED,
+                    }
                 ),
                 maximum_query_records=10,
                 maximum_graph_hops=3,
@@ -229,6 +231,35 @@ def test_valid_operator_attestation_loads_without_credentials(tmp_path):
         assert configuration.read_safety_attestation == attestation
     finally:
         provider.close()
+
+    legacy = attestation.model_dump(mode="json")
+    legacy.pop("attestation_hash_algorithm")
+    legacy.pop("configuration_hash_algorithm")
+    attestation_path.write_text(
+        yaml.safe_dump(legacy, sort_keys=True),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="LEGACY_ATTESTATION_REGENERATION_REQUIRED"):
+        _load_grounding(
+            {
+                "grounding": {
+                    "mode": "OPTIONAL",
+                    "provider": "neo4j",
+                    "graph_alias": "cell-biology",
+                    "database": "neo4j",
+                    "schema_version": "knowledge-graph-auto-v0.1",
+                    "content_version": "backbone-test",
+                    "query_timeout_seconds": 5,
+                    "maximum_records": 10,
+                    "maximum_attempts": 2,
+                    "read_safety": {
+                        "mode": "OPERATOR_ATTESTED",
+                        "attestation_file": str(attestation_path),
+                    },
+                }
+            },
+            contract,
+        )
 
 
 def test_identifiers_are_stable_and_internal_properties_are_rejected():

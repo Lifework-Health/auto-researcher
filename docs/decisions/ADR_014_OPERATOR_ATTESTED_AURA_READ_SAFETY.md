@@ -74,3 +74,44 @@ Attestations must be securely stored, reviewed, renewed and re-bound whenever
 their configuration or template registry changes. Offline tests use synthetic
 drivers and records only; live credentials, patient data and provider calls are
 outside corrective PR 5.5.
+
+## Canonical identity correction
+
+Corrective PR 5.6 retains `knowledge-read-safety-v2` semantics and identifies
+both attestation and configuration hashes as `canonical-json-sha256-v1`.
+Pydantic JSON-mode serialization was not a valid identity boundary because it
+converted `frozenset` values into arrays using process-dependent hash order.
+
+One recursive canonical encoder now normalises Pydantic models, dataclasses,
+mappings, sequences, sets, enums, paths, dates, datetimes and JSON scalars.
+Mappings are string-keyed and lexically sorted; duplicate normalised keys fail.
+Lists and tuples preserve order. Sets and frozensets become arrays sorted by the
+canonical JSON of each normalised element, and ambiguous duplicate canonical
+elements fail. Datetimes must be timezone-aware and are encoded in UTC ISO 8601.
+Floats must be finite. JSON uses UTF-8, unescaped Unicode, sorted keys, compact
+separators and disallows NaN.
+
+The attestation fields `evidence_references`,
+`permitted_query_template_ids`, and `prohibited_capabilities` are semantically
+unordered sets. Runtime `allowed_trust_tiers`, contract permitted modes and
+template-hash mappings are also unordered for hashing. Query-plan request order,
+scientific lists, procedural event order, and ordinary tuples/lists remain
+ordered and identity-bearing.
+
+Attestation hashes use the domain
+`auto-researcher-read-safety-attestation`; configuration hashes use
+`auto-researcher-read-safety-configuration`. Both envelopes carry hash version
+`1` and schema version `knowledge-read-safety-v2`. The attestation identity
+includes all immutable model fields, including review and expiry timestamps,
+the configuration hash and both algorithm identifiers. It excludes only the
+self-referential `attestation_hash`. The configuration identity includes the
+provider, platform/tier and credential classification, explicit database,
+graph/schema/content identity, execution caps, trust/confidence policy,
+enabled state and exact registered template ID/hash mapping. It excludes the
+attestation self-hash, validation outcomes, CLI fields and attestation file path.
+
+No successful live attestation existed before this correction. Files lacking
+either algorithm identifier fail with
+`LEGACY_ATTESTATION_REGENERATION_REQUIRED`; stored pre-fix hashes are never
+silently trusted or migrated. Operators must regenerate them from reviewed
+logical content and the current registered template hashes.

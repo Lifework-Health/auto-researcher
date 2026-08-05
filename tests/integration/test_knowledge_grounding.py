@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from auto_researcher.agents.models import (
@@ -30,6 +31,7 @@ from auto_researcher.knowledge.models import KnowledgeProviderConfiguration
 from auto_researcher.knowledge.provenance import append_knowledge_retrieval_events
 from auto_researcher.knowledge.providers.neo4j import Neo4jKnowledgeProvider
 from auto_researcher.knowledge.providers.static import StaticKnowledgeProvider
+from auto_researcher.knowledge.read_safety import ReadSafetyAttestation
 from auto_researcher.knowledge.templates import default_template_registry
 from auto_researcher.runtime.dependencies import task_memory_dependencies
 from auto_researcher.tasks.icca_nbs import ICCANBSTask
@@ -418,9 +420,7 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
     requirement = KnowledgeGroundingRequirement(
         mode="REQUIRED",
         permitted_providers=frozenset({"neo4j"}),
-        permitted_read_safety_modes=frozenset(
-            {ReadSafetyMode.OPERATOR_ATTESTED}
-        ),
+        permitted_read_safety_modes=frozenset({ReadSafetyMode.OPERATOR_ATTESTED}),
         maximum_query_records=10,
         knowledge_schema_version="knowledge-graph-auto-v0.1",
         knowledge_content_version="backbone-test",
@@ -509,6 +509,8 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
     provenance_text = "\n".join(knowledge_event.output_references)
     assert "read_safety_mode:OPERATOR_ATTESTED" in provenance_text
     assert "credential_class:MANAGED_INSTANCE_PRIMARY" in provenance_text
+    assert "attestation_hash_algorithm:canonical-json-sha256-v1" in provenance_text
+    assert "configuration_hash_algorithm:canonical-json-sha256-v1" in provenance_text
     assert "zero_updates_confirmed:true" in provenance_text
     assert "zero_system_updates_confirmed:true" in provenance_text
     assert "password" not in provenance_text.casefold()
@@ -524,6 +526,34 @@ def test_fake_icca_neo4j_profile_grounding(tmp_path):
     assert len(driver.queries) == queries_before_replay
     assert driver.connectivity_calls == connectivity_before_replay
 
+    restored_attestation = ReadSafetyAttestation.model_validate_json(
+        configuration.read_safety_attestation.model_dump_json()
+    )
+    restored_configuration = configuration.model_copy(
+        update={"read_safety_attestation": restored_attestation}
+    )
+    replay_driver = FakeDriver(_row())
+    reconstructed = replace(
+        dependencies,
+        knowledge_configuration=restored_configuration,
+        knowledge_provider=Neo4jKnowledgeProvider(
+            restored_configuration,
+            default_template_registry(),
+            driver=replay_driver,
+            clock=fixed_clock,
+            query_factory=lambda text, timeout: text,
+        ),
+    )
+    replayed_after_round_trip = retrieve_knowledge(
+        {"run_id": "icca-knowledge", "cycle": 1, "contract": contract},
+        reconstructed,
+    )
+    assert (
+        replayed_after_round_trip["knowledge_bundle_reference"].retrieval_id
+        == final["knowledge_bundle_reference"].retrieval_id
+    )
+    assert replay_driver.queries == []
+
 
 def test_required_expired_operator_attestation_stops_before_models_and_evaluator(
     tmp_path,
@@ -533,9 +563,7 @@ def test_required_expired_operator_attestation_stops_before_models_and_evaluator
     requirement = KnowledgeGroundingRequirement(
         mode="REQUIRED",
         permitted_providers=frozenset({"neo4j"}),
-        permitted_read_safety_modes=frozenset(
-            {ReadSafetyMode.OPERATOR_ATTESTED}
-        ),
+        permitted_read_safety_modes=frozenset({ReadSafetyMode.OPERATOR_ATTESTED}),
         maximum_query_records=10,
         knowledge_schema_version="knowledge-graph-auto-v0.1",
         knowledge_content_version="backbone-test",

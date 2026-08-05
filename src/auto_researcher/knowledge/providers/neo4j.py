@@ -249,17 +249,20 @@ class Neo4jKnowledgeProvider:
                         template,
                         {"limit": 1},
                         deadline=(
-                            self._monotonic()
-                            + configuration.query_timeout_seconds
+                            self._monotonic() + configuration.query_timeout_seconds
                         ),
                         execution_audit=[],
                     )
-                    schema_ready = len(rows) == 1 and isinstance(
-                        rows[0].get("labels"),
-                        (list, tuple),
-                    ) and isinstance(
-                        rows[0].get("relationships"),
-                        (list, tuple),
+                    schema_ready = (
+                        len(rows) == 1
+                        and isinstance(
+                            rows[0].get("labels"),
+                            (list, tuple),
+                        )
+                        and isinstance(
+                            rows[0].get("relationships"),
+                            (list, tuple),
+                        )
                     )
                 except Exception:
                     schema_ready = False
@@ -351,9 +354,7 @@ class Neo4jKnowledgeProvider:
             )
         all_rows: list[dict[str, Any]] = []
         execution_audit: list[dict[str, Any]] = []
-        deadline = (
-            self._monotonic() + self.configuration.query_timeout_seconds
-        )
+        deadline = self._monotonic() + self.configuration.query_timeout_seconds
         required_labels: set[str] = set()
         required_relationships: set[str] = set()
         prepared: list[tuple[Any, dict[str, Any], int]] = []
@@ -498,9 +499,7 @@ class Neo4jKnowledgeProvider:
         for attempt in range(1, self.configuration.maximum_attempts + 1):
             remaining = deadline - self._monotonic()
             if remaining <= 0:
-                raise KnowledgeProviderError(
-                    KnowledgeErrorCode.QUERY_TIMEOUT.value
-                )
+                raise KnowledgeProviderError(KnowledgeErrorCode.QUERY_TIMEOUT.value)
 
             def work(transaction):
                 result = transaction.run(
@@ -547,10 +546,7 @@ class Neo4jKnowledgeProvider:
 
     def _assert_no_updates(self, summary: Any) -> None:
         counters = getattr(summary, "counters", None)
-        strict = (
-            self.configuration.read_safety_mode
-            == ReadSafetyMode.OPERATOR_ATTESTED
-        )
+        strict = self.configuration.read_safety_mode == ReadSafetyMode.OPERATOR_ATTESTED
         if strict and (
             counters is None
             or not hasattr(counters, "contains_updates")
@@ -590,18 +586,13 @@ class Neo4jKnowledgeProvider:
             raise KnowledgeProviderError(KnowledgeErrorCode.ATTESTATION_INVALID.value)
 
     def _assert_template_attested(self, template: Any) -> None:
-        if (
-            self.configuration.read_safety_mode
-            != ReadSafetyMode.OPERATOR_ATTESTED
-        ):
+        if self.configuration.read_safety_mode != ReadSafetyMode.OPERATOR_ATTESTED:
             return
         attestation = self.configuration.read_safety_attestation
         assert attestation is not None
         identity = f"{template.template_id}@{template.version}"
         if identity not in set(attestation.permitted_query_template_ids):
-            raise KnowledgeProviderError(
-                KnowledgeErrorCode.ATTESTATION_INVALID.value
-            )
+            raise KnowledgeProviderError(KnowledgeErrorCode.ATTESTATION_INVALID.value)
 
     def _bundle_from_rows(
         self,
@@ -749,9 +740,17 @@ class Neo4jKnowledgeProvider:
                     "attestation_hash": (
                         attestation.attestation_hash if attestation else "none"
                     ),
-                    "platform": (
-                        attestation.platform.value if attestation else "none"
+                    "attestation_hash_algorithm": (
+                        attestation.attestation_hash_algorithm
+                        if attestation
+                        else "none"
                     ),
+                    "configuration_hash_algorithm": (
+                        attestation.configuration_hash_algorithm
+                        if attestation
+                        else "none"
+                    ),
+                    "platform": (attestation.platform.value if attestation else "none"),
                     "service_tier": (
                         attestation.service_tier.value if attestation else "none"
                     ),
@@ -759,9 +758,7 @@ class Neo4jKnowledgeProvider:
                         attestation.credential_class.value if attestation else "none"
                     ),
                     "residual_risk": (
-                        attestation.residual_risk_code.value
-                        if attestation
-                        else "none"
+                        attestation.residual_risk_code.value if attestation else "none"
                     ),
                     "query_execution_audit": execution_audit,
                 },

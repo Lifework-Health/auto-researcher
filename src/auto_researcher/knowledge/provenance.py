@@ -25,6 +25,10 @@ def _read_safety_outputs(bundle) -> tuple[str, ...]:
         f"attestation_id:{metadata.get('attestation_id', 'none')}",
         f"attestation_version:{metadata.get('attestation_version', 'none')}",
         f"attestation_hash:{metadata.get('attestation_hash', 'none')}",
+        "attestation_hash_algorithm:"
+        f"{metadata.get('attestation_hash_algorithm', 'none')}",
+        "configuration_hash_algorithm:"
+        f"{metadata.get('configuration_hash_algorithm', 'none')}",
         f"platform:{metadata.get('platform', 'none')}",
         f"service_tier:{metadata.get('service_tier', 'none')}",
         f"credential_class:{metadata.get('credential_class', 'none')}",
