@@ -221,7 +221,7 @@ def propose_openevolve_candidate(
         candidate,
         "propose_openevolve_candidate",
     )
-    return {
+    update = {
         "openevolve_candidates": OpenEvolveCandidateCollection(candidates=candidates),
         "openevolve_current_candidate": candidate,
         "openevolve_validation_result": None,
@@ -229,6 +229,10 @@ def propose_openevolve_candidate(
         "decision_event_ids": [event_id],
         "executed_nodes": ["propose_openevolve_candidate"],
     }
+    adapter_state = getattr(_backend(dependencies).mutation_operator, "state", None)
+    if adapter_state is not None:
+        update["upstream_openevolve_adapter_state"] = adapter_state
+    return update
 
 
 def validate_openevolve_candidate(

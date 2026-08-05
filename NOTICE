@@ -1,0 +1,4 @@
+Auto Researcher optionally interoperates with OpenEvolve
+(https://github.com/algorithmicsuperintelligence/openevolve), copyright its
+contributors, under the Apache License 2.0. OpenEvolve is not vendored or
+modified; only a narrow optional adapter is provided.

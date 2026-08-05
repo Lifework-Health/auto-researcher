@@ -33,6 +33,9 @@ agents-anthropic = [
 knowledge-neo4j = [
     "neo4j==6.2.0",
 ]
+openevolve = [
+    "openevolve==0.3.2",
+]
 
 [project.scripts]
 auto-researcher = "auto_researcher.cli:app"
@@ -53,4 +56,6 @@ markers = [
     "v2: optional contract tests requiring the auto_agent_v2 package",
     "real_data: optional iCCA compatibility gate requiring explicit local data",
     "live_agent: optional paid provider smoke tests requiring explicit environment opt-in",
+    "hardened_executor: local OCI isolation gate requiring an explicitly built pinned image",
+    "upstream_openevolve: optional tests requiring the pinned upstream dependency",
 ]

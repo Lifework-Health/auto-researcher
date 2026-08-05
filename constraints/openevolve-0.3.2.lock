@@ -1,0 +1,15 @@
+# upstream-openevolve-dependency-lock-v1
+# Upstream wheel sha256: df998b0731d9c1a80883b4aae452cc43405a3e9c61b46d676d06235b4db49366
+# Upstream sdist sha256: cd41800ab54734d02a895892615a7f4b9240a6f307c82fc1df7335e89b546599
+openevolve==0.3.2
+openai==2.53.0
+PyYAML==6.0.3
+numpy==2.5.1
+tqdm==4.70.0
+Flask==3.1.3
+dacite==1.9.2
+blinker==1.9.0
+click==8.4.2
+itsdangerous==2.2.0
+Jinja2==3.1.6
+Werkzeug==3.1.8

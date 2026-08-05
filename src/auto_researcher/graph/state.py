@@ -35,6 +35,9 @@ from auto_researcher.search.openevolve.models import (
     OpenEvolveSearchContract,
     OpenEvolveSearchResult,
 )
+from auto_researcher.search.openevolve.upstream_models import (
+    UpstreamOpenEvolveAdapterState,
+)
 
 
 class ResearchState(TypedDict):
@@ -76,3 +79,6 @@ class ResearchState(TypedDict):
     openevolve_validation_result: NotRequired[CandidateValidationResult | None]
     openevolve_preparation_result: NotRequired[CandidatePreparationResult | None]
     openevolve_search_result: NotRequired[OpenEvolveSearchResult | None]
+    upstream_openevolve_adapter_state: NotRequired[
+        UpstreamOpenEvolveAdapterState | None
+    ]
