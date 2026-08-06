@@ -242,22 +242,50 @@ class HardenedDockerExecutor:
                 for key in (
                     "dns_denied",
                     "outbound_tcp_denied",
+                    "outbound_ipv6_denied",
+                    "http_denied",
+                    "https_denied",
                     "loopback_denied",
+                    "loopback_ipv6_denied",
+                    "host_alias_denied",
                     "metadata_denied",
+                    "raw_socket_denied",
                 )
             )
             mounts = all(
                 checks.get(key) is True
                 for key in (
                     "host_sentinel_hidden",
+                    "repository_hidden",
                     "docker_socket_hidden",
+                    "containerd_socket_hidden",
+                    "podman_socket_hidden",
+                    "kubernetes_token_hidden",
                     "ssh_hidden",
+                    "aws_hidden",
+                    "config_hidden",
                     "tmp_read_only",
                     "var_tmp_read_only",
                     "home_unavailable",
+                    "input_read_only",
+                    "root_read_only",
+                    "workspace_rw",
+                    "workspace_noexec",
+                    "workspace_nosuid",
+                    "workspace_nodev",
+                    "uid_non_root",
+                    "gid_expected",
+                    "supplementary_groups_expected",
+                    "capabilities_absent",
+                    "no_new_privileges",
+                    "private_pid_namespace",
+                    "cgroup_write_denied",
                 )
             )
-            environment = checks.get("credential_names_absent") is True
+            environment = all(
+                checks.get(key) is True
+                for key in ("credential_names_absent", "host_pythonpath_absent")
+            )
             code = None
             if not inode_supported:
                 code = "hardened_executor_file_count_limit_unsupported"

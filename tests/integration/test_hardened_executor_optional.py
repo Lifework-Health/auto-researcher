@@ -78,6 +78,31 @@ def test_real_hardened_executor_proves_isolation_and_prepares_candidate():
     assert isolation.network_isolation_verified is True
     assert isolation.mount_isolation_verified is True
     assert isolation.environment_sanitisation_verified is True
+    assert all(
+        isolation.safe_checks[key] is True
+        for key in (
+            "outbound_ipv6_denied",
+            "http_denied",
+            "https_denied",
+            "loopback_ipv6_denied",
+            "host_alias_denied",
+            "raw_socket_denied",
+            "repository_hidden",
+            "containerd_socket_hidden",
+            "podman_socket_hidden",
+            "kubernetes_token_hidden",
+            "input_read_only",
+            "root_read_only",
+            "workspace_noexec",
+            "workspace_nosuid",
+            "workspace_nodev",
+            "uid_non_root",
+            "capabilities_absent",
+            "no_new_privileges",
+            "private_pid_namespace",
+            "cgroup_write_denied",
+        )
+    )
     internal = _backend()
     backend = OpenEvolveBackend(
         internal.component,
