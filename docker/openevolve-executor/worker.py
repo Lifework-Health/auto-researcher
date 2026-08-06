@@ -10,11 +10,21 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 PROTOCOL = "openevolve-hardened-worker-result-v2"
 CHILD = "/opt/runner/candidate_child.py"
 WORKSPACE = Path("/workspace")
+
+
+@dataclass
+class CappedCapture:
+    """One bounded binary channel and its independent truncation state."""
+
+    data: bytes = b""
+    truncated: bool = False
 
 
 def emit(payload: dict, exit_code: int) -> None:
@@ -50,7 +60,7 @@ def safe_log(stdout: bytes, stderr: bytes, limit: int) -> tuple[str, bool]:
     return encoded[:limit].decode(errors="ignore").strip(), len(encoded) > limit
 
 
-def read_capped(stream, limit: int, state: dict, key: str) -> None:
+def read_capped(stream: BinaryIO, limit: int, capture: CappedCapture) -> None:
     kept = bytearray()
     exceeded = False
     while True:
@@ -60,8 +70,20 @@ def read_capped(stream, limit: int, state: dict, key: str) -> None:
         remaining = max(0, limit - len(kept))
         kept.extend(chunk[:remaining])
         exceeded = exceeded or len(chunk) > remaining
-    state[key] = bytes(kept)
-    state[f"{key}_truncated"] = exceeded
+    capture.data = bytes(kept)
+    capture.truncated = exceeded
+
+
+def parse_control(data: bytes, output_bytes: int) -> tuple[dict, bytes]:
+    configuration = json.loads(data)
+    if not isinstance(configuration, dict):
+        raise ValueError
+    canonical = json.dumps(
+        configuration, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    if len(canonical) > output_bytes:
+        raise OverflowError
+    return configuration, canonical
 
 
 def workspace_entries() -> tuple[int, bool]:
@@ -198,17 +220,29 @@ def main() -> None:
         },
     )
     os.close(write_fd)
+    if child.stdout is None or child.stderr is None:
+        os.close(read_fd)
+        emit(
+            {
+                **base_payload(candidate_id),
+                "status": "ERROR",
+                "safe_error_code": "hardened_executor_worker_protocol_invalid",
+            },
+            70,
+        )
     control = os.fdopen(read_fd, "rb", buffering=0)
-    captures: dict[str, bytes | bool] = {}
+    stdout_capture = CappedCapture()
+    stderr_capture = CappedCapture()
+    control_capture = CappedCapture()
     threads = [
         threading.Thread(
-            target=read_capped, args=(child.stdout, log_bytes, captures, "stdout")
+            target=read_capped, args=(child.stdout, log_bytes, stdout_capture)
         ),
         threading.Thread(
-            target=read_capped, args=(child.stderr, log_bytes, captures, "stderr")
+            target=read_capped, args=(child.stderr, log_bytes, stderr_capture)
         ),
         threading.Thread(
-            target=read_capped, args=(control, output_bytes, captures, "control")
+            target=read_capped, args=(control, output_bytes, control_capture)
         ),
     ]
     for thread in threads:
@@ -216,6 +250,8 @@ def main() -> None:
     return_code = child.wait()
     for thread in threads:
         thread.join()
+    # Joining is the synchronisation boundary before the main thread reads captures.
+    control.close()
     count, file_types_valid = workspace_entries()
     maximum_file_size = max(
         (path.stat().st_size for path in WORKSPACE.rglob("*") if path.is_file()),
@@ -224,13 +260,9 @@ def main() -> None:
     total_file_size = sum(
         path.stat().st_size for path in WORKSPACE.rglob("*") if path.is_file()
     )
-    log, log_truncated = safe_log(
-        captures.get("stdout", b""), captures.get("stderr", b""), log_bytes
-    )
+    log, log_truncated = safe_log(stdout_capture.data, stderr_capture.data, log_bytes)
     log_truncated = (
-        log_truncated
-        or bool(captures.get("stdout_truncated"))
-        or bool(captures.get("stderr_truncated"))
+        log_truncated or stdout_capture.truncated or stderr_capture.truncated
     )
     common = {
         **base_payload(candidate_id),
@@ -322,7 +354,7 @@ def main() -> None:
             },
             75 if code != "candidate_execution_failed" else 70,
         )
-    if captures.get("control_truncated"):
+    if control_capture.truncated:
         emit(
             {
                 **common,
@@ -333,14 +365,7 @@ def main() -> None:
             75,
         )
     try:
-        configuration = json.loads(captures.get("control", b""))
-        if not isinstance(configuration, dict):
-            raise ValueError
-        canonical = json.dumps(
-            configuration, sort_keys=True, separators=(",", ":"), allow_nan=False
-        ).encode()
-        if len(canonical) > output_bytes:
-            raise OverflowError
+        configuration, canonical = parse_control(control_capture.data, output_bytes)
     except OverflowError:
         emit(
             {
