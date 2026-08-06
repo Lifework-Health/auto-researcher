@@ -10,7 +10,7 @@ The lifecycle is:
 2. reserve a deterministic mutation birth index;
 3. obtain a complete source replacement from a deterministic or structured fake-model operator;
 4. validate the source and immutable interface;
-5. prepare the candidate in the bounded subprocess;
+5. prepare the candidate in the configured bounded runner; untrusted/live-eligible execution requires hardened executor v2;
 6. derive an `ExperimentSpec` through the task plugin;
 7. use the existing evaluation and verification nodes;
 8. record the outcome and update population/lineage exactly once;
@@ -20,3 +20,5 @@ The lifecycle is:
 Each lifecycle boundary is a LangGraph checkpoint boundary. Parallel population evaluation is intentionally deferred. A future MRI task may supply a loss, augmentation, thresholding, or model-block component and its own evaluator, but it must not require graph changes or grant candidates access to MRI data, training orchestration, or verifier internals.
 
 Model judgement is permitted only inside a configured mutation operator that proposes the declared source replacement. The graph, identities, validation, budgets, eligibility, ranking, replacement, stopping, evaluation, and verification remain deterministic and authoritative. PR 6 uses deterministic and fake-model operators only.
+
+Hardened executor v2 does not change graph topology. It replaces only candidate preparation: immutable host input plus one private inode-limited tmpfs, a fixed supervisor/child boundary, and a strict pipe-framed result. Preparation evidence binds executor, workspace, image and request identities so v1 results cannot be reconstructed as v2.

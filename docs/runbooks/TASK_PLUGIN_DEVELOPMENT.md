@@ -43,6 +43,13 @@ handling. A future MRI plugin can expose one bounded loss, augmentation,
 thresholding, or model-block file through this interface, while training and
 data handling remain task-owned and immutable.
 
+For hardened execution, plugins declare finite CPU, memory, process, timeout,
+output, log, workspace-byte, individual-file and concurrent-entry limits. They
+must not assume `/tmp`, HOME or a host output mount is writable. Candidate
+results return through the fixed supervisor protocol; plugins receive only a
+validated `candidate-preparation-v2`. The trusted local fixture runner applies
+the same entry-count semantics after execution but is never live-eligible.
+
 Acceptance requires comparing the new task with the synthetic task using the same
 `build_graph()`: topology and executed node sequence must remain identical. Do
 not add task-ID conditionals to graph code.

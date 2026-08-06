@@ -52,6 +52,7 @@ def publish_integration_bundle(
             "image_digest": policy.image_digest,
             "base_image_digest": policy.base_image_digest,
             "entrypoint_hash": policy.entrypoint_hash,
+            "candidate_child_hash": policy.candidate_child_hash,
             "build_recipe_hash": policy.build_recipe_hash,
         },
         "isolation_policy.json": policy.model_dump(mode="json"),
@@ -69,7 +70,13 @@ def publish_integration_bundle(
             "checks": dict(isolation.safe_checks),
         },
         "mount_isolation_result.json": {"verified": isolation.mount_isolation_verified},
-        "resource_summary.json": {"bounded": True, "policy": policy.executor_id},
+        "resource_summary.json": {
+            "bounded": True,
+            "policy": policy.executor_id,
+            "workspace_policy": policy.workspace_policy_version,
+            "worker_protocol": policy.worker_protocol_version,
+            "writable_host_output_mount": False,
+        },
         "sanitised_log.json": {"persisted_raw_log": False},
     }
     hashes = {

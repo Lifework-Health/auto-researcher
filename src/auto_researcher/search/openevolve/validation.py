@@ -122,11 +122,18 @@ class _SafetyVisitor(ast.NodeVisitor):
                 "fork",
                 "spawn",
                 "connect",
+                "bind",
                 "request",
                 "write_text",
                 "write_bytes",
                 "unlink",
                 "chmod",
+                "link",
+                "hardlink_to",
+                "symlink",
+                "symlink_to",
+                "mkfifo",
+                "mknod",
             }:
                 self.reasons.add("candidate_forbidden_operation")
         self.generic_visit(node)

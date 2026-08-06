@@ -103,5 +103,7 @@ def default_synthetic_openevolve_configuration() -> dict:
             "candidate_output_bytes": 64000,
             "candidate_log_bytes": 8000,
             "candidate_file_count_limit": 8,
+            "candidate_workspace_bytes": 1048576,
+            "candidate_file_size_bytes": 64000,
         }
     }

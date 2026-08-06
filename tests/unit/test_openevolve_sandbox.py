@@ -11,6 +11,17 @@ from tests.unit.test_openevolve_contracts import (
 )
 
 
+def _prepare_local_source(source, tmp_path, **updates):
+    backend = _backend()
+    search = backend.create_search_contract(_request(), _contract())
+    return LocalSandboxRunner(tmp_path).prepare(
+        _candidate(source),
+        backend.component_spec,
+        search.sandbox_policy.model_copy(update=updates),
+        backend.component.seed_configuration(),
+    )
+
+
 def test_sandbox_prepares_valid_source_without_inheriting_credentials(
     monkeypatch, tmp_path
 ):
@@ -60,4 +71,27 @@ def test_sandbox_timeout_is_safe_and_cleanup_is_complete(tmp_path):
     )
     assert result.execution_status == CandidateExecutionStatus.TIMED_OUT
     assert result.safe_error_code == "candidate_timeout"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_local_fixture_counts_only_candidate_writable_workspace(tmp_path):
+    source = """def evolve(configuration):
+ for i in range(8):
+  open(f"entry-{i}", "w").write("x")
+ return configuration
+"""
+    result = _prepare_local_source(source, tmp_path)
+    assert result.execution_status == CandidateExecutionStatus.COMPLETED
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_local_fixture_rejects_ninth_concurrent_entry(tmp_path):
+    source = """def evolve(configuration):
+ for i in range(9):
+  open(f"entry-{i}", "w").write("x")
+ return configuration
+"""
+    result = _prepare_local_source(source, tmp_path)
+    assert result.execution_status == CandidateExecutionStatus.RESOURCE_LIMITED
+    assert result.safe_error_code == "candidate_file_count_limit"
     assert list(tmp_path.iterdir()) == []

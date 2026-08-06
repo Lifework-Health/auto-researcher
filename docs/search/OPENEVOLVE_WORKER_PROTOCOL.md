@@ -1,0 +1,5 @@
+# Hardened worker protocol v2
+
+The image-owned supervisor launches exactly one fixed candidate-child interpreter. Candidate source, structured input and entry-point name are read-only arguments; no candidate-selected command is executed. A dedicated inherited pipe carries the candidate's finite JSON return value. Candidate stdout and stderr are separate untrusted streams drained into capped buffers and cannot frame supervisor output.
+
+After the child exits, the supervisor inspects the complete private workspace, validates every entry type, entry count and byte limit, and emits exactly one newline-terminated `openevolve-hardened-worker-result-v2` JSON object. Success binds candidate, execution-request, executor-policy and image identities; declared and observed workspace limits; configuration and configuration hash; bounded log metadata; and resource indicators. Error envelopes contain only stable safe codes and bounded evidence. Host code rejects malformed, duplicate, mismatched or oversized envelopes.
