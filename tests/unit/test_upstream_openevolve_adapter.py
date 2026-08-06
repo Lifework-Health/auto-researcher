@@ -8,6 +8,9 @@ from pydantic import ValidationError
 
 from auto_researcher.runtime.checkpoints import checkpoint_serializer
 from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.search.openevolve.live_models import (
+    OPENEVOLVE_MUTATION_PROMPT_V1,
+)
 from auto_researcher.search.openevolve.hardened_executor import docker_policy
 from auto_researcher.search.openevolve.integration_artifacts import (
     publish_integration_bundle,
@@ -17,6 +20,7 @@ from auto_researcher.search.openevolve.upstream import (
     UpstreamOpenEvolveAdapter,
     assert_live_mutation_eligible,
     default_adapter_contract,
+    mutation_constraints,
     validate_upstream_dependency,
 )
 from auto_researcher.search.openevolve.upstream_models import (
@@ -120,6 +124,104 @@ def test_bridge_is_exactly_once_and_maps_upstream_program_metadata():
     )
 
 
+def test_synthetic_v2_request_exposes_machine_derived_constraints():
+    captured = []
+
+    class CapturingClient(FakeUpstreamClient):
+        def propose_mutation(self, request):
+            captured.append(request)
+            return super().propose_mutation(request)
+
+    backend = _backend()
+    adapter = UpstreamOpenEvolveAdapter(
+        default_adapter_contract(LOCK),
+        AutoResearcherOpenEvolveModelBridge(CapturingClient()),
+    )
+    search = backend.create_search_contract(_request(), _contract())
+    seed = backend.seed_candidate(search)
+    reservation = backend.reserve_mutation(
+        search, backend.initialise_population(search), seed
+    )
+    adapter.mutate(reservation, seed, backend.component_spec)
+    request = captured[0]
+    constraints = request["mutation_constraints"]
+
+    assert request["protocol"] == "upstream-adapter-mutation-request-v2"
+    assert constraints == mutation_constraints(backend.component_spec).model_dump(
+        mode="json"
+    )
+    assert constraints["mutable_file"] == "candidate.py"
+    assert constraints["allowed_files"] == ["candidate.py"]
+    assert constraints["entry_point"] == "evolve"
+    assert constraints["maximum_source_bytes"] == 4096
+    assert constraints["allowed_imports"] == []
+    assert constraints["allowed_dependencies"] == []
+    assert constraints["allowed_imports_display"] == "NONE"
+    assert constraints["allowed_dependencies_display"] == "NONE"
+    prompt = (
+        Path(__file__).parents[2]
+        / "src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v2.md"
+    ).read_text(encoding="utf-8")
+    prompt = " ".join(prompt.split())
+    for rule in (
+        "use no import statements",
+        "shell commands or subprocesses",
+        "network or environment variables",
+        "`eval`, `exec`,",
+        "arbitrary filesystem",
+        "additional source files",
+        "recursively invoke",
+        "evaluator, verifier, framework, or orchestration",
+    ):
+        assert rule in prompt
+
+
+def test_historical_v1_request_preserves_the_documented_constraint_omissions():
+    captured = []
+
+    class CapturingClient(FakeUpstreamClient):
+        def propose_mutation(self, request):
+            captured.append(request)
+            return super().propose_mutation(request)
+
+    backend = _backend()
+    adapter = UpstreamOpenEvolveAdapter(
+        default_adapter_contract(LOCK),
+        AutoResearcherOpenEvolveModelBridge(
+            CapturingClient(), prompt_version=OPENEVOLVE_MUTATION_PROMPT_V1
+        ),
+    )
+    search = backend.create_search_contract(_request(), _contract())
+    seed = backend.seed_candidate(search)
+    reservation = backend.reserve_mutation(
+        search, backend.initialise_population(search), seed
+    )
+    adapter.mutate(reservation, seed, backend.component_spec)
+    request = captured[0]
+    rendered = (
+        Path(__file__).parents[2]
+        / "src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v1.md"
+    ).read_text(encoding="utf-8") + str(request)
+
+    assert request["protocol"] == "upstream-adapter-mutation-request-v1"
+    assert "mutable_file" in request
+    assert "interface_contract" in request
+    assert "maximum_source_bytes" in request
+    for omitted in (
+        "entry_point",
+        "allowed_imports",
+        "allowed_dependencies",
+        "allowed_files",
+        "parameter_schema",
+        "output_schema",
+        "__import__",
+        "dynamic imports",
+        "environment variables",
+        "arbitrary filesystem",
+    ):
+        assert omitted not in rendered
+
+
 @pytest.mark.parametrize(
     "response",
     [
@@ -137,6 +239,20 @@ def test_bridge_is_exactly_once_and_maps_upstream_program_metadata():
             "provider_configuration": {"api_key": "forbidden"},
         },
         {"files": {"candidate.py": "x", "verifier.py": "x"}, "description": "many"},
+        {
+            "mutable_file": "candidate.py",
+            "source": "def evolve(configuration): return configuration",
+            "description": "constraint override",
+            "allowed_imports": ("os",),
+            "allowed_dependencies": ("requests",),
+            "allowed_files": ("candidate.py", "evaluator.py"),
+            "entry_point": "replacement",
+            "maximum_source_bytes": 10_000_000,
+            "sandbox_policy": {"network_access": True},
+            "evaluator": "provider-selected",
+            "verifier": "provider-selected",
+            "model_call_budget": 100,
+        },
     ],
 )
 def test_hostile_upstream_envelopes_are_rejected(response):

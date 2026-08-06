@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import math
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import (
     AwareDatetime,
@@ -19,6 +19,13 @@ from pydantic import (
 
 from auto_researcher.agents.models import ModelCallConfig
 from auto_researcher.runtime.identity import payload_hash
+
+OPENEVOLVE_MUTATION_PROMPT_V1: Final[Literal["openevolve-mutation-prompt-v1"]] = (
+    "openevolve-mutation-prompt-v1"
+)
+OPENEVOLVE_MUTATION_PROMPT_V2: Final[Literal["openevolve-mutation-prompt-v2"]] = (
+    "openevolve-mutation-prompt-v2"
+)
 
 
 class LiveMutationModel(BaseModel):
@@ -152,9 +159,9 @@ class OpenEvolveModelBridgeContract(LiveMutationModel):
     mutation_operator_id: str = Field(min_length=1)
     mutation_operator_version: str = Field(min_length=1)
     prompt_id: Literal["openevolve-mutation"] = "openevolve-mutation"
-    prompt_version: Literal["openevolve-mutation-prompt-v1"] = (
-        "openevolve-mutation-prompt-v1"
-    )
+    prompt_version: Literal[
+        "openevolve-mutation-prompt-v1", "openevolve-mutation-prompt-v2"
+    ] = OPENEVOLVE_MUTATION_PROMPT_V2
     response_schema_version: Literal["upstream-mutation-envelope-v1"] = (
         "upstream-mutation-envelope-v1"
     )

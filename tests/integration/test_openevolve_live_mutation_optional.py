@@ -24,11 +24,13 @@ from auto_researcher.search.openevolve.production_bridge import (
 from auto_researcher.search.openevolve.upstream import (
     build_approved_live_upstream_runtime,
     default_adapter_contract,
+    mutation_constraints,
 )
 from auto_researcher.search.openevolve.upstream_models import (
     ExecutorIsolationResult,
     HardenedExecutorPolicy,
 )
+from auto_researcher.tasks.synthetic import SyntheticEvolvableComponent
 
 pytestmark = [
     pytest.mark.live_agent,
@@ -107,7 +109,7 @@ def test_one_approved_synthetic_mutation(tmp_path):
     store = SQLiteAgentCallStore(tmp_path / "agent-calls.sqlite")
     prompt = (
         Path(__file__).parents[2]
-        / "src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v1.md"
+        / "src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v2.md"
     ).read_text(encoding="utf-8")
     bridge = DurableOpenEvolveModelBridge(
         contract=bridge_contract,
@@ -139,17 +141,21 @@ def test_one_approved_synthetic_mutation(tmp_path):
         isolation,
         workspace_root=tmp_path / "hardened-workspace",
     )
+    component = SyntheticEvolvableComponent().component_spec()
     result, _ = bridge.complete(
         {
-            "protocol": "upstream-adapter-mutation-request-v1",
+            "protocol": "upstream-adapter-mutation-request-v2",
             "parent": {
                 "id": "synthetic-seed",
-                "code": "def transform(value):\n    return value\n",
+                "code": component.seed_source,
                 "generation": 0,
             },
-            "mutable_file": approval.mutable_file,
-            "interface_contract": "transform(value)",
-            "maximum_source_bytes": 2_000,
+            "mutable_file": component.mutable_file,
+            "interface_contract": component.immutable_interface_contract,
+            "maximum_source_bytes": component.maximum_source_bytes,
+            "mutation_constraints": mutation_constraints(component).model_dump(
+                mode="json"
+            ),
         },
         "approved-live-smoke-mutation-1",
     )

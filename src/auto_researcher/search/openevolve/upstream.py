@@ -13,10 +13,14 @@ from auto_researcher.search.openevolve.models import (
     MutationReservation,
     OpenEvolveCandidate,
 )
+from auto_researcher.search.openevolve.live_models import (
+    OPENEVOLVE_MUTATION_PROMPT_V2,
+)
 from auto_researcher.search.openevolve.protocols import StructuredMutationClient
 from auto_researcher.search.openevolve.upstream_models import (
     ExecutorIsolationResult,
     HardenedExecutorPolicy,
+    MutationConstraints,
     ModelBridgeReservation,
     UPSTREAM_INSTALLED_RECORD_HASH,
     UPSTREAM_PACKAGE_VERSION,
@@ -45,6 +49,30 @@ DISABLED_UPSTREAM_FEATURES = (
     "parallel_execution",
     "telemetry_prompts",
 )
+
+
+def mutation_constraints(component: EvolvableComponentSpec) -> MutationConstraints:
+    return MutationConstraints(
+        mutable_file=component.mutable_file,
+        allowed_files=component.allowed_files,
+        entry_point=component.entry_point,
+        immutable_interface_contract=component.immutable_interface_contract,
+        maximum_source_bytes=component.maximum_source_bytes,
+        allowed_imports=component.allowed_imports,
+        allowed_dependencies=component.allowed_dependencies,
+        allowed_imports_display=(
+            ", ".join(component.allowed_imports)
+            if component.allowed_imports
+            else "NONE"
+        ),
+        allowed_dependencies_display=(
+            ", ".join(component.allowed_dependencies)
+            if component.allowed_dependencies
+            else "NONE"
+        ),
+        parameter_schema=component.parameter_schema,
+        output_schema=component.output_schema,
+    )
 
 
 def dependency_lock_hash(path: Path) -> str:
@@ -96,7 +124,7 @@ class AutoResearcherOpenEvolveModelBridge:
         *,
         provider: str = "fake",
         model_id: str = "fake-structured-v1",
-        prompt_version: str = "upstream-mutation-v1",
+        prompt_version: str = OPENEVOLVE_MUTATION_PROMPT_V2,
         maximum_output_bytes: int = 64_000,
     ):
         self.client = client
@@ -181,6 +209,13 @@ class UpstreamOpenEvolveAdapter:
             "interface_contract": component.immutable_interface_contract,
             "maximum_source_bytes": component.maximum_source_bytes,
         }
+        if self.bridge.prompt_version == OPENEVOLVE_MUTATION_PROMPT_V2:
+            constraints = mutation_constraints(component)
+            request = {
+                **request,
+                "protocol": "upstream-adapter-mutation-request-v2",
+                "mutation_constraints": constraints.model_dump(mode="json"),
+            }
         response, call = self.bridge.complete(request, reservation.reservation_id)
         try:
             envelope = UpstreamMutationEnvelope.model_validate(response)

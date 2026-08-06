@@ -19,16 +19,34 @@ from auto_researcher.providers.protocols import ProviderCallError, StructuredMod
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.live_models import (
     LiveMutationApproval,
+    OPENEVOLVE_MUTATION_PROMPT_V1,
+    OPENEVOLVE_MUTATION_PROMPT_V2,
     OpenEvolveModelBridgeContract,
     OpenEvolveModelCallContext,
     validate_approval,
 )
 from auto_researcher.search.openevolve.upstream_models import (
     ModelBridgeReservation,
+    MutationConstraints,
     UpstreamMutationEnvelope,
 )
 
 ProviderFactory = Callable[[], StructuredModelClient]
+
+
+def mutation_input_hash(request: dict, prompt_version: str) -> str:
+    payload: object = request
+    version = "canonical-json-sha256-v1"
+    if prompt_version == OPENEVOLVE_MUTATION_PROMPT_V2:
+        payload = {"prompt_version": prompt_version, "request": request}
+        version = "canonical-json-sha256-v2"
+    return payload_hash(
+        {
+            "domain": "auto-researcher-openevolve-mutation-input",
+            "version": version,
+            "payload": payload,
+        }
+    )
 
 
 class LiveMutationBridgeError(RuntimeError):
@@ -53,6 +71,7 @@ class DurableOpenEvolveModelBridge:
         crash_after_response: bool = False,
     ) -> None:
         self.contract = contract
+        self.prompt_version = contract.prompt_version
         self.context = context
         self.approval = approval
         self.store = store
@@ -77,25 +96,25 @@ class DurableOpenEvolveModelBridge:
             }
         )
         self._validate_approval(call_context)
-        input_hash = payload_hash(
-            {
-                "domain": "auto-researcher-openevolve-mutation-input",
-                "version": "canonical-json-sha256-v1",
-                "payload": request,
-            }
-        )
-        semantic_key = payload_hash(
-            {
-                "domain": "auto-researcher-openevolve-model-call-semantic-key",
-                "run_id": call_context.run_id,
-                "thread_id": call_context.thread_id,
-                "search_request_id": call_context.search_request_id,
-                "generation": call_context.generation,
-                "parent_candidate_id": call_context.parent_candidate_id,
-                "component_id": call_context.component_id,
-                "mutation_reservation_id": mutation_reservation_id,
-            }
-        )
+        input_hash = mutation_input_hash(request, self.contract.prompt_version)
+        semantic_payload = {
+            "domain": "auto-researcher-openevolve-model-call-semantic-key",
+            "run_id": call_context.run_id,
+            "thread_id": call_context.thread_id,
+            "search_request_id": call_context.search_request_id,
+            "generation": call_context.generation,
+            "parent_candidate_id": call_context.parent_candidate_id,
+            "component_id": call_context.component_id,
+            "mutation_reservation_id": mutation_reservation_id,
+        }
+        if self.contract.prompt_version == OPENEVOLVE_MUTATION_PROMPT_V2:
+            semantic_payload.update(
+                {
+                    "prompt_version": self.contract.prompt_version,
+                    "input_payload_hash": input_hash,
+                }
+            )
+        semantic_key = payload_hash(semantic_payload)
         identity_payload = {
             **call_context.model_dump(mode="json"),
             "bridge": self.contract.model_dump(mode="json", by_alias=True),
@@ -376,13 +395,7 @@ class DurableOpenEvolveModelBridge:
                 ),
             }
         )
-        input_hash = payload_hash(
-            {
-                "domain": "auto-researcher-openevolve-mutation-input",
-                "version": "canonical-json-sha256-v1",
-                "payload": request,
-            }
-        )
+        input_hash = mutation_input_hash(request, self.contract.prompt_version)
         output_hash = (
             payload_hash(record.structured_output)
             if record.structured_output is not None
@@ -503,6 +516,30 @@ class DurableOpenEvolveModelBridge:
             raise LiveMutationBridgeError("model_call_input_oversize")
         if not mutation_reservation_id:
             raise LiveMutationBridgeError("model_call_identity_conflict")
+        if self.contract.prompt_version == OPENEVOLVE_MUTATION_PROMPT_V1:
+            if (
+                request.get("protocol") != "upstream-adapter-mutation-request-v1"
+                or "mutation_constraints" in request
+            ):
+                raise LiveMutationBridgeError("model_call_input_invalid")
+        else:
+            if request.get("protocol") != "upstream-adapter-mutation-request-v2":
+                raise LiveMutationBridgeError("model_call_input_invalid")
+            try:
+                constraints = MutationConstraints.model_validate(
+                    request.get("mutation_constraints")
+                )
+            except (TypeError, ValueError):
+                raise LiveMutationBridgeError("model_call_input_invalid") from None
+            if (
+                constraints.mutable_file != self.context.mutable_file
+                or request.get("mutable_file") != constraints.mutable_file
+                or request.get("interface_contract")
+                != constraints.immutable_interface_contract
+                or request.get("maximum_source_bytes")
+                != constraints.maximum_source_bytes
+            ):
+                raise LiveMutationBridgeError("model_call_input_invalid")
         parent = request.get("parent")
         if (
             not isinstance(parent, dict)
