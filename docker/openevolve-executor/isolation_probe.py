@@ -1,3 +1,5 @@
+"""Independent image-owned isolation probe; emits safe JSON to stdout."""
+
 import json
 import os
 import socket
@@ -12,8 +14,9 @@ def denied(operation):
     return False
 
 
+workspace = os.statvfs("/workspace")
 result = {
-    "schema": "executor-isolation-result-v1",
+    "schema": "executor-isolation-result-v2",
     "dns_denied": denied(lambda: socket.getaddrinfo("example.invalid", 443)),
     "outbound_tcp_denied": denied(
         lambda: socket.create_connection(("192.0.2.1", 9), 0.2)
@@ -35,7 +38,13 @@ result = {
             "GOOGLE_APPLICATION_CREDENTIALS",
         )
     ),
+    "tmp_read_only": denied(lambda: Path("/tmp/escape").write_text("x")),
+    "var_tmp_read_only": denied(lambda: Path("/var/tmp/escape").write_text("x")),
+    "home_unavailable": not Path.home().exists(),
+    "workspace_inode_limit": workspace.f_files,
+    "workspace_free_inodes": workspace.f_favail,
+    "workspace_bytes_limit": workspace.f_blocks * workspace.f_frsize,
+    "workspace_uid": os.stat("/workspace").st_uid,
+    "workspace_gid": os.stat("/workspace").st_gid,
 }
-Path("/output/isolation.json").write_text(
-    json.dumps(result, sort_keys=True, separators=(",", ":"))
-)
+print(json.dumps(result, sort_keys=True, separators=(",", ":")))

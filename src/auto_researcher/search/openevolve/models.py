@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from enum import StrEnum
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -16,12 +16,12 @@ from auto_researcher.contracts.models import (
     VerificationResult,
 )
 
-OPENEVOLVE_SEARCH_VERSION = "openevolve-search-v1"
-OPENEVOLVE_CANDIDATE_VERSION = "openevolve-candidate-v1"
-OPENEVOLVE_POPULATION_VERSION = "openevolve-population-v1"
-OPENEVOLVE_LINEAGE_VERSION = "openevolve-lineage-v1"
-OPENEVOLVE_SANDBOX_VERSION = "openevolve-sandbox-v1"
-OPENEVOLVE_PROVENANCE_VERSION = "openevolve-provenance-v1"
+OPENEVOLVE_SEARCH_VERSION: Final = "openevolve-search-v1"
+OPENEVOLVE_CANDIDATE_VERSION: Final = "openevolve-candidate-v1"
+OPENEVOLVE_POPULATION_VERSION: Final = "openevolve-population-v1"
+OPENEVOLVE_LINEAGE_VERSION: Final = "openevolve-lineage-v1"
+OPENEVOLVE_SANDBOX_VERSION: Final = "openevolve-sandbox-v1"
+OPENEVOLVE_PROVENANCE_VERSION: Final = "openevolve-provenance-v1"
 
 
 class OpenEvolveModel(BaseModel):
@@ -86,6 +86,8 @@ class SandboxPolicy(OpenEvolveModel):
     output_bytes: int = Field(gt=0, le=10_000_000)
     log_bytes: int = Field(gt=0, le=1_000_000)
     file_count_limit: int = Field(gt=0, le=100)
+    workspace_bytes: int = Field(default=1_048_576, gt=0, le=100_000_000)
+    file_size_bytes: int = Field(default=64_000, gt=0, le=10_000_000)
     dependency_allowlist: tuple[str, ...] = ()
     network_access: Literal[False] = False
     shell_access: Literal[False] = False
@@ -208,7 +210,9 @@ class CandidateValidationResult(OpenEvolveModel):
 
 
 class CandidatePreparationResult(OpenEvolveModel):
-    protocol_version: Literal["candidate-preparation-v1"] = "candidate-preparation-v1"
+    protocol_version: Literal[
+        "candidate-preparation-v1", "candidate-preparation-v2"
+    ] = "candidate-preparation-v1"
     candidate_id: str = Field(min_length=1)
     validation_status: CandidateValidationStatus
     execution_status: CandidateExecutionStatus
@@ -223,6 +227,28 @@ class CandidatePreparationResult(OpenEvolveModel):
     log_truncated: bool = False
     runtime_seconds: float = Field(default=0.0, ge=0)
     cleanup_complete: bool
+    executor_id: str | None = None
+    executor_policy_identity: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    execution_request_identity: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    workspace_policy_identity: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    worker_protocol_version: str | None = None
+    supervisor_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    image_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    declared_file_count_limit: int | None = Field(default=None, gt=0)
+    derived_inode_limit: int | None = Field(default=None, gt=1)
+    observed_workspace_entry_count: int | None = Field(default=None, ge=0)
+    observed_workspace_bytes: int | None = Field(default=None, ge=0)
+    observed_max_file_bytes: int | None = Field(default=None, ge=0)
+    workspace_bytes_limit: int | None = Field(default=None, gt=0)
+    file_size_bytes_limit: int | None = Field(default=None, gt=0)
+    observed_output_bytes: int | None = Field(default=None, ge=0)
+    resource_limit_reason: str | None = None
 
     @field_validator("runtime_seconds")
     @classmethod

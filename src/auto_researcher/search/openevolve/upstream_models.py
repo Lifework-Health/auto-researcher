@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from auto_researcher.contracts.models import FrozenJsonDict
 
-UPSTREAM_REPOSITORY = "https://github.com/algorithmicsuperintelligence/openevolve"
-UPSTREAM_TAG = "v0.3.2"
-UPSTREAM_COMMIT = "411fb59c886c18704caaffb611e17cf9e7d824d2"
-UPSTREAM_PACKAGE_VERSION = "0.3.2"
-UPSTREAM_WHEEL_SHA256 = (
+UPSTREAM_REPOSITORY: Final = (
+    "https://github.com/algorithmicsuperintelligence/openevolve"
+)
+UPSTREAM_TAG: Final = "v0.3.2"
+UPSTREAM_COMMIT: Final = "411fb59c886c18704caaffb611e17cf9e7d824d2"
+UPSTREAM_PACKAGE_VERSION: Final = "0.3.2"
+UPSTREAM_WHEEL_SHA256: Final = (
     "df998b0731d9c1a80883b4aae452cc43405a3e9c61b46d676d06235b4db49366"
 )
-UPSTREAM_INSTALLED_RECORD_HASH = (
+UPSTREAM_INSTALLED_RECORD_HASH: Final = (
     "74b05bb9cbd19a7045c6a0984328b02842031c782f293ced695a545158212fe6"
 )
 
@@ -32,16 +34,20 @@ class UpstreamOpenEvolveAdapterContract(AdapterModel):
         "auto-researcher-upstream-openevolve"
     )
     adapter_version: Literal["1"] = "1"
-    upstream_repository: Literal[UPSTREAM_REPOSITORY] = UPSTREAM_REPOSITORY
-    upstream_tag: Literal[UPSTREAM_TAG] = UPSTREAM_TAG
-    upstream_commit: Literal[UPSTREAM_COMMIT] = UPSTREAM_COMMIT
-    upstream_package_version: Literal[UPSTREAM_PACKAGE_VERSION] = (
-        UPSTREAM_PACKAGE_VERSION
+    upstream_repository: Literal[
+        "https://github.com/algorithmicsuperintelligence/openevolve"
+    ] = UPSTREAM_REPOSITORY
+    upstream_tag: Literal["v0.3.2"] = UPSTREAM_TAG
+    upstream_commit: Literal["411fb59c886c18704caaffb611e17cf9e7d824d2"] = (
+        UPSTREAM_COMMIT
     )
-    upstream_wheel_sha256: Literal[UPSTREAM_WHEEL_SHA256] = UPSTREAM_WHEEL_SHA256
-    installed_record_hash: Literal[UPSTREAM_INSTALLED_RECORD_HASH] = (
-        UPSTREAM_INSTALLED_RECORD_HASH
-    )
+    upstream_package_version: Literal["0.3.2"] = UPSTREAM_PACKAGE_VERSION
+    upstream_wheel_sha256: Literal[
+        "df998b0731d9c1a80883b4aae452cc43405a3e9c61b46d676d06235b4db49366"
+    ] = UPSTREAM_WHEEL_SHA256
+    installed_record_hash: Literal[
+        "74b05bb9cbd19a7045c6a0984328b02842031c782f293ced695a545158212fe6"
+    ] = UPSTREAM_INSTALLED_RECORD_HASH
     dependency_lock_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     supported_search_contract: Literal["openevolve-search-v1"] = "openevolve-search-v1"
     supported_candidate_representation: Literal["python_source_v1"] = "python_source_v1"
@@ -84,11 +90,11 @@ class UpstreamMutationEnvelope(AdapterModel):
 
 
 class HardenedExecutorPolicy(AdapterModel):
-    protocol_version: Literal["openevolve-executor-policy-v1"] = (
-        "openevolve-executor-policy-v1"
+    protocol_version: Literal["openevolve-executor-policy-v2"] = (
+        "openevolve-executor-policy-v2"
     )
-    executor_id: Literal["openevolve-hardened-executor-v1"] = (
-        "openevolve-hardened-executor-v1"
+    executor_id: Literal["openevolve-hardened-executor-v2"] = (
+        "openevolve-hardened-executor-v2"
     )
     runtime_type: Literal["docker"] = "docker"
     runtime_version: str = Field(min_length=1)
@@ -98,13 +104,30 @@ class HardenedExecutorPolicy(AdapterModel):
         "sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7"
     ] = "sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7"
     entrypoint_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_child_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     build_recipe_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    worker_protocol_version: Literal["openevolve-hardened-worker-result-v2"] = (
+        "openevolve-hardened-worker-result-v2"
+    )
+    workspace_policy_version: Literal["openevolve-workspace-policy-v1"] = (
+        "openevolve-workspace-policy-v1"
+    )
     network_mode: Literal["none"] = "none"
     read_only_root: Literal[True] = True
     non_root_user: Literal[True] = True
     capabilities_dropped: Literal[True] = True
     no_new_privileges: Literal[True] = True
     environment_inheritance: Literal[False] = False
+    workspace_mount: Literal["/workspace"] = "/workspace"
+    input_mount: Literal["/input"] = "/input"
+    writable_host_output_mount: Literal[False] = False
+    tmpfs_inode_overhead: Literal[1] = 1
+    supervisor_pid_overhead: Literal[4] = 4
+    tmpfs_noexec: Literal[True] = True
+    tmpfs_nosuid: Literal[True] = True
+    tmpfs_nodev: Literal[True] = True
+    fixed_uid: Literal[65532] = 65532
+    fixed_gid: Literal[65532] = 65532
 
 
 class ExecutorIsolationResult(AdapterModel):

@@ -1,7 +1,7 @@
 # Checkpoint 05B prerequisites
 
-Before checkpoint 05B, require merged PR 8, separately passed checkpoint 05A
-for the exact image/runtime/host, a fresh synthetic-only run and stores, a short
+Before checkpoint 05B, require merged corrective PR 8.1 and a separately passed
+checkpoint 05A-C for the exact executor-v2 image/runtime/host, a fresh synthetic-only run and stores, a short
 immutable approval, exact provider/model/prompt/pricing identities, one-call and
 cost ceilings, protected credentials, and no retry.
 

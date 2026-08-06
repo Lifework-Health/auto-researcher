@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,8 @@ def _resource_limits(policy: SandboxPolicy):
                 resource.RLIMIT_AS, (policy.memory_bytes, policy.memory_bytes)
             )
             resource.setrlimit(
-                resource.RLIMIT_FSIZE, (policy.output_bytes, policy.output_bytes)
+                resource.RLIMIT_FSIZE,
+                (policy.file_size_bytes, policy.file_size_bytes),
             )
             resource.setrlimit(
                 resource.RLIMIT_NOFILE,
@@ -88,12 +90,14 @@ class LocalSandboxRunner:
                 base.mkdir(parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix="openevolve-candidate-", dir=base))
             immutable = temporary / "immutable"
-            writable = temporary / "candidate-output"
+            writable = temporary / "candidate-workspace"
+            transport = temporary / "trusted-transport"
             immutable.mkdir(mode=0o700)
             writable.mkdir(mode=0o700)
+            transport.mkdir(mode=0o700)
             source_path = immutable / component.mutable_file
             input_path = immutable / "input.json"
-            output_path = writable / "output.json"
+            output_path = transport / "output.json"
             source_path.write_text(
                 candidate.source_payload.replace("\r\n", "\n"),
                 encoding="utf-8",
@@ -187,8 +191,27 @@ class LocalSandboxRunner:
                 or output_path.stat().st_size > policy.output_bytes
             ):
                 raise ValueError("candidate_output_limit")
-            if len(list(temporary.rglob("*"))) > policy.file_count_limit:
-                raise ValueError("candidate_output_limit")
+            entries = list(writable.rglob("*"))
+            if len(entries) > policy.file_count_limit:
+                raise ValueError("candidate_file_count_limit")
+            if any(
+                not (
+                    stat.S_ISREG(path.lstat().st_mode)
+                    or stat.S_ISDIR(path.lstat().st_mode)
+                )
+                for path in entries
+            ):
+                raise ValueError("candidate_file_type_forbidden")
+            if any(
+                path.is_file() and path.stat().st_size > policy.file_size_bytes
+                for path in entries
+            ):
+                raise ValueError("candidate_file_size_limit")
+            if (
+                sum(path.stat().st_size for path in entries if path.is_file())
+                > policy.workspace_bytes
+            ):
+                raise ValueError("candidate_workspace_size_limit")
             output_bytes = output_path.read_bytes()
             output = json.loads(output_bytes)
             if not isinstance(output, dict):
@@ -204,12 +227,24 @@ class LocalSandboxRunner:
                 runtime_seconds=round(time.monotonic() - started, 6),
                 cleanup_complete=True,
             )
-        except (OSError, ValueError, json.JSONDecodeError):
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            code = str(exc)
+            limited = code in {
+                "candidate_file_count_limit",
+                "candidate_file_size_limit",
+                "candidate_workspace_size_limit",
+                "candidate_output_limit",
+            }
             return CandidatePreparationResult(
                 candidate_id=candidate.candidate_id,
                 validation_status=CandidateValidationStatus.VALID,
-                execution_status=CandidateExecutionStatus.FAILED,
-                safe_error_code="candidate_execution_failed",
+                execution_status=(
+                    CandidateExecutionStatus.RESOURCE_LIMITED
+                    if limited
+                    else CandidateExecutionStatus.FAILED
+                ),
+                safe_error_code=code if limited else "candidate_execution_failed",
+                resource_limited=limited,
                 runtime_seconds=round(time.monotonic() - started, 6),
                 cleanup_complete=True,
             )

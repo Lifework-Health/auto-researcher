@@ -112,8 +112,8 @@ class OpenEvolveBackend:
             raise ValueError("openevolve_finite_configuration_required")
         runner_id = getattr(self.sandbox_runner, "runner_id", "")
         expected_sandbox = (
-            "openevolve-hardened-executor-v1"
-            if runner_id == "openevolve-hardened-executor-v1"
+            "openevolve-hardened-executor-v2"
+            if runner_id == "openevolve-hardened-executor-v2"
             else "openevolve-sandbox-v1"
         )
         if raw["sandbox_policy_id"] != expected_sandbox:
@@ -140,6 +140,8 @@ class OpenEvolveBackend:
             output_bytes=int(raw.get("candidate_output_bytes", 64_000)),
             log_bytes=int(raw.get("candidate_log_bytes", 8_000)),
             file_count_limit=int(raw.get("candidate_file_count_limit", 8)),
+            workspace_bytes=int(raw.get("candidate_workspace_bytes", 1_048_576)),
+            file_size_bytes=int(raw.get("candidate_file_size_bytes", 64_000)),
             dependency_allowlist=self.component_spec.allowed_dependencies,
         )
         search_contract = OpenEvolveSearchContract(
