@@ -226,6 +226,9 @@ def propose_openevolve_candidate(
         "openevolve_current_candidate": candidate,
         "openevolve_validation_result": None,
         "openevolve_preparation_result": None,
+        "experiment_spec": None,
+        "evaluation_result": None,
+        "verification_result": None,
         "decision_event_ids": [event_id],
         "executed_nodes": ["propose_openevolve_candidate"],
     }
@@ -357,8 +360,40 @@ def record_openevolve_candidate(
     )
     evaluation: EvaluationResult | None = state.get("evaluation_result")
     verification: VerificationResult | None = state.get("verification_result")
+    experiment = state.get("experiment_spec")
+    validation = candidate.validation_result
+    preparation = candidate.preparation_result
+    candidate_rejected = candidate.status == CandidateStatus.REJECTED or (
+        validation is not None
+        and validation.status == CandidateValidationStatus.INVALID
+    )
+    rejected_or_failed = (
+        candidate_rejected
+        or candidate.status == CandidateStatus.FAILED
+        or (
+            preparation is not None
+            and preparation.execution_status != CandidateExecutionStatus.COMPLETED
+        )
+    )
     event_ids: list[str] = []
-    if evaluation is not None and verification is not None:
+    if not rejected_or_failed:
+        experiment_id = preparation.generated_experiment_id if preparation else None
+        if (
+            candidate.status
+            not in {CandidateStatus.PREPARED, CandidateStatus.EVALUATED}
+            or validation is None
+            or validation.status != CandidateValidationStatus.VALID
+            or preparation is None
+            or preparation.execution_status != CandidateExecutionStatus.COMPLETED
+            or experiment_id is None
+            or experiment is None
+            or evaluation is None
+            or verification is None
+            or experiment.experiment_id != experiment_id
+            or evaluation.experiment_id != experiment_id
+            or verification.experiment_id != experiment_id
+        ):
+            raise ValueError("openevolve_candidate_result_state_conflict")
         evaluation_identity = payload_hash(evaluation)
         candidate = candidate.model_copy(
             update={
@@ -374,7 +409,7 @@ def record_openevolve_candidate(
             constraint_compliant=verification.constraint_compliant,
             verified=verification.verified,
             evidence_status=verification.evidence_status,
-            experiment=state["experiment_spec"],
+            experiment=experiment,
             evaluation=evaluation,
             verification=verification,
             selection_outcome="ranked",
@@ -417,19 +452,17 @@ def record_openevolve_candidate(
         )
     else:
         code = (
-            candidate.validation_result.safe_error_code
-            if candidate.validation_result
-            and candidate.validation_result.safe_error_code
-            else candidate.preparation_result.safe_error_code
-            if candidate.preparation_result
-            and candidate.preparation_result.safe_error_code
+            validation.safe_error_code
+            if validation and validation.safe_error_code
+            else preparation.safe_error_code
+            if preparation and preparation.safe_error_code
             else "candidate_execution_failed"
         )
         outcome = CandidateOutcome(
             candidate_id=candidate.candidate_id,
             source_hash=candidate.source_hash,
             status=CandidateStatus.REJECTED
-            if candidate.status == CandidateStatus.REJECTED
+            if candidate_rejected
             else CandidateStatus.FAILED,
             selection_outcome="rejected",
             rejection_reason=code,
@@ -455,14 +488,15 @@ def record_openevolve_candidate(
         candidate,
         outcome,
     )
+    completed_evaluation = outcome.evaluation
     if (
-        evaluation is not None
+        completed_evaluation is not None
         and len(population.lineage) > prior_lineage_count
         and dependencies.runtime_context.output_dir is not None
     ):
         artefact_bytes = 0
         root = dependencies.runtime_context.output_dir.resolve()
-        for reference in evaluation.artefact_references:
+        for reference in completed_evaluation.artefact_references:
             path = (root / reference).resolve()
             if root not in path.parents or not path.is_file():
                 raise RuntimeError("openevolve_artefact_reference_conflict")
