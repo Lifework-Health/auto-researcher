@@ -5,8 +5,18 @@ from datetime import UTC, datetime
 import pytest
 
 from auto_researcher.contracts.enums import EventType, ProvenanceKind
-from auto_researcher.contracts.models import DecisionEvent
+from auto_researcher.contracts.models import DecisionEvent, Hypothesis, SearchRequest
+from auto_researcher.agents.mock import MockHypothesisAgent, MockPlannerAgent
+from auto_researcher.graph.nodes.provenance import _semantic_identity, record_provenance
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
+from auto_researcher.runtime.dependencies import task_memory_dependencies
+from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.tasks.models import TaskRuntimeContext
+from auto_researcher.tasks.synthetic import (
+    SyntheticTask,
+    default_synthetic_contract,
+    default_synthetic_configuration,
+)
 
 
 def _event(event_id: str, event_type: EventType, output: str) -> DecisionEvent:
@@ -69,3 +79,108 @@ def test_conflicting_scientific_payload_fails_closed(event_type):
             f"semantic:{event_type.value}",
             "b" * 64,
         )
+
+
+def _domain_state():
+    contract = default_synthetic_contract()
+    hypothesis = MockHypothesisAgent().generate(contract, cycle=1)
+    request = MockPlannerAgent().plan(contract, hypothesis, cycle=1)
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(run_id="semantic-domain-run"),
+        contract,
+        default_synthetic_configuration(),
+        id_generator=lambda prefix: f"{prefix}-constant",
+    )
+    state = {
+        "run_id": "semantic-domain-run",
+        "cycle": 1,
+        "contract": contract,
+        "active_hypothesis": hypothesis,
+        "search_request": request,
+    }
+    return state, dependencies
+
+
+def test_identical_hypothesis_recording_is_domain_idempotent():
+    state, dependencies = _domain_state()
+    state["search_request"] = None
+    first = record_provenance(state, dependencies)
+    second = record_provenance(state, dependencies)
+    events = dependencies.provenance_store.list_events(state["run_id"])
+    semantic_key, scientific_hash = _semantic_identity(
+        EventType.HYPOTHESIS_PROPOSED, state, dependencies
+    )
+    assert first["decision_event_ids"] == second["decision_event_ids"]
+    assert first["decision_event_ids"] == [f"event-{semantic_key[:24]}"]
+    assert scientific_hash == payload_hash(state["active_hypothesis"])
+    assert [event.event_type for event in events] == [EventType.HYPOTHESIS_PROPOSED]
+
+
+def test_reconstructed_hypothesis_preserves_semantic_and_payload_hashes():
+    state, dependencies = _domain_state()
+    original = state["active_hypothesis"]
+    reconstructed = Hypothesis.model_validate_json(original.model_dump_json())
+    first = _semantic_identity(EventType.HYPOTHESIS_PROPOSED, state, dependencies)
+    state["active_hypothesis"] = reconstructed
+    second = _semantic_identity(EventType.HYPOTHESIS_PROPOSED, state, dependencies)
+    assert first == second
+    assert payload_hash(original) == payload_hash(reconstructed)
+
+
+def test_changed_hypothesis_with_same_identity_fails_closed():
+    state, dependencies = _domain_state()
+    state["search_request"] = None
+    record_provenance(state, dependencies)
+    state["active_hypothesis"] = state["active_hypothesis"].model_copy(
+        update={"statement": "A genuinely changed scientific statement."}
+    )
+    with pytest.raises(ValueError, match="conflicting_semantic_provenance_event"):
+        record_provenance(state, dependencies)
+
+
+def test_identical_search_request_recording_is_domain_idempotent():
+    state, dependencies = _domain_state()
+    state["active_hypothesis"] = None
+    first = record_provenance(state, dependencies)
+    reconstructed = SearchRequest.model_validate_json(
+        state["search_request"].model_dump_json()
+    )
+    state["search_request"] = reconstructed
+    second = record_provenance(state, dependencies)
+    events = dependencies.provenance_store.list_events(state["run_id"])
+    assert first["decision_event_ids"] == second["decision_event_ids"]
+    assert [event.event_type for event in events] == [EventType.SEARCH_PLANNED]
+
+
+def test_changed_search_request_with_same_identity_fails_closed():
+    state, dependencies = _domain_state()
+    state["active_hypothesis"] = None
+    record_provenance(state, dependencies)
+    state["search_request"] = state["search_request"].model_copy(
+        update={"target": "a genuinely changed search target"}
+    )
+    with pytest.raises(ValueError, match="conflicting_semantic_provenance_event"):
+        record_provenance(state, dependencies)
+
+
+def test_hypothesis_nested_scientific_mapping_is_frozen_and_canonical():
+    state, _ = _domain_state()
+    hypothesis = state["active_hypothesis"]
+    with pytest.raises(TypeError, match="immutable"):
+        hypothesis.predicted_subspace["changed"] = True
+    reordered = Hypothesis.model_validate(
+        {
+            **hypothesis.model_dump(mode="python"),
+            "predicted_subspace": {"z": [3, 2, 1], "a": {"right": 2, "left": 1}},
+        }
+    )
+    same_content = Hypothesis.model_validate(
+        {
+            **hypothesis.model_dump(mode="python"),
+            "predicted_subspace": {"a": {"left": 1, "right": 2}, "z": [3, 2, 1]},
+        }
+    )
+    with pytest.raises(TypeError, match="immutable"):
+        reordered.predicted_subspace["z"].append(0)
+    assert payload_hash(reordered) == payload_hash(same_content)

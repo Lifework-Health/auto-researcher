@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from auto_researcher.contracts.enums import EventType, ProvenanceKind
 from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.agents.provenance import append_model_call_events
@@ -31,7 +33,7 @@ def _semantic_identity(
         "run_id": run_id,
         "event_type": event_type.value,
     }
-    scientific_payload = None
+    scientific_payload: Any | None = None
     if event_type == EventType.HYPOTHESIS_PROPOSED and hypothesis is not None:
         base["hypothesis_id"] = hypothesis.hypothesis_id
         scientific_payload = hypothesis
@@ -250,8 +252,13 @@ def record_provenance(
 
     event_ids: list[str] = [*knowledge_event_ids, *model_event_ids]
     for event_type, actor, inputs, outputs, rationale, provenance in rows:
+        semantic = _semantic_identity(event_type, state, dependencies)
         event = DecisionEvent(
-            event_id=dependencies.id_generator("event"),
+            event_id=(
+                f"event-{semantic[0][:24]}"
+                if semantic is not None
+                else dependencies.id_generator("event")
+            ),
             run_id=run_id,
             cycle=cycle,
             event_type=event_type,
@@ -263,7 +270,6 @@ def record_provenance(
             code_version=CODE_VERSION,
             provenance=provenance,
         )
-        semantic = _semantic_identity(event_type, state, dependencies)
         if semantic is None:
             dependencies.provenance_store.append_event(event)
             stored = event

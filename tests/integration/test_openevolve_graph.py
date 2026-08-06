@@ -13,7 +13,7 @@ import pytest
 
 from auto_researcher.agents.call_store import InMemoryAgentCallStore
 from auto_researcher.agents.mock import MockHypothesisAgent, MockPlannerAgent
-from auto_researcher.contracts.enums import RunStatus, SearchType
+from auto_researcher.contracts.enums import EventType, RunStatus, SearchType
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.dependencies import (
     task_memory_dependencies,
@@ -108,7 +108,10 @@ def test_synthetic_openevolve_improves_over_multiple_generations_and_publishes(
         default_synthetic_openevolve_configuration(),
         search_type=SearchType.OPENEVOLVE,
         clock=lambda: FIXED_TIME,
-        id_generator=_ids(),
+        # Reproduces checkpoint 05B-Lite's prefix-stable generator. Generic
+        # semantic provenance must derive event identity from the lifecycle
+        # fact instead of colliding on the caller's fallback ID.
+        id_generator=lambda prefix: f"{prefix}-constant",
     )
     final = start_run(
         build_graph(dependencies),
@@ -209,7 +212,7 @@ def test_seed_then_one_fake_production_mutation_uses_explicit_budgets(tmp_path):
         planner_agent=planner_agent,
         search_type=SearchType.OPENEVOLVE,
         clock=lambda: NOW,
-        id_generator=_ids(),
+        id_generator=lambda prefix: f"{prefix}-constant",
     )
     base = dependencies.openevolve_backend
     assert base is not None
@@ -352,9 +355,17 @@ def test_seed_then_one_fake_production_mutation_uses_explicit_budgets(tmp_path):
     ]
     assert event_types.count("OPENEVOLVE_MUTATION_RESERVED") == 1
     assert event_types.count("OPENEVOLVE_CANDIDATE_PROPOSED") == 1
+    assert event_types.count("HYPOTHESIS_PROPOSED") == 1
+    assert event_types.count("SEARCH_PLANNED") == 1
     assert event_types.count("EVALUATION_OBSERVED") == 2
     assert event_types.count("EVIDENCE_VERIFIED") == 2
     assert event_types[-1] == "OPENEVOLVE_SEARCH_STOPPED"
+    semantic_rows = dependencies.provenance_store._connection.execute(
+        "SELECT semantic_key, semantic_payload_hash FROM decision_events "
+        "WHERE semantic_key IS NOT NULL"
+    ).fetchall()
+    assert len({row[0] for row in semantic_rows}) == len(semantic_rows)
+    assert all(len(row[0]) == len(row[1]) == 64 for row in semantic_rows)
 
 
 def test_duplicate_source_is_archived_without_reevaluation():
@@ -461,13 +472,16 @@ def test_interrupted_resume_matches_uninterrupted_population_and_terminal_guards
         paused = start_run(
             build_graph(
                 dependencies,
-                interrupt_after=["prepare_openevolve_candidate"],
+                interrupt_after=["record_openevolve_candidate"],
             ),
             _identity_input(run_id, thread_id, contract),
             config,
         )
         assert paused["status"] == RunStatus.RUNNING
-        assert paused["evaluation_result"] is None
+        assert paused["evaluation_result"].primary_score == 0.78
+        assert paused["verification_result"].verified is True
+        assert paused["openevolve_population_state"].budget.candidate_evaluations == 1
+        assert paused["openevolve_population_state"].budget.verifier_calls == 1
 
     resumed_manager, _, _, _, _ = _run_sqlite(tmp_path / "resumed")
     with resumed_manager as raw:
@@ -490,6 +504,12 @@ def test_interrupted_resume_matches_uninterrupted_population_and_terminal_guards
             match="thread_is_terminal_use_inspect",
         ):
             resume_run(build_graph(dependencies), config)
+        event_types = [
+            event.event_type
+            for event in dependencies.provenance_store.list_events(run_id)
+        ]
+        assert event_types.count(EventType.HYPOTHESIS_PROPOSED) == 1
+        assert event_types.count(EventType.SEARCH_PLANNED) == 1
 
     assert payload_hash(resumed["openevolve_population_state"]) == payload_hash(
         continuous["openevolve_population_state"]
