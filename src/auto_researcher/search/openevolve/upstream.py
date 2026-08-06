@@ -24,6 +24,9 @@ from auto_researcher.search.openevolve.upstream_models import (
     UpstreamOpenEvolveAdapterContract,
     UpstreamOpenEvolveAdapterState,
 )
+from auto_researcher.search.openevolve.hardened_executor import (
+    HardenedDockerExecutor,
+)
 
 DISABLED_UPSTREAM_FEATURES = (
     "controller",
@@ -170,6 +173,7 @@ class UpstreamOpenEvolveAdapter:
             "protocol": "upstream-adapter-mutation-request-v1",
             "parent": {
                 "id": upstream_parent.id,
+                "authoritative_candidate_id": parent.candidate_id,
                 "code": upstream_parent.code,
                 "generation": upstream_parent.generation,
             },
@@ -294,3 +298,45 @@ def assert_live_mutation_eligible(
         raise ValueError("live_mutation_approval_required")
     if maximum_model_calls <= 0 or maximum_candidate_evaluations <= 0:
         raise ValueError("live_mutation_finite_budget_required")
+
+
+def build_approved_live_upstream_runtime(
+    adapter_contract: UpstreamOpenEvolveAdapterContract,
+    bridge,
+    executor_policy: HardenedExecutorPolicy,
+    isolation: ExecutorIsolationResult,
+    *,
+    workspace_root: Path | None = None,
+) -> tuple[UpstreamOpenEvolveAdapter, HardenedDockerExecutor]:
+    """Pair the durable bridge only with the exact approved hardened runner."""
+
+    if bridge.approval is None:
+        raise ValueError("live_mutation_approval_required")
+    adapter_hash = payload_hash(adapter_contract)
+    if (
+        bridge.context.adapter_identity_hash != adapter_hash
+        or bridge.context.executor_policy_hash != payload_hash(executor_policy)
+        or bridge.context.image_digest != executor_policy.image_digest
+        or bridge.approval.executor_policy_hash != payload_hash(executor_policy)
+        or bridge.approval.image_digest != executor_policy.image_digest
+        or isolation.executor_policy_hash != payload_hash(executor_policy)
+    ):
+        raise ValueError("live_mutation_approval_mismatch")
+    assert_live_mutation_eligible(
+        adapter_contract,
+        executor_policy,
+        isolation,
+        approved_adapter_hash=adapter_hash,
+        approved_image_digest=bridge.approval.image_digest,
+        contract_permits_live_mutation=True,
+        operator_approved=True,
+        maximum_model_calls=min(
+            bridge.approval.maximum_model_calls,
+            bridge.context.maximum_model_calls,
+        ),
+        maximum_candidate_evaluations=1,
+    )
+    return (
+        UpstreamOpenEvolveAdapter(adapter_contract, bridge),
+        HardenedDockerExecutor(executor_policy, workspace_root),
+    )

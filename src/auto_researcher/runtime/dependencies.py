@@ -51,6 +51,7 @@ from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.checkpoints import memory_checkpointer, sqlite_checkpointer
 from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
+from auto_researcher.search.openevolve.protocols import MutationOperator
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
 from auto_researcher.search.openevolve.sandbox import LocalSandboxRunner
 from auto_researcher.search.protocols import SearchBackend, SearchCapability
@@ -165,6 +166,8 @@ def _assemble_task_dependencies(
     id_generator: Callable[[str], str],
     search_type: SearchType = SearchType.DIRECT,
     optuna_storage_handle: OptunaStorageHandle | None = None,
+    openevolve_mutation_operator: MutationOperator | None = None,
+    openevolve_sandbox_runner: Any | None = None,
 ) -> RuntimeDependencies:
     task.validate_contract(contract)
     context = _context_for_contract(runtime_context, contract, clock())
@@ -243,8 +246,8 @@ def _assemble_task_dependencies(
             component,
             metadata,
             verifier_identity,
-            DeterministicMutationOperator(),
-            LocalSandboxRunner(workspace_root),
+            openevolve_mutation_operator or DeterministicMutationOperator(),
+            openevolve_sandbox_runner or LocalSandboxRunner(workspace_root),
         )
         if search_type == SearchType.OPENEVOLVE:
             validation_request = SearchRequest(
@@ -485,6 +488,8 @@ def task_memory_dependencies(
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
     search_type: SearchType = SearchType.DIRECT,
+    openevolve_mutation_operator: MutationOperator | None = None,
+    openevolve_sandbox_runner: Any | None = None,
 ) -> RuntimeDependencies:
     return _assemble_task_dependencies(
         task=task,
@@ -510,6 +515,8 @@ def task_memory_dependencies(
         clock=clock,
         id_generator=id_generator,
         search_type=search_type,
+        openevolve_mutation_operator=openevolve_mutation_operator,
+        openevolve_sandbox_runner=openevolve_sandbox_runner,
     )
 
 
@@ -540,6 +547,8 @@ def task_sqlite_dependencies(
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
     search_type: SearchType = SearchType.DIRECT,
+    openevolve_mutation_operator: MutationOperator | None = None,
+    openevolve_sandbox_runner: Any | None = None,
 ) -> Iterator[RuntimeDependencies]:
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     provenance = Path(provenance_path).expanduser().resolve()
@@ -621,6 +630,8 @@ def task_sqlite_dependencies(
             id_generator=id_generator,
             search_type=search_type,
             optuna_storage_handle=optuna_handle,
+            openevolve_mutation_operator=openevolve_mutation_operator,
+            openevolve_sandbox_runner=openevolve_sandbox_runner,
         )
     finally:
         if optuna_handle is not None:

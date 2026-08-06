@@ -41,6 +41,9 @@ from auto_researcher.knowledge.schemas.knowledge_graph_auto_v0_1 import (
 from auto_researcher.knowledge.store import SQLiteKnowledgeRetrievalStore
 from auto_researcher.knowledge.templates import default_template_registry
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
+from auto_researcher.search.openevolve.live_models import (
+    parse_live_mutation_approval,
+)
 from auto_researcher.runtime.dependencies import (
     task_sqlite_dependencies,
     utc_now,
@@ -71,6 +74,16 @@ agent_calls_app = typer.Typer(
     help="Inspect or explicitly retry durable live-agent calls.",
 )
 app.add_typer(agent_calls_app, name="agent-calls")
+openevolve_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect bounded OpenEvolve production controls.",
+)
+openevolve_approval_app = typer.Typer(
+    no_args_is_help=True,
+    help="Validate or inspect credential-free live-mutation approvals.",
+)
+app.add_typer(openevolve_app, name="openevolve")
+openevolve_app.add_typer(openevolve_approval_app, name="approval")
 knowledge_app = typer.Typer(
     no_args_is_help=True,
     help="Inspect providers and durable knowledge retrievals.",
@@ -119,6 +132,53 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain a YAML mapping")
     return value
+
+
+def _live_mutation_approval_report(path: Path):
+    try:
+        approval = parse_live_mutation_approval(_load_yaml(path))
+    except (OSError, ValueError) as exc:
+        code = str(exc)
+        if not code.startswith("live_mutation_"):
+            code = "live_mutation_approval_invalid"
+        return None, code
+    current = utc_now()
+    if current >= approval.expires_at:
+        return None, "live_mutation_approval_expired"
+    if current < approval.created_at:
+        return None, "live_mutation_approval_mismatch"
+    return approval, "valid"
+
+
+@openevolve_approval_app.command("validate")
+def validate_live_mutation_approval(
+    file: Path = typer.Option(..., "--file", exists=True, dir_okay=False),
+) -> None:
+    """Validate canonical identity and schema without accessing credentials."""
+    approval, outcome = _live_mutation_approval_report(file)
+    if approval is None:
+        typer.echo(f"outcome={outcome}", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(
+        f"approval_id={approval.approval_id} version={approval.protocol_version} "
+        f"expiry={approval.expires_at.isoformat()} task={approval.task_id}@{approval.task_version} "
+        f"component={approval.component_id}@{approval.component_version} "
+        f"provider={approval.provider} model={approval.model_id} "
+        f"prompt={approval.prompt_id}@{approval.prompt_version} "
+        f"maximum_calls={approval.maximum_model_calls} "
+        f"maximum_cost={approval.maximum_total_cost} {approval.currency} "
+        f"executor_digest={approval.image_digest} "
+        f"dataset={approval.permitted_dataset_class} "
+        f"approval_hash={approval.approval_hash} outcome=valid"
+    )
+
+
+@openevolve_approval_app.command("inspect")
+def inspect_live_mutation_approval(
+    file: Path = typer.Option(..., "--file", exists=True, dir_okay=False),
+) -> None:
+    """Print only the allowlisted, credential-free approval summary."""
+    validate_live_mutation_approval(file=file)
 
 
 def _load_task_configuration(

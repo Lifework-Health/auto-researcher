@@ -21,6 +21,10 @@ def _event_type(status: AgentCallStatus) -> EventType:
         return EventType.MODEL_CALL_RESERVED
     if status == AgentCallStatus.COMPLETED:
         return EventType.MODEL_CALL_COMPLETED
+    if status == AgentCallStatus.DISPATCHING:
+        return EventType.LIVE_MUTATION_DISPATCHED
+    if status == AgentCallStatus.OUTCOME_UNKNOWN:
+        return EventType.LIVE_MUTATION_OUTCOME_UNKNOWN
     return EventType.MODEL_CALL_FAILED
 
 
@@ -53,6 +57,8 @@ def append_model_call_events(
             f"cost:{record.estimated_cost}",
             f"currency:{record.pricing_currency}",
             f"pricing_version:{record.pricing_version}",
+            f"approval_hash:{record.approval_hash or 'none'}",
+            f"completion_identity:{record.completion_identity or 'none'}",
             (
                 "pricing_rates:"
                 f"{record.pricing.input_cost_per_million_tokens}/"
