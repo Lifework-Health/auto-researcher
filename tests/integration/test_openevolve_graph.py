@@ -7,9 +7,12 @@ import subprocess
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+from auto_researcher.agents.call_store import InMemoryAgentCallStore
+from auto_researcher.agents.mock import MockHypothesisAgent, MockPlannerAgent
 from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.dependencies import (
@@ -31,7 +34,14 @@ from auto_researcher.search.openevolve.models import (
     EvolvableComponentSpec,
 )
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
+from auto_researcher.search.openevolve.production_bridge import (
+    DurableOpenEvolveModelBridge,
+)
 from auto_researcher.search.openevolve.sandbox import LocalSandboxRunner
+from auto_researcher.search.openevolve.upstream import (
+    UpstreamOpenEvolveAdapter,
+    default_adapter_contract,
+)
 from auto_researcher.tasks.models import TaskRuntimeContext
 from auto_researcher.tasks.synthetic import (
     SyntheticEvolvableComponent,
@@ -126,6 +136,224 @@ def test_synthetic_openevolve_improves_over_multiple_generations_and_publishes(
     assert event_types.count("EXPERIMENT_PREPARED") == 3
     assert event_types.count("EVALUATION_OBSERVED") == 3
     assert event_types.count("EVIDENCE_VERIFIED") == 3
+    assert event_types[-1] == "OPENEVOLVE_SEARCH_STOPPED"
+
+
+def test_seed_then_one_fake_production_mutation_uses_explicit_budgets(tmp_path):
+    pytest.importorskip("openevolve", reason="pinned optional dependency absent")
+    from auto_researcher.providers.fake_production import (
+        FakeProductionStructuredModelClient,
+    )
+    from auto_researcher.search.openevolve.live_models import (
+        LiveMutationApproval,
+        OpenEvolveModelCallContext,
+    )
+    from tests.unit.test_openevolve_production_bridge import (
+        NOW,
+        approval_payload,
+        contract as bridge_contract,
+    )
+
+    class Counting:
+        def __init__(self, inner, method):
+            self.inner = inner
+            self.method = method
+            self.calls = 0
+            for name in ("evaluator_id", "verifier_id", "version"):
+                if hasattr(inner, name):
+                    setattr(self, name, getattr(inner, name))
+
+        def evaluate(self, *args, **kwargs):
+            self.calls += 1
+            return self.inner.evaluate(*args, **kwargs)
+
+        def verify(self, *args, **kwargs):
+            self.calls += 1
+            return self.inner.verify(*args, **kwargs)
+
+    run_id = "seed-budget-fake-production"
+    thread_id = "seed-budget-fake-production-thread"
+    research_contract = default_synthetic_contract(
+        maximum_cycles=1,
+        search_types=frozenset({SearchType.OPENEVOLVE}),
+        maximum_experiments=2,
+    )
+    configuration = default_synthetic_openevolve_configuration()
+    configuration["openevolve"].update(
+        {
+            "maximum_generations": 1,
+            "maximum_model_calls": 1,
+            "objective_threshold": None,
+        }
+    )
+    context = TaskRuntimeContext(
+        run_id=run_id,
+        output_dir=tmp_path / "artefacts",
+        workspace_dir=tmp_path / "workspace",
+        manifest_created_at=FIXED_TIME,
+    )
+    hypothesis_agent = MockHypothesisAgent()
+    planned_hypothesis = hypothesis_agent.generate(research_contract, cycle=1)
+    planner_agent = MockPlannerAgent(
+        search_type=SearchType.OPENEVOLVE,
+        configuration=configuration,
+        experiment_budget=2,
+    )
+    planned_request = planner_agent.plan(research_contract, planned_hypothesis, cycle=1)
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        context,
+        research_contract,
+        configuration,
+        hypothesis_agent=hypothesis_agent,
+        planner_agent=planner_agent,
+        search_type=SearchType.OPENEVOLVE,
+        clock=lambda: NOW,
+        id_generator=_ids(),
+    )
+    base = dependencies.openevolve_backend
+    assert base is not None
+    adapter_contract = default_adapter_contract(
+        Path(__file__).parents[2] / "constraints/openevolve-0.3.2.lock"
+    )
+    adapter_hash = payload_hash(adapter_contract)
+    approval = LiveMutationApproval.model_validate(
+        approval_payload(
+            run_id=run_id,
+            contract_id=research_contract.contract_id,
+            contract_hash=payload_hash(research_contract),
+            task_version=research_contract.task_version,
+            component_id=base.component_spec.component_id,
+            component_version=base.component_spec.component_version,
+            adapter_identity_hash=adapter_hash,
+        )
+    )
+    response = {
+        "protocol_version": "upstream-mutation-envelope-v1",
+        "mutable_file": "candidate.py",
+        "source": (
+            "def evolve(configuration):\n"
+            '    return {"model_family": "tree", "complexity": 4, '
+            '"learning_rate": 0.05}\n'
+        ),
+        "description": "One bounded fake-production mutation.",
+    }
+    provider = FakeProductionStructuredModelClient(
+        provider="fake-production",
+        model_id="fake-model-20260101",
+        response=response,
+    )
+    call_store = InMemoryAgentCallStore()
+    bridge = DurableOpenEvolveModelBridge(
+        contract=bridge_contract(),
+        context=OpenEvolveModelCallContext(
+            run_id=run_id,
+            thread_id=thread_id,
+            contract_id=research_contract.contract_id,
+            contract_hash=payload_hash(research_contract),
+            task_id="synthetic",
+            task_version=research_contract.task_version,
+            search_request_id=planned_request.request_id,
+            generation=1,
+            parent_candidate_id="seed-placeholder",
+            component_id=base.component_spec.component_id,
+            component_version=base.component_spec.component_version,
+            component_interface_hash=base.interface_hash,
+            adapter_id=adapter_contract.adapter_id,
+            adapter_version=adapter_contract.adapter_version,
+            adapter_identity_hash=adapter_hash,
+            executor_policy_hash="a" * 64,
+            image_digest="sha256:" + "b" * 64,
+            mutable_file="candidate.py",
+            model_budget_identity="seed-budget-model-calls",
+            maximum_model_calls=1,
+            maximum_model_cost=0.02,
+        ),
+        approval=approval,
+        store=call_store,
+        provider_factory=lambda: provider,
+        now=lambda: NOW,
+        system_prompt="bounded prompt",
+    )
+    evaluator = Counting(dependencies.evaluator, "evaluate")
+    verifier = Counting(dependencies.verifier, "verify")
+    backend = OpenEvolveBackend(
+        base.component,
+        base.metadata,
+        base.verifier_identity,
+        UpstreamOpenEvolveAdapter(adapter_contract, bridge),
+        _ZeroRuntimeRunner(tmp_path / "sandbox"),
+    )
+    dependencies = replace(
+        dependencies,
+        evaluator=evaluator,
+        verifier=verifier,
+        agent_call_store=call_store,
+        openevolve_backend=backend,
+    )
+    final = start_run(
+        build_graph(dependencies),
+        _identity_input(run_id, thread_id, research_contract),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    population = final["openevolve_population_state"]
+    assert final["status"] == RunStatus.COMPLETED
+    assert population.budget.candidate_evaluations == 2
+    assert population.budget.model_calls == 1
+    assert population.budget.generations_used == 1
+    assert evaluator.calls == 2
+    assert verifier.calls == 2
+    assert provider.invocation_count == 1
+    assert len({record.call_id for record in call_store.list_records()}) == 1
+    assert len(population.lineage) == 2
+    assert population.lineage[0].generation == 0
+    assert population.lineage[1].generation == 1
+    candidates = sorted(
+        final["openevolve_candidates"].candidates, key=lambda item: item.generation
+    )
+    assert candidates[0].model_call_id is None
+    assert candidates[1].model_call_id is not None
+    lifecycle_nodes = {
+        "initialise_openevolve",
+        "validate_openevolve_candidate",
+        "prepare_openevolve_candidate",
+        "evaluate_experiment",
+        "verify_evidence",
+        "record_openevolve_candidate",
+        "decide_openevolve_continue",
+        "select_openevolve_parent",
+        "propose_openevolve_candidate",
+        "finalise_openevolve",
+    }
+    assert [node for node in final["executed_nodes"] if node in lifecycle_nodes] == [
+        "initialise_openevolve",
+        "validate_openevolve_candidate",
+        "prepare_openevolve_candidate",
+        "evaluate_experiment",
+        "verify_evidence",
+        "record_openevolve_candidate",
+        "decide_openevolve_continue",
+        "select_openevolve_parent",
+        "propose_openevolve_candidate",
+        "validate_openevolve_candidate",
+        "prepare_openevolve_candidate",
+        "evaluate_experiment",
+        "verify_evidence",
+        "record_openevolve_candidate",
+        "decide_openevolve_continue",
+        "finalise_openevolve",
+    ]
+    assert final["openevolve_search_result"].stop_reason == (
+        "maximum_candidate_evaluations_reached"
+    )
+    event_types = [
+        event.event_type.value
+        for event in dependencies.provenance_store.list_events(run_id)
+    ]
+    assert event_types.count("OPENEVOLVE_MUTATION_RESERVED") == 1
+    assert event_types.count("OPENEVOLVE_CANDIDATE_PROPOSED") == 1
+    assert event_types.count("EVALUATION_OBSERVED") == 2
+    assert event_types.count("EVIDENCE_VERIFIED") == 2
     assert event_types[-1] == "OPENEVOLVE_SEARCH_STOPPED"
 
 

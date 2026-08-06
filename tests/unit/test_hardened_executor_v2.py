@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import stat
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +25,7 @@ from auto_researcher.runtime.execution import (
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.hardened_executor import (
     HardenedDockerExecutor,
+    WORKSPACE_ROOT_UNAVAILABLE,
     docker_policy,
 )
 from auto_researcher.search.openevolve.models import (
@@ -69,6 +73,210 @@ class IsolatedExecutor(HardenedDockerExecutor):
 def _sandbox_policy():
     backend = _backend()
     return backend.create_search_contract(_request(), _contract()).sandbox_policy
+
+
+def _remove_operation(path: Path) -> None:
+    shutil.rmtree(path)
+
+
+def test_workspace_root_none_uses_system_temporary_directory():
+    executor = HardenedDockerExecutor(_policy())
+    operation = executor._operation_directory("openevolve-none-")
+    try:
+        assert operation.is_dir()
+        assert executor.workspace_root_identity is None
+    finally:
+        _remove_operation(operation)
+
+
+def test_existing_and_missing_workspace_roots_are_stable_and_retained(tmp_path):
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    missing = tmp_path / "missing" / "nested"
+    for root, created_by_executor in ((existing, False), (missing, True)):
+        executor = HardenedDockerExecutor(_policy(), root)
+        identity = executor.workspace_root_identity
+        first = executor._operation_directory("openevolve-first-")
+        second = executor._operation_directory("openevolve-second-")
+        assert first.parent == root
+        assert second.parent == root
+        assert first != second
+        assert executor.workspace_root_identity == identity
+        _remove_operation(first)
+        _remove_operation(second)
+        assert root.is_dir()
+        assert list(root.iterdir()) == []
+        if created_by_executor:
+            assert stat.S_IMODE(root.stat().st_mode) & 0o077 == 0
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_workspace_root_rejects_non_directory_final_component(tmp_path, kind):
+    root = tmp_path / "invalid-root"
+    if kind == "file":
+        root.write_text("not a directory", encoding="utf-8")
+    else:
+        target = tmp_path / "target"
+        target.mkdir()
+        root.symlink_to(target, target_is_directory=True)
+    executor = HardenedDockerExecutor(_policy(), root)
+    with pytest.raises(ValueError, match=WORKSPACE_ROOT_UNAVAILABLE):
+        executor._operation_directory("openevolve-invalid-")
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_prepare_returns_safe_failure_for_invalid_workspace_root(tmp_path, kind):
+    root = tmp_path / "invalid-prepare-root"
+    if kind == "file":
+        root.write_text("not a directory", encoding="utf-8")
+    else:
+        target = tmp_path / "target"
+        target.mkdir()
+        root.symlink_to(target, target_is_directory=True)
+    backend = _backend()
+    result = IsolatedExecutor(_policy(), root).prepare(
+        _candidate(backend.component_spec.seed_source),
+        backend.component_spec,
+        _sandbox_policy(),
+        backend.component.seed_configuration(),
+    )
+    assert result.execution_status == CandidateExecutionStatus.FAILED
+    assert result.safe_error_code == WORKSPACE_ROOT_UNAVAILABLE
+    assert result.cleanup_complete is True
+
+
+def test_workspace_root_rejects_insufficient_access(monkeypatch, tmp_path):
+    root = tmp_path / "restricted"
+    root.mkdir()
+    original = os.access
+    monkeypatch.setattr(
+        os,
+        "access",
+        lambda path, mode: False if Path(path) == root else original(path, mode),
+    )
+    with pytest.raises(ValueError, match=WORKSPACE_ROOT_UNAVAILABLE):
+        HardenedDockerExecutor(_policy(), root)._operation_directory(
+            "openevolve-restricted-"
+        )
+
+
+def test_workspace_root_removed_before_child_creation_fails_safely(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "removed"
+    executor = HardenedDockerExecutor(_policy(), root)
+    ensure = executor._ensure_workspace_root
+
+    def remove_after_validation():
+        value = ensure()
+        assert value is not None
+        value.rmdir()
+        return value
+
+    monkeypatch.setattr(executor, "_ensure_workspace_root", remove_after_validation)
+    with pytest.raises(ValueError, match=WORKSPACE_ROOT_UNAVAILABLE):
+        executor._operation_directory("openevolve-removed-")
+
+
+def test_prepare_maps_operation_child_failure_to_workspace_code(monkeypatch, tmp_path):
+    root = tmp_path / "operation-child-failure"
+    backend = _backend()
+    executor = IsolatedExecutor(_policy(), root)
+    monkeypatch.setattr(
+        "auto_researcher.search.openevolve.hardened_executor.tempfile.mkdtemp",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    result = executor.prepare(
+        _candidate(backend.component_spec.seed_source),
+        backend.component_spec,
+        _sandbox_policy(),
+        backend.component.seed_configuration(),
+    )
+    assert result.execution_status == CandidateExecutionStatus.FAILED
+    assert result.safe_error_code == WORKSPACE_ROOT_UNAVAILABLE
+    assert result.cleanup_complete is True
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+
+
+def test_workspace_root_supports_concurrent_operations(tmp_path):
+    root = tmp_path / "shared" / "executor"
+    executor = HardenedDockerExecutor(_policy(), root)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        operations = tuple(
+            pool.map(
+                lambda _: executor._operation_directory("openevolve-shared-"), range(8)
+            )
+        )
+    assert len(set(operations)) == 8
+    assert all(path.parent == root and path.is_dir() for path in operations)
+    for operation in operations:
+        _remove_operation(operation)
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+
+
+def test_workspace_root_identity_survives_empty_parent_recreation(tmp_path):
+    root = tmp_path / "resume" / "executor"
+    first = HardenedDockerExecutor(_policy(), root)
+    operation = first._operation_directory("openevolve-before-resume-")
+    _remove_operation(operation)
+    identity = first.workspace_root_identity
+    root.rmdir()
+
+    reconstructed = HardenedDockerExecutor(_policy(), root)
+    resumed_operation = reconstructed._operation_directory("openevolve-resumed-")
+    assert reconstructed.workspace_root_identity == identity
+    assert resumed_operation.parent == root
+    _remove_operation(resumed_operation)
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+
+
+def test_verify_isolation_materialises_missing_root_and_cleans_child(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "missing" / "isolation"
+    executor = HardenedDockerExecutor(_policy(), root)
+    monkeypatch.setattr(executor, "_inspect", lambda: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"{}\n", stderr=b""
+        ),
+    )
+    result = executor.verify_isolation()
+    assert result.safe_error_code == "hardened_executor_file_count_limit_unsupported"
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+
+
+def test_prepare_maps_failed_input_directory_creation_to_workspace_code(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "missing" / "prepare"
+    backend = _backend()
+    executor = IsolatedExecutor(_policy(), root)
+    original = Path.mkdir
+
+    def fail_input(path, *args, **kwargs):
+        if path.name == "input" and path.parent.parent == root:
+            raise PermissionError
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_input)
+    result = executor.prepare(
+        _candidate(backend.component_spec.seed_source),
+        backend.component_spec,
+        _sandbox_policy(),
+        backend.component.seed_configuration(),
+    )
+    assert result.execution_status == CandidateExecutionStatus.FAILED
+    assert result.safe_error_code == WORKSPACE_ROOT_UNAVAILABLE
+    assert result.cleanup_complete is True
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
 
 
 @pytest.mark.parametrize("stdout", [b"{}\n", b"{}\n{}\n", b"not-json\n"])

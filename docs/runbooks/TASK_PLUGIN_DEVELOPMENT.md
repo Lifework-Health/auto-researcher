@@ -43,6 +43,13 @@ handling. A future MRI plugin can expose one bounded loss, augmentation,
 thresholding, or model-block file through this interface, while training and
 data handling remain task-owned and immutable.
 
+Budget the immutable seed as a normal candidate evaluation. A serial
+population-one run with one evolved generation needs two experiment slots: one
+for the generation-zero baseline and one for the evolved candidate. The seed
+uses zero mutation-model calls. Keep `ResearchContract.maximum_experiments`,
+`SearchRequest.experiment_budget`, and the resulting
+`maximum_candidate_evaluations` consistent.
+
 For hardened execution, plugins declare finite CPU, memory, process, timeout,
 output, log, workspace-byte, individual-file and concurrent-entry limits. They
 must not assume `/tmp`, HOME or a host output mount is writable. Candidate

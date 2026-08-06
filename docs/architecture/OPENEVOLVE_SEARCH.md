@@ -4,18 +4,21 @@ OpenEvolve is a search backend inside the existing `run-execution-v2` graph. It 
 
 The task plugin owns the scientific surface: one declared mutable Python file, its seed source, immutable function signature, schemas, permitted imports, candidate-to-`ExperimentSpec` conversion, and optional mutation context. Core owns reservations, candidate and lineage identities, validation, preparation isolation, selection, replacement, stopping, and replay behavior. Evaluator code, verifier code, datasets and splits, contracts, objectives, budgets, policies, framework code, and hidden fixtures are immutable.
 
-The lifecycle is:
+The lifecycle deliberately establishes a measured baseline before mutation:
 
-1. validate the finite search contract and initialize the seed population;
-2. reserve a deterministic mutation birth index;
-3. obtain a complete source replacement from a deterministic or structured fake-model operator;
-4. validate the source and immutable interface;
-5. prepare the candidate in the configured bounded runner; untrusted/live-eligible execution requires hardened executor v2;
-6. derive an `ExperimentSpec` through the task plugin;
-7. use the existing evaluation and verification nodes;
-8. record the outcome and update population/lineage exactly once;
-9. stop deterministically or select the next parent;
-10. publish and verify the search bundle transactionally.
+1. validate the finite search contract and initialize the generation-zero seed;
+2. validate, prepare, evaluate, verify, and record that immutable seed;
+3. reserve a deterministic generation-one mutation birth index;
+4. obtain a complete source replacement from a deterministic or structured fake-model operator;
+5. validate the source and immutable interface;
+6. prepare the candidate in the configured bounded runner; untrusted/live-eligible execution requires hardened executor v2;
+7. derive an `ExperimentSpec` through the task plugin;
+8. use the existing evaluation and verification nodes;
+9. record the outcome and update population/lineage exactly once;
+10. stop deterministically or select the next parent;
+11. publish and verify the search bundle transactionally.
+
+`maximum_candidate_evaluations` includes every evaluated candidate, including the generation-zero seed. Consequently, a one-generation search that evaluates one evolved candidate requires two candidate evaluations: one seed baseline plus one evolved candidate. `SearchRequest.experiment_budget` and `ResearchContract.maximum_experiments` must fund the same total. A mutation-enabled budget of one is rejected before graph or executor construction rather than being silently increased or reinterpreted.
 
 Each lifecycle boundary is a LangGraph checkpoint boundary. Parallel population evaluation is intentionally deferred. A future MRI task may supply a loss, augmentation, thresholding, or model-block component and its own evaluator, but it must not require graph changes or grant candidates access to MRI data, training orchestration, or verifier internals.
 
