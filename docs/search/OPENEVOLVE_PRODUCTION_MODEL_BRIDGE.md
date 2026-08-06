@@ -19,6 +19,15 @@ runner. This permits the upstream adapter plus durable bridge and the exact
 hardened executor to be selected without a LangGraph branch or provider access
 inside upstream.
 
+New mutation calls use `openevolve-mutation-prompt-v2`. Its structured request
+derives the mutable file, allowed files, entry point, interface, source-size
+limit, import/dependency allowlists, and schemas from the task-owned component
+contract. Empty import or dependency lists are rendered explicitly as `NONE`.
+This guidance improves candidate compliance but does not replace authoritative
+static validation. Completed v1 records retain their original prompt and input
+identity for historical replay; new live approvals must bind prompt v2, and
+neither approval version authorises the other.
+
 Production assembly uses `build_approved_live_upstream_runtime`, which verifies
 the full adapter hash, executor policy hash, image digest, and all three isolation
 results before returning the paired adapter and `HardenedDockerExecutor`. A

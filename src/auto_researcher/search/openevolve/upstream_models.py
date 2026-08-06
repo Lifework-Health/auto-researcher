@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from auto_researcher.contracts.models import FrozenJsonDict
 
@@ -87,6 +87,41 @@ class UpstreamMutationEnvelope(AdapterModel):
     upstream_program_id: str | None = None
     dependency_requests: tuple[str, ...] = ()
     provider_configuration: FrozenJsonDict = Field(default_factory=dict)
+
+
+class MutationConstraints(AdapterModel):
+    protocol_version: Literal["openevolve-mutation-constraints-v2"] = (
+        "openevolve-mutation-constraints-v2"
+    )
+    mutable_file: str = Field(pattern=r"^[A-Za-z0-9_.-]+\.py$")
+    allowed_files: tuple[str, ...] = Field(min_length=1, max_length=8)
+    entry_point: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    immutable_interface_contract: str = Field(min_length=1)
+    maximum_source_bytes: int = Field(gt=0, le=1_000_000)
+    allowed_imports: tuple[str, ...] = ()
+    allowed_dependencies: tuple[str, ...] = ()
+    allowed_imports_display: str = Field(min_length=1)
+    allowed_dependencies_display: str = Field(min_length=1)
+    parameter_schema: FrozenJsonDict
+    output_schema: FrozenJsonDict
+
+    @model_validator(mode="after")
+    def displays_are_unambiguous_and_surface_is_single_file(
+        self,
+    ) -> "MutationConstraints":
+        imports = ", ".join(self.allowed_imports) if self.allowed_imports else "NONE"
+        dependencies = (
+            ", ".join(self.allowed_dependencies)
+            if self.allowed_dependencies
+            else "NONE"
+        )
+        if (
+            self.allowed_files != (self.mutable_file,)
+            or self.allowed_imports_display != imports
+            or self.allowed_dependencies_display != dependencies
+        ):
+            raise ValueError("openevolve_mutation_constraints_invalid")
+        return self
 
 
 class HardenedExecutorPolicy(AdapterModel):

@@ -38,7 +38,7 @@ from auto_researcher.tasks.synthetic import (
     default_synthetic_contract,
     default_synthetic_openevolve_configuration,
 )
-from auto_researcher.tasks.synthetic.openevolve import SEED_SOURCE
+from auto_researcher.tasks.synthetic.openevolve import SEED_SOURCE, TREE_SOURCE
 from tests.unit.test_openevolve_production_bridge import (
     NOW,
     approval_payload,
@@ -360,6 +360,36 @@ def test_rejected_first_mutation_continues_to_valid_second_mutation(tmp_path):
         if event.event_type.value.startswith("OPENEVOLVE_")
     ]
     assert len(openevolve_event_ids) == len(set(openevolve_event_ids))
+
+
+def test_two_compliant_v2_mutations_complete_the_two_generation_lifecycle(tmp_path):
+    runtime = _runtime(
+        tmp_path,
+        (
+            _response(TREE_SOURCE, "Compliant plain-Python tree mutation."),
+            _response(VALID_SOURCE, "Compliant plain-Python neural mutation."),
+        ),
+    )
+    final = _start(runtime)
+    _, _, provider, _, evaluator, verifier, *_ = runtime
+    population = final["openevolve_population_state"]
+
+    assert final["status"] == RunStatus.COMPLETED
+    assert provider.invocation_count == 2
+    assert evaluator.calls == verifier.calls == 3
+    assert population.budget.model_calls == 2
+    assert population.budget.candidate_evaluations == 3
+    assert population.budget.verifier_calls == 3
+    assert population.budget.failed_candidates == 0
+    assert population.budget.generations_used == 2
+    assert [item.objective_value for item in population.outcomes] == [
+        0.78,
+        0.84,
+        0.88,
+    ]
+    assert final["openevolve_search_result"].stop_reason == (
+        "maximum_candidate_evaluations_reached"
+    )
 
 
 def test_two_static_rejections_stop_normally_without_candidate_execution(tmp_path):

@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import os
 import json
+import copy
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -22,6 +23,8 @@ from auto_researcher.providers.protocols import ProviderCallError
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.live_models import (
     LiveMutationApproval,
+    OPENEVOLVE_MUTATION_PROMPT_V1,
+    OPENEVOLVE_MUTATION_PROMPT_V2,
     OpenEvolveModelBridgeContract,
     OpenEvolveModelCallContext,
     approval_content_hash,
@@ -30,6 +33,7 @@ from auto_researcher.search.openevolve.live_models import (
 from auto_researcher.search.openevolve.production_bridge import (
     DurableOpenEvolveModelBridge,
     LiveMutationBridgeError,
+    mutation_input_hash,
 )
 
 NOW = datetime(2030, 1, 1, tzinfo=UTC)
@@ -46,11 +50,14 @@ def pricing() -> ModelPricing:
     )
 
 
-def contract() -> OpenEvolveModelBridgeContract:
+def contract(
+    prompt_version: str = OPENEVOLVE_MUTATION_PROMPT_V2,
+) -> OpenEvolveModelBridgeContract:
     return OpenEvolveModelBridgeContract.model_validate(
         {
             "mutation_operator_id": "pinned-upstream-openevolve",
             "mutation_operator_version": "upstream-openevolve-adapter-v1",
+            "prompt_version": prompt_version,
             "maximum_input_bytes": 20_000,
             "model_config": ModelCallConfig(
                 provider="fake-production",
@@ -61,7 +68,7 @@ def contract() -> OpenEvolveModelBridgeContract:
                 maximum_attempts=1,
                 maximum_cost_per_call=0.02,
                 pricing=pricing(),
-                prompt_version="openevolve-mutation-prompt-v1",
+                prompt_version=prompt_version,
             ),
         }
     )
@@ -109,7 +116,7 @@ def approval_payload(**updates):
         "provider": "fake-production",
         "model_id": "fake-model-20260101",
         "prompt_id": "openevolve-mutation",
-        "prompt_version": "openevolve-mutation-prompt-v1",
+        "prompt_version": OPENEVOLVE_MUTATION_PROMPT_V2,
         "mutation_operator_version": "upstream-openevolve-adapter-v1",
         "maximum_model_calls": 1,
         "maximum_input_tokens": 4_000,
@@ -134,12 +141,30 @@ def approval(**updates) -> LiveMutationApproval:
     return LiveMutationApproval.model_validate(approval_payload(**updates))
 
 
-REQUEST = {
+LEGACY_REQUEST = {
     "protocol": "upstream-adapter-mutation-request-v1",
     "parent": {"id": "seed", "code": "def run(x): return x", "generation": 0},
     "mutable_file": "candidate.py",
     "interface_contract": "run(x)",
     "maximum_source_bytes": 1_000,
+}
+REQUEST = {
+    **LEGACY_REQUEST,
+    "protocol": "upstream-adapter-mutation-request-v2",
+    "mutation_constraints": {
+        "protocol_version": "openevolve-mutation-constraints-v2",
+        "mutable_file": "candidate.py",
+        "allowed_files": ["candidate.py"],
+        "entry_point": "run",
+        "immutable_interface_contract": "run(x)",
+        "maximum_source_bytes": 1_000,
+        "allowed_imports": [],
+        "allowed_dependencies": [],
+        "allowed_imports_display": "NONE",
+        "allowed_dependencies_display": "NONE",
+        "parameter_schema": {"x": "any"},
+        "output_schema": {"result": "any"},
+    },
 }
 OUTPUT = {
     "protocol_version": "upstream-mutation-envelope-v1",
@@ -175,7 +200,7 @@ class FakeProvider:
             latency_ms=2,
             provider_request_id="fake-request-1",
             finish_reason="end_turn",
-            prompt_version="openevolve-mutation-prompt-v1",
+            prompt_version=kwargs["call_config"].prompt_version,
             context_hash=kwargs["context_hash"],
             response_hash=payload_hash(OUTPUT),
         )
@@ -202,6 +227,7 @@ def test_completion_is_durable_and_replays_without_provider_credentials(tmp_path
     first_store.close()
     assert result == OUTPUT
     assert len(calls) == 1
+    assert reservation.prompt_version == OPENEVOLVE_MUTATION_PROMPT_V2
 
     reopened = SQLiteAgentCallStore(path)
     replayed, same = bridge(reopened, calls, factory=False).complete(
@@ -217,6 +243,151 @@ def test_completion_is_durable_and_replays_without_provider_credentials(tmp_path
         AgentCallStatus.DISPATCHING,
         AgentCallStatus.COMPLETED,
     ]
+
+
+@pytest.mark.parametrize(
+    ("approval_version", "contract_version"),
+    [
+        (OPENEVOLVE_MUTATION_PROMPT_V1, OPENEVOLVE_MUTATION_PROMPT_V2),
+        (OPENEVOLVE_MUTATION_PROMPT_V2, OPENEVOLVE_MUTATION_PROMPT_V1),
+    ],
+)
+def test_prompt_version_approval_mismatches_fail_both_directions(
+    approval_version, contract_version
+):
+    with pytest.raises(ValueError, match="live_mutation_approval_mismatch"):
+        validate_approval(
+            approval(prompt_version=approval_version),
+            context(),
+            contract(contract_version),
+            now=NOW,
+        )
+
+
+def test_constraint_and_prompt_versions_are_structured_input_identity_bearing():
+    baseline = mutation_input_hash(REQUEST, OPENEVOLVE_MUTATION_PROMPT_V2)
+    fields = (
+        "mutable_file",
+        "immutable_interface_contract",
+        "allowed_imports",
+        "allowed_dependencies",
+        "maximum_source_bytes",
+        "parameter_schema",
+        "output_schema",
+    )
+    changed_hashes = set()
+    for field in fields:
+        changed = copy.deepcopy(REQUEST)
+        constraints = changed["mutation_constraints"]
+        if field == "mutable_file":
+            changed["mutable_file"] = constraints[field] = "alternate.py"
+            constraints["allowed_files"] = ["alternate.py"]
+        elif field == "immutable_interface_contract":
+            changed["interface_contract"] = constraints[field] = "run(y)"
+        elif field == "maximum_source_bytes":
+            changed["maximum_source_bytes"] = constraints[field] = 999
+        elif field in {"allowed_imports", "allowed_dependencies"}:
+            constraints[field] = ["math"]
+            constraints[f"{field}_display"] = "math"
+        else:
+            constraints[field] = {"changed": True}
+        changed_hashes.add(mutation_input_hash(changed, OPENEVOLVE_MUTATION_PROMPT_V2))
+    assert baseline not in changed_hashes
+    assert len(changed_hashes) == len(fields)
+    assert mutation_input_hash(LEGACY_REQUEST, OPENEVOLVE_MUTATION_PROMPT_V1) != (
+        mutation_input_hash(LEGACY_REQUEST, OPENEVOLVE_MUTATION_PROMPT_V2)
+    )
+
+
+def test_v1_completion_replays_with_original_identity_and_no_provider(tmp_path):
+    prompt = (
+        Path(__file__).parents[2]
+        / "src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v1.md"
+    ).read_text(encoding="utf-8")
+    assert payload_hash(prompt) == (
+        "74e04df133520ab0f0ca7ff5a723f63549f0d88055dcf13a23fff503ae25c3a5"
+    )
+    path = tmp_path / "v1-calls.sqlite"
+    calls: list[str] = []
+    v1_approval = approval(prompt_version=OPENEVOLVE_MUTATION_PROMPT_V1)
+    first_store = SQLiteAgentCallStore(path)
+    first = DurableOpenEvolveModelBridge(
+        contract=contract(OPENEVOLVE_MUTATION_PROMPT_V1),
+        context=context(),
+        approval=v1_approval,
+        store=first_store,
+        provider_factory=lambda: FakeProvider(calls),
+        now=lambda: NOW,
+        system_prompt=prompt,
+    )
+    source, reservation = first.complete(LEGACY_REQUEST, "mutation-v1")
+    original_records = tuple(first_store.list_records())
+    first_store.close()
+    assert len(calls) == 1
+
+    reopened = SQLiteAgentCallStore(path)
+    replay = DurableOpenEvolveModelBridge(
+        contract=contract(OPENEVOLVE_MUTATION_PROMPT_V1),
+        context=context(),
+        approval=v1_approval,
+        store=reopened,
+        provider_factory=None,
+        now=lambda: NOW,
+        system_prompt=prompt,
+    )
+    replayed, same = replay.complete(LEGACY_REQUEST, "mutation-v1")
+    assert replayed == source == OUTPUT
+    assert same == reservation
+    assert same.prompt_version == OPENEVOLVE_MUTATION_PROMPT_V1
+    assert tuple(reopened.list_records()) == original_records
+    assert len(calls) == 1
+
+
+def test_v1_and_v2_call_identities_cannot_cross_reuse(tmp_path):
+    call_ids = []
+    for version, request in (
+        (OPENEVOLVE_MUTATION_PROMPT_V1, LEGACY_REQUEST),
+        (OPENEVOLVE_MUTATION_PROMPT_V2, REQUEST),
+    ):
+        store = SQLiteAgentCallStore(tmp_path / f"{version}.sqlite")
+        item = DurableOpenEvolveModelBridge(
+            contract=contract(version),
+            context=context(),
+            approval=approval(prompt_version=version),
+            store=store,
+            provider_factory=lambda: FakeProvider([]),
+            now=lambda: NOW,
+            system_prompt=f"bounded prompt for {version}",
+        )
+        _, reservation = item.complete(request, "same-mutation")
+        call_ids.append(reservation.reservation_id)
+    assert call_ids[0] != call_ids[1]
+
+
+def test_rendered_v2_prompt_is_never_persisted(tmp_path):
+    prompt = (
+        Path(__file__).parents[2]
+        / "src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v2.md"
+    ).read_text(encoding="utf-8")
+    assert payload_hash(prompt) == (
+        "4ead06957a06f470578357b3d8b74a0c3ee6eca2027bf01cfff378ebc4a26ce6"
+    )
+    store = SQLiteAgentCallStore(tmp_path / "calls.sqlite")
+    item = DurableOpenEvolveModelBridge(
+        contract=contract(),
+        context=context(),
+        approval=approval(),
+        store=store,
+        provider_factory=lambda: FakeProvider([]),
+        now=lambda: NOW,
+        system_prompt=prompt,
+    )
+    item.complete(REQUEST, "mutation-v2")
+    persisted = "\n".join(record.model_dump_json() for record in store.list_records())
+    assert prompt not in persisted
+    assert "The component contract in the request is authoritative" not in persisted
+    assert OPENEVOLVE_MUTATION_PROMPT_V2 in persisted
+    assert payload_hash(prompt) in persisted
 
 
 def test_provider_factory_failure_is_known_before_invocation(tmp_path):
@@ -443,8 +614,12 @@ def test_tampered_completed_payload_fails_without_provider_construction(tmp_path
     assert constructions == 0
 
 
+@pytest.mark.parametrize(
+    "prompt_version",
+    [OPENEVOLVE_MUTATION_PROMPT_V1, OPENEVOLVE_MUTATION_PROMPT_V2],
+)
 def test_checkpoint_05b_offline_completion_reuse_precedes_candidate_evaluation(
-    tmp_path,
+    tmp_path, prompt_version
 ):
     pytest.importorskip("openevolve", reason="pinned optional dependency absent")
     from dataclasses import replace
@@ -463,6 +638,7 @@ def test_checkpoint_05b_offline_completion_reuse_precedes_candidate_evaluation(
     from auto_researcher.search.openevolve.upstream import (
         UpstreamOpenEvolveAdapter,
         default_adapter_contract,
+        mutation_constraints,
     )
     from auto_researcher.tasks.models import TaskRuntimeContext
     from auto_researcher.tasks.synthetic import (
@@ -533,6 +709,7 @@ def test_checkpoint_05b_offline_completion_reuse_precedes_candidate_evaluation(
             component_id=component.component_id,
             component_version=component.component_version,
             adapter_identity_hash=adapter_hash,
+            prompt_version=prompt_version,
         )
     )
     bridge_context = context().model_copy(
@@ -566,7 +743,7 @@ def test_checkpoint_05b_offline_completion_reuse_precedes_candidate_evaluation(
         response=response,
     )
     first_bridge = DurableOpenEvolveModelBridge(
-        contract=contract(),
+        contract=contract(prompt_version),
         context=bridge_context,
         approval=approval_item,
         store=first_store,
@@ -598,6 +775,15 @@ def test_checkpoint_05b_offline_completion_reuse_precedes_candidate_evaluation(
         "interface_contract": component.immutable_interface_contract,
         "maximum_source_bytes": component.maximum_source_bytes,
     }
+    if prompt_version == OPENEVOLVE_MUTATION_PROMPT_V2:
+        model_request.update(
+            {
+                "protocol": "upstream-adapter-mutation-request-v2",
+                "mutation_constraints": mutation_constraints(component).model_dump(
+                    mode="json"
+                ),
+            }
+        )
     _, persisted = first_bridge.complete(model_request, reservation.reservation_id)
     model_records = tuple(first_store.list_records())
     first_store.close()
@@ -605,7 +791,7 @@ def test_checkpoint_05b_offline_completion_reuse_precedes_candidate_evaluation(
 
     reopened = SQLiteAgentCallStore(call_path)
     reconstructed_bridge = DurableOpenEvolveModelBridge(
-        contract=contract(),
+        contract=contract(prompt_version),
         context=bridge_context,
         approval=approval_item,
         store=reopened,
@@ -631,6 +817,7 @@ def test_checkpoint_05b_offline_completion_reuse_precedes_candidate_evaluation(
     )
     assert candidate_again.candidate_id == candidate.candidate_id
     assert candidate.model_call_id == persisted.reservation_id
+    assert persisted.prompt_version == prompt_version
     assert tuple(reopened.list_records()) == model_records
     assert provider.invocation_count == 1
 
