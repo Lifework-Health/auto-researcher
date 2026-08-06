@@ -258,6 +258,21 @@ def test_hardened_executor_bounds_excessive_candidate_stdout(tmp_path):
     assert len(result.safe_log_excerpt.encode()) <= 128
 
 
+def test_hardened_executor_drains_simultaneous_large_logs_and_valid_control(tmp_path):
+    source = """import sys
+def evolve(configuration):
+ print("o"*20000)
+ print("e"*20000, file=sys.stderr)
+ return configuration
+"""
+    result = _prepare_source(source, tmp_path, log_bytes=128)
+    assert result.execution_status == CandidateExecutionStatus.COMPLETED
+    assert result.generated_configuration["model_family"] == "linear"
+    assert result.log_truncated is True
+    assert len(result.safe_log_excerpt.encode()) <= 128
+    assert result.cleanup_complete is True
+
+
 def test_hardened_executor_applies_structured_output_limit(tmp_path):
     source = """def evolve(configuration):
  return {"payload":"x"*2000}
