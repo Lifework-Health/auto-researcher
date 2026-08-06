@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import SearchRequest
 from auto_researcher.runtime.dependencies import memory_dependencies
+from auto_researcher.runtime.dependencies import task_memory_dependencies
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
 from auto_researcher.search.openevolve.identity import (
     candidate_id,
@@ -28,9 +29,11 @@ from auto_researcher.search.openevolve.mutation import FakeModelMutationOperator
 from auto_researcher.search.openevolve.validation import validate_candidate
 from auto_researcher.tasks.synthetic import (
     SyntheticEvolvableComponent,
+    SyntheticTask,
     default_synthetic_contract,
     default_synthetic_openevolve_configuration,
 )
+from auto_researcher.tasks.models import TaskRuntimeContext
 
 
 def _backend() -> OpenEvolveBackend:
@@ -136,6 +139,93 @@ def test_invalid_open_evolve_contract_is_rejected(change, code):
 def test_candidate_budget_cannot_exceed_research_contract():
     with pytest.raises(ValueError, match="candidate_budget_exceeds_contract"):
         _backend().create_search_contract(_request(budget=4), _contract(3))
+
+
+def test_mutation_enabled_search_requires_seed_plus_evolved_evaluation():
+    configuration = default_synthetic_openevolve_configuration()
+    configuration["openevolve"]["maximum_generations"] = 1
+    with pytest.raises(
+        ValueError, match="openevolve_mutation_evaluation_budget_too_small"
+    ):
+        _backend().create_search_contract(
+            _request(configuration, budget=1),
+            _contract(maximum_experiments=1),
+        )
+
+
+def test_two_evaluations_fund_seed_and_one_evolved_candidate():
+    configuration = default_synthetic_openevolve_configuration()
+    configuration["openevolve"].update(
+        {"maximum_generations": 1, "maximum_model_calls": 0}
+    )
+    search = _backend().create_search_contract(
+        _request(configuration, budget=2),
+        _contract(maximum_experiments=2),
+    )
+    assert search.maximum_candidate_evaluations == 2
+    assert search.maximum_generations == 1
+
+
+def test_model_call_budget_must_fund_one_enabled_mutation():
+    internal = _backend()
+    backend = OpenEvolveBackend(
+        internal.component,
+        internal.metadata,
+        internal.verifier_identity,
+        FakeModelMutationOperator(_FakeMutationClient()),
+        internal.sandbox_runner,
+    )
+    configuration = default_synthetic_openevolve_configuration()
+    configuration["openevolve"].update(
+        {"maximum_generations": 1, "maximum_model_calls": 0}
+    )
+    with pytest.raises(ValueError, match="openevolve_model_call_budget_too_small"):
+        backend.create_search_contract(
+            _request(configuration, budget=2),
+            _contract(maximum_experiments=2),
+        )
+
+
+def test_runtime_dependency_preflight_rejects_unreachable_mutation_without_effects():
+    class Mutation:
+        operator_id = "preflight-mutation"
+        operator_version = "preflight-v1"
+        model_calls_per_mutation = 1
+        provenance = "FAKE_MODEL"
+        calls = 0
+
+        def mutate(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("budget preflight allowed mutation")
+
+    class Runner:
+        runner_id = "openevolve-sandbox-v1"
+        calls = 0
+
+        def prepare(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("budget preflight allowed preparation")
+
+    mutation = Mutation()
+    runner = Runner()
+    configuration = default_synthetic_openevolve_configuration()
+    configuration["openevolve"].update(
+        {"maximum_generations": 1, "maximum_model_calls": 1}
+    )
+    with pytest.raises(
+        ValueError, match="openevolve_mutation_evaluation_budget_too_small"
+    ):
+        task_memory_dependencies(
+            SyntheticTask(),
+            TaskRuntimeContext(),
+            _contract(maximum_experiments=1),
+            configuration,
+            search_type=SearchType.OPENEVOLVE,
+            openevolve_mutation_operator=mutation,
+            openevolve_sandbox_runner=runner,
+        )
+    assert mutation.calls == 0
+    assert runner.calls == 0
 
 
 def test_component_surface_is_exactly_one_safe_file():

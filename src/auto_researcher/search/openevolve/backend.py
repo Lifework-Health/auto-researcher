@@ -181,6 +181,11 @@ class OpenEvolveBackend:
             ),
         )
         if (
+            search_contract.maximum_generations >= 1
+            and search_contract.maximum_candidate_evaluations < 2
+        ):
+            raise ValueError("openevolve_mutation_evaluation_budget_too_small")
+        if (
             search_contract.maximum_model_calls
             < self.mutation_operator.model_calls_per_mutation
         ):

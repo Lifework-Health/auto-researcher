@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -27,6 +29,7 @@ from auto_researcher.search.openevolve.upstream_models import (
 
 WORKER_PROTOCOL = "openevolve-hardened-worker-result-v2"
 WORKSPACE_POLICY = "openevolve-workspace-policy-v1"
+WORKSPACE_ROOT_UNAVAILABLE = "hardened_executor_workspace_root_unavailable"
 
 
 def file_hash(path: Path) -> str:
@@ -59,7 +62,70 @@ class HardenedDockerExecutor:
         self, policy: HardenedExecutorPolicy, workspace_root: Path | None = None
     ):
         self.policy = policy
-        self.workspace_root = workspace_root
+        self.workspace_root = (
+            Path(os.path.abspath(os.fspath(workspace_root)))
+            if workspace_root is not None
+            else None
+        )
+        self.workspace_root_identity = (
+            payload_hash(
+                {
+                    "domain": "openevolve-hardened-workspace-root-v1",
+                    "normalised_path": os.fspath(self.workspace_root),
+                }
+            )
+            if self.workspace_root is not None
+            else None
+        )
+
+    def _ensure_workspace_root(self) -> Path | None:
+        """Materialise and validate the trusted host-side operation parent."""
+
+        if self.workspace_root is None:
+            return None
+        root = self.workspace_root
+        try:
+            missing: list[Path] = []
+            cursor = root
+            while not os.path.lexists(cursor):
+                missing.append(cursor)
+                parent = cursor.parent
+                if parent == cursor:
+                    break
+                cursor = parent
+            for directory in reversed(missing):
+                try:
+                    directory.mkdir(mode=0o700)
+                except FileExistsError:
+                    pass
+            root_stat = root.lstat()
+            if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+                raise OSError
+            if not os.access(root, os.W_OK | os.X_OK):
+                raise OSError
+            flags = os.O_RDONLY
+            flags |= getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(root, flags)
+            try:
+                opened = os.fstat(descriptor)
+                if not stat.S_ISDIR(opened.st_mode) or (
+                    opened.st_dev,
+                    opened.st_ino,
+                ) != (root_stat.st_dev, root_stat.st_ino):
+                    raise OSError
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError):
+            raise ValueError(WORKSPACE_ROOT_UNAVAILABLE) from None
+        return root
+
+    def _operation_directory(self, prefix: str) -> Path:
+        try:
+            root = self._ensure_workspace_root()
+            return Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+        except (OSError, ValueError):
+            raise ValueError(WORKSPACE_ROOT_UNAVAILABLE) from None
 
     def _inspect(self) -> None:
         if shutil.which("docker") is None:
@@ -204,12 +270,13 @@ class HardenedDockerExecutor:
 
     def verify_isolation(self) -> ExecutorIsolationResult:
         self._inspect()
-        root = Path(
-            tempfile.mkdtemp(prefix="openevolve-isolation-", dir=self.workspace_root)
-        )
+        root = self._operation_directory("openevolve-isolation-")
         try:
             inputs = root / "input"
-            inputs.mkdir()
+            try:
+                inputs.mkdir()
+            except OSError:
+                raise ValueError(WORKSPACE_ROOT_UNAVAILABLE) from None
             policy = SandboxPolicy(
                 policy_id=self.runner_id,
                 cpu_time_seconds=2,
@@ -415,12 +482,26 @@ class HardenedDockerExecutor:
                 raise ValueError(isolation.safe_error_code)
         except ValueError as exc:
             return self._failure(candidate, started, str(exc), evidence=base_evidence)
-        root = Path(
-            tempfile.mkdtemp(prefix="openevolve-hardened-", dir=self.workspace_root)
-        )
+        try:
+            root = self._operation_directory("openevolve-hardened-")
+        except ValueError:
+            return self._failure(
+                candidate,
+                started,
+                WORKSPACE_ROOT_UNAVAILABLE,
+                evidence=base_evidence,
+            )
         try:
             inputs = root / "input"
-            inputs.mkdir()
+            try:
+                inputs.mkdir()
+            except OSError:
+                return self._failure(
+                    candidate,
+                    started,
+                    WORKSPACE_ROOT_UNAVAILABLE,
+                    evidence=base_evidence,
+                )
             (inputs / component.mutable_file).write_text(
                 candidate.source_payload.replace("\r\n", "\n"),
                 encoding="utf-8",

@@ -127,6 +127,66 @@ def test_real_hardened_executor_proves_isolation_and_prepares_candidate():
     assert result.output_references[0].startswith("executor-policy:")
 
 
+def test_real_hardened_executor_materialises_missing_nested_root(tmp_path):
+    workspace_root = tmp_path / "missing" / "nested" / "executor"
+    executor = _executor(workspace_root)
+    isolation = executor.verify_isolation()
+    assert isolation.network_isolation_verified is True
+    assert isolation.mount_isolation_verified is True
+    assert workspace_root.is_dir()
+    assert list(workspace_root.iterdir()) == []
+
+    internal = _backend()
+    backend = OpenEvolveBackend(
+        internal.component,
+        internal.metadata,
+        internal.verifier_identity,
+        internal.mutation_operator,
+        executor,
+    )
+    configuration = {
+        "openevolve": {
+            **dict(_request().search_space["openevolve"]),
+            "sandbox_policy_id": "openevolve-hardened-executor-v2",
+        }
+    }
+    search = backend.create_search_contract(_request(configuration), _contract())
+    result = backend.prepare(backend.seed_candidate(search), search)
+    assert result.execution_status == CandidateExecutionStatus.COMPLETED
+    assert workspace_root.is_dir()
+    assert list(workspace_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_real_hardened_executor_rejects_invalid_root_before_container(
+    monkeypatch, tmp_path, kind
+):
+    workspace_root = tmp_path / "invalid-root"
+    if kind == "file":
+        workspace_root.write_text("not a directory", encoding="utf-8")
+    else:
+        target = tmp_path / "target"
+        target.mkdir()
+        workspace_root.symlink_to(target, target_is_directory=True)
+    executor = _executor(workspace_root)
+    real_run = subprocess.run
+    container_starts = 0
+
+    def count_runs(*args, **kwargs):
+        nonlocal container_starts
+        command = args[0]
+        if command[:2] == ["docker", "run"]:
+            container_starts += 1
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", count_runs)
+    with pytest.raises(
+        ValueError, match="hardened_executor_workspace_root_unavailable"
+    ):
+        executor.verify_isolation()
+    assert container_starts == 0
+
+
 def test_hardened_executor_rejects_image_drift():
     executor = _executor()
     executor = HardenedDockerExecutor(
