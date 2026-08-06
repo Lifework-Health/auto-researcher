@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from auto_researcher.runtime.checkpoints import (
+    checkpoint_serializer,
+    sqlite_checkpointer,
+)
+from auto_researcher.runtime.execution import (
+    RunExecutionError,
+    inspect_terminal_run,
+    resume_run,
+    start_run,
+)
 from auto_researcher.runtime.identity import payload_hash
-from auto_researcher.runtime.checkpoints import checkpoint_serializer
 from auto_researcher.search.openevolve.hardened_executor import (
     HardenedDockerExecutor,
     docker_policy,
@@ -19,6 +30,10 @@ from auto_researcher.search.openevolve.models import (
     CandidateValidationStatus,
 )
 from auto_researcher.search.openevolve.upstream_models import ExecutorIsolationResult
+from tests.unit.test_checkpoint_serialization import (
+    _terminal_fixture,
+    _write_checkpoint,
+)
 from tests.unit.test_openevolve_contracts import (
     _backend,
     _candidate,
@@ -190,6 +205,72 @@ def test_executor_v2_preparation_evidence_reconstructs_and_tamper_fails():
         )
         is False
     )
+
+
+def test_terminal_v2_preparation_inspection_is_read_only_and_never_constructs_docker(
+    monkeypatch, tmp_path
+):
+    executor = HardenedDockerExecutor(_policy())
+    sandbox = _sandbox_policy()
+    preparation = CandidatePreparationResult(
+        protocol_version="candidate-preparation-v2",
+        candidate_id="candidate-terminal-v2",
+        validation_status=CandidateValidationStatus.VALID,
+        execution_status=CandidateExecutionStatus.COMPLETED,
+        cleanup_complete=True,
+        executor_id=executor.runner_id,
+        executor_policy_identity=payload_hash(executor.policy),
+        execution_request_identity="1" * 64,
+        workspace_policy_identity="2" * 64,
+        worker_protocol_version="openevolve-hardened-worker-result-v2",
+        supervisor_identity=executor.policy.entrypoint_hash,
+        image_digest=executor.policy.image_digest,
+        declared_file_count_limit=sandbox.file_count_limit,
+        derived_inode_limit=sandbox.file_count_limit + 1,
+        workspace_bytes_limit=sandbox.workspace_bytes,
+        file_size_bytes_limit=sandbox.file_size_bytes,
+    )
+    state, initial, config = _terminal_fixture()
+    state["openevolve_preparation_result"] = preparation
+    checkpoint = tmp_path / "terminal-v2.sqlite"
+    _write_checkpoint(checkpoint, state)
+    before_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    before_mtime = checkpoint.stat().st_mtime_ns
+    saver, connection = sqlite_checkpointer(checkpoint)
+
+    class View:
+        def get_state(self, runtime_config):
+            item = saver.get_tuple(runtime_config)
+            values = item.checkpoint["channel_values"] if item else {}
+            return SimpleNamespace(values=values)
+
+        def invoke(self, *args, **kwargs):
+            raise AssertionError("terminal guard allowed graph execution")
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("INSPECT attempted Docker or another subprocess")
+        ),
+    )
+    view = View()
+    first = inspect_terminal_run(view, config)
+    second = inspect_terminal_run(view, config)
+    assert payload_hash(first) == payload_hash(second) == payload_hash(state)
+    assert type(first["openevolve_preparation_result"]) is CandidatePreparationResult
+    assert first["openevolve_preparation_result"].protocol_version == (
+        "candidate-preparation-v2"
+    )
+    with pytest.raises(
+        RunExecutionError, match="thread_already_exists_use_resume_or_inspect"
+    ):
+        start_run(view, initial, config)
+    with pytest.raises(RunExecutionError, match="thread_is_terminal_use_inspect"):
+        resume_run(view, config)
+    connection.close()
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == before_hash
+    assert checkpoint.stat().st_mtime_ns == before_mtime
 
 
 def test_executor_policy_identity_is_cross_process_deterministic():
