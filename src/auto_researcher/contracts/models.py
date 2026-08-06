@@ -184,7 +184,7 @@ class Hypothesis(ImmutableDomainModel):
     hypothesis_id: str = Field(min_length=1)
     statement: str = Field(min_length=1)
     rationale: str = Field(min_length=1)
-    predicted_subspace: dict[str, JsonValue]
+    predicted_subspace: FrozenJsonDict
     expected_observation: str = Field(min_length=1)
     falsification_condition: str = Field(min_length=1)
     evidence_references: tuple[str, ...] = ()

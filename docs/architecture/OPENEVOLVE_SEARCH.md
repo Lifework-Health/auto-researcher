@@ -22,6 +22,14 @@ The lifecycle deliberately establishes a measured baseline before mutation:
 
 Each lifecycle boundary is a LangGraph checkpoint boundary. Parallel population evaluation is intentionally deferred. A future MRI task may supply a loss, augmentation, thresholding, or model-block component and its own evaluator, but it must not require graph changes or grant candidates access to MRI data, training orchestration, or verifier internals.
 
+Hypotheses and search requests are stable lifecycle facts across every candidate
+cycle. Their generic provenance event IDs are derived from their semantic keys, so
+repeated recording of unchanged content is idempotent even when a caller's fallback
+ID generator is prefix-stable. A changed scientific payload under the same semantic
+identity still fails closed. Nested hypothesis search-space content is recursively
+immutable, and candidate-specific state is recorded only through the distinct
+OpenEvolve candidate and generation event identities.
+
 Model judgement is permitted only inside a configured mutation operator that proposes the declared source replacement. The graph, identities, validation, budgets, eligibility, ranking, replacement, stopping, evaluation, and verification remain deterministic and authoritative. PR 6 uses deterministic and fake-model operators only.
 
 Hardened executor v2 does not change graph topology. It replaces only candidate preparation: immutable host input plus one private inode-limited tmpfs, a fixed supervisor/child boundary, and a strict pipe-framed result. Preparation evidence binds executor, workspace, image and request identities so v1 results cannot be reconstructed as v2.
