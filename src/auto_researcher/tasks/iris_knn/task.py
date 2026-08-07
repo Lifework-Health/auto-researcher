@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import JsonValue
 
 from auto_researcher.agents.models import TaskAgentContext
@@ -51,6 +53,11 @@ from auto_researcher.tasks.models import (
 class IrisKNNTask:
     task_id = "iris_knn"
     task_version = "1.0"
+
+    def live_mutation_dataset_class(self) -> Literal["public_benchmark"]:
+        """Classify only this fixed, non-patient, host-evaluated benchmark."""
+
+        return "public_benchmark"
 
     def descriptor(self) -> TaskDescriptor:
         return TaskDescriptor(

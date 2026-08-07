@@ -31,6 +31,13 @@ from auto_researcher.search.openevolve.upstream_models import (
 from auto_researcher.search.openevolve.hardened_executor import (
     HardenedDockerExecutor,
 )
+from auto_researcher.search.openevolve.live_dataset import (
+    ALLOWED_LIVE_MUTATION_DATASET_CLASSES,
+)
+from auto_researcher.tasks.protocols import (
+    LiveMutationDatasetClassCapableTask,
+    ResearchTask,
+)
 
 DISABLED_UPSTREAM_FEATURES = (
     "controller",
@@ -341,12 +348,27 @@ def build_approved_live_upstream_runtime(
     executor_policy: HardenedExecutorPolicy,
     isolation: ExecutorIsolationResult,
     *,
+    task: ResearchTask,
     workspace_root: Path | None = None,
 ) -> tuple[UpstreamOpenEvolveAdapter, HardenedDockerExecutor]:
     """Pair the durable bridge only with the exact approved hardened runner."""
 
     if bridge.approval is None:
         raise ValueError("live_mutation_approval_required")
+    if not isinstance(task, LiveMutationDatasetClassCapableTask):
+        raise ValueError("live_mutation_dataset_class_unavailable")
+    dataset_class = task.live_mutation_dataset_class()
+    if dataset_class not in ALLOWED_LIVE_MUTATION_DATASET_CLASSES:
+        raise ValueError("live_mutation_dataset_class_unavailable")
+    if (
+        task.task_id != bridge.context.task_id
+        or task.task_version != bridge.context.task_version
+        or task.task_id != bridge.approval.task_id
+        or task.task_version != bridge.approval.task_version
+        or dataset_class != bridge.context.dataset_class
+        or dataset_class != bridge.approval.permitted_dataset_class
+    ):
+        raise ValueError("live_mutation_approval_mismatch")
     adapter_hash = payload_hash(adapter_contract)
     if (
         bridge.context.adapter_identity_hash != adapter_hash
