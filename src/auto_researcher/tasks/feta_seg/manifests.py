@@ -43,9 +43,9 @@ class FeTASubject:
             "segmentation_identity": self.segmentation_path.name,
             "image_sha256": self.image_sha256,
             "segmentation_sha256": self.segmentation_sha256,
-            "shape": self.shape,
-            "spacing": self.spacing,
-            "labels": self.labels,
+            "shape": list(self.shape),
+            "spacing": list(self.spacing),
+            "labels": list(self.labels),
         }
 
 
