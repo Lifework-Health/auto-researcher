@@ -52,9 +52,11 @@ class TaskRegistry:
 def default_task_registry() -> TaskRegistry:
     """Built-ins remain importable even when optional iCCA dependencies are absent."""
     from auto_researcher.tasks.icca_nbs import ICCANBSTask
+    from auto_researcher.tasks.iris_knn import IrisKNNTask
     from auto_researcher.tasks.synthetic import SyntheticTask
 
     registry = TaskRegistry()
     registry.register(SyntheticTask)
+    registry.register(IrisKNNTask)
     registry.register(ICCANBSTask)
     return registry

@@ -1,0 +1,37 @@
+task:
+  id: iris_knn
+  version: "1.0"
+
+agents:
+  mode: mock
+
+search:
+  type: OPENEVOLVE
+  openevolve:
+    population_size: 1
+    maximum_generations: 2
+    maximum_candidate_evaluations: 3
+    maximum_wall_time_seconds: 30.0
+    maximum_model_calls: 0
+    maximum_failed_candidates: 2
+    maximum_consecutive_failures: 2
+    maximum_artefact_bytes: 2000000
+    random_seed: 20260807
+    objective_direction: MAXIMIZE
+    objective_threshold: null
+    sandbox_policy_id: openevolve-sandbox-v1
+    evaluator_identity: iris-weighted-knn-evaluator@iris-weighted-knn-task-1.0+dataset-uci-iris-bezdek-2023-05-22-v1+fold-iris-stratified-5fold-v1+train-fold-zscore-v1+weighted-minkowski-v1+vote-count-then-distance-then-class-v1+mean-five-fold-balanced-accuracy-v1+scientific-json-v1+experiment-bundle-v2
+    verifier_identity: deterministic-verifier-v1@iris-knn-evidence-policy-v1
+    candidate_cpu_time_seconds: 2
+    candidate_wall_time_seconds: 3.0
+    candidate_memory_bytes: 268435456
+    candidate_process_limit: 1
+    candidate_output_bytes: 64000
+    candidate_log_bytes: 8000
+    candidate_file_count_limit: 8
+    candidate_workspace_bytes: 1048576
+    candidate_file_size_bytes: 64000
+
+runtime:
+  output_dir: .auto-researcher
+  workspace_dir: .auto-researcher/iris-openevolve-workspace

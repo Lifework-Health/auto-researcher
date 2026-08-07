@@ -1,0 +1,25 @@
+contract_id: iris-knn-benchmark-contract
+schema_version: "1.0"
+task_id: iris_knn
+task_version: "1.0"
+objective_version: iris-balanced-accuracy-v1
+primary_metric: mean_balanced_accuracy
+task_constraints_version: iris-knn-configuration-v1
+question: Which bounded weighted k-NN configuration maximises fixed-fold Iris balanced accuracy?
+objective: maximise mean five-fold balanced accuracy on the fixed Iris folds
+constraints:
+  dataset_version: uci-iris-bezdek-2023-05-22-v1
+  fold_version: iris-stratified-5fold-v1
+  score_minimum: 0.0
+  score_maximum: 1.0
+allowed_search_types:
+  - DIRECT
+  - OPTUNA
+  - OPENEVOLVE
+evaluator_id: iris-weighted-knn-evaluator
+verifier_id: deterministic-verifier
+maximum_cycles: 1
+maximum_experiments: 40
+maximum_cost: 1.0
+requires_approval_for: []
+provenance: REAL

@@ -46,6 +46,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "auto_researcher.prompts" = ["**/*.md"]
 "auto_researcher.knowledge" = ["queries/**/*.cypher"]
+"auto_researcher.tasks.iris_knn" = ["data/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
