@@ -11,3 +11,12 @@ build/
 *.sqlite
 *.sqlite3
 .DS_Store
+# FeTA/MONAI medical-image and training outputs
+*.nii
+*.nii.gz
+*.pt
+*.pth
+*.ckpt
+.monai/
+.auto-researcher/cache/feta/
+.auto-researcher/**/feta-workspace/

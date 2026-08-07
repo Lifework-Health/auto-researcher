@@ -1,0 +1,12 @@
+task: {id: feta_seg, version: "1.0"}
+agents: {mode: mock}
+search:
+  type: DIRECT
+  configuration:
+    mode: full
+    maximum_epochs: 300
+    fold_count: 5
+runtime:
+  output_dir: .auto-researcher/feta-baseline
+  workspace_dir: .auto-researcher/feta-workspace
+# Supply the local export at runtime with --data-dir; never commit it here.
