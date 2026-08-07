@@ -1,0 +1,14 @@
+task:
+  id: iris_knn
+  version: "1.0"
+
+agents:
+  mode: mock
+
+search:
+  type: OPTUNA
+  trial_budget: 20
+  seed: 20260807
+
+runtime:
+  output_dir: .auto-researcher

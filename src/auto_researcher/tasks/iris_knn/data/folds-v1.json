@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "fold_version": "iris-stratified-5fold-v1",
+  "dataset_sha256": "0fed2a99db77ec533a62dc66894d3ec6df3b58b6a8f3cf4a6b47e4086b7f97dc",
+  "assignment_rule": "Within each canonical UCI class block, assign zero-based row offset modulo five.",
+  "assignments": [
+    0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4,
+    0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4,
+    0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4,
+    0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4,
+    0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4,
+    0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4
+  ],
+  "fold_class_counts": [
+    {"Iris-setosa": 10, "Iris-versicolor": 10, "Iris-virginica": 10},
+    {"Iris-setosa": 10, "Iris-versicolor": 10, "Iris-virginica": 10},
+    {"Iris-setosa": 10, "Iris-versicolor": 10, "Iris-virginica": 10},
+    {"Iris-setosa": 10, "Iris-versicolor": 10, "Iris-virginica": 10},
+    {"Iris-setosa": 10, "Iris-versicolor": 10, "Iris-virginica": 10}
+  ]
+}

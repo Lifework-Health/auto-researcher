@@ -1,0 +1,17 @@
+task:
+  id: iris_knn
+  version: "1.0"
+
+agents:
+  mode: mock
+
+experiment:
+  feature_weight_0: 1.0
+  feature_weight_1: 1.0
+  feature_weight_2: 1.0
+  feature_weight_3: 1.0
+  k: 3
+  distance_power: 2
+
+runtime:
+  output_dir: .auto-researcher

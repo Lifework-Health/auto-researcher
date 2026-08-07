@@ -86,3 +86,7 @@ are documented in
 [NEO4J_GROUNDING.md](docs/runbooks/NEO4J_GROUNDING.md).
 Safe checkpoint lifecycle operations are documented in
 [RUN_EXECUTION.md](docs/runbooks/RUN_EXECUTION.md).
+
+The real-data, non-patient Iris weighted k-NN benchmark runs fully offline in
+DIRECT, Optuna, and OpenEvolve modes. See
+[IRIS_KNN_BENCHMARK.md](docs/runbooks/IRIS_KNN_BENCHMARK.md).
