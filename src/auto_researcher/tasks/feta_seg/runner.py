@@ -34,8 +34,8 @@ from auto_researcher.tasks.feta_seg.transforms import create_transforms
 from auto_researcher.tasks.models import TaskRuntimeContext
 
 ENGINEERING_SMOKE_VERSION = "feta-real-data-gpu-engineering-smoke-v1"
-RUNNER_VERSION = "feta-five-fold-oof-runner-v1"
-DATA_LOADER_VERSION = "monai-persistent-dataset-workers4-v1"
+RUNNER_VERSION = "feta-five-fold-oof-runner-v2"
+DATA_LOADER_VERSION = "monai-persistent-train-uncached-validation-workers4-v2"
 
 
 @dataclass(frozen=True)
@@ -169,7 +169,7 @@ def _run_cuda_fold(
 ) -> FoldExecutionResult:
     try:
         import torch
-        from monai.data import DataLoader, PersistentDataset
+        from monai.data import DataLoader, Dataset, PersistentDataset
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
 
@@ -186,10 +186,13 @@ def _run_cuda_fold(
         transform=create_transforms(training=True),
         cache_dir=cache_root / "training",
     )
-    validation_dataset = PersistentDataset(
+    # Validation must retain MONAI MetaTensor spatial metadata because native
+    # geometry restoration requires image.affine. MONAI 1.5.x PersistentDataset
+    # may reload cached MetaTensors as plain torch.Tensor objects, losing affine
+    # metadata. Validation transforms are deterministic, so leave them uncached.
+    validation_dataset = Dataset(
         _dataset_records(validation_subjects),
         transform=create_transforms(training=False),
-        cache_dir=cache_root / "validation",
     )
     generator = torch.Generator().manual_seed(seed)
     training_loader = DataLoader(
