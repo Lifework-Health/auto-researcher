@@ -24,14 +24,26 @@ MONAI SegResNet uses 3D input, one image channel, eight output channels, 32 init
 
 Loss is equal-weight MONAI DiceCE (`softmax`, one-hot target, no background). Optimisation is AdamW, learning rate `1e-4`, weight decay `1e-5`, 300 epochs, validation every five epochs and best-fold checkpoint selection. Seeds are `20260807 + fold`. Whole-volume validation uses 128³ Gaussian sliding windows, 0.5 overlap and `sw_batch_size=1`.
 
-The primary metric is the mean of 68 subject-level macro Dice values over labels 1–7. Background is excluded. Every audited subject contains all seven tissues, so absent reference labels are an integrity failure. Secondary outputs include per-tissue Dice/HD95, fold results, best epochs and MIAL/IRTK aggregate scores and gap.
+The primary metric is the mean of 68 subject-level macro Dice values over labels 1–7. Background is excluded. Every audited subject contains all seven tissues, so absent reference labels are an integrity failure. The complete versioned safety panel contains per-class and subject-macro Dice, symmetric HD95 in physical millimetres, volume similarity and revised FeTA-style Euler distance. An empty prediction receives Dice and volume similarity zero, an explicit flag, and a deterministic native-field-of-view diagonal HD95 penalty.
+
+Topology uses the task-owned `cubical-euler-fg26-bg6-betti-v1` convention. Labels 1 and 3–7 expect Betti `(1,0,0)` and cortical grey matter expects `(2,0,0)`. This is evaluation only; there is no global largest-component postprocessing rule. Outputs also include empty-prediction counts, best epochs, runtime, peak CUDA memory, MIAL/IRTK macro Dice and their absolute gap.
 
 ## Commands and outputs
 
-Install the optional environment with `pip install -e '.[feta]'`. Generate/inspect the manifest through the task using the local data directory. Run the non-scientific generated-data smoke with `examples/tasks/feta_seg/smoke.yaml`; its identity cannot be reused as full evidence. Run the five-fold configuration with `examples/tasks/feta_seg/contract.yaml` and `baseline.yaml`, passing the local data root and a CUDA-capable runtime.
+Install the exact optional environment with `pip install -e '.[feta]'`; it pins NumPy, nibabel, SciPy, PyTorch and MONAI. Generate/inspect the manifest through the task using the local data directory. Run the non-scientific generated-data smoke with `examples/tasks/feta_seg/smoke.yaml`; its identity cannot be reused as full evidence.
+
+Before the baseline, run the separate real-data CUDA engineering smoke:
+
+```bash
+export AUTO_RESEARCHER_FETA_DATA_DIR=/safe/server/path/to/feta
+python -m auto_researcher.tasks.feta_seg.engineering_smoke \
+  --data-dir "$AUTO_RESEARCHER_FETA_DATA_DIR"
+```
+
+It performs one actual NIfTI preprocessing/patch/forward/loss/backward/optimiser step plus one validation inference, native-geometry restoration and the full metric panel. Its JSON is explicitly `scientific_baseline: false` and cannot be reused as baseline evidence. Only after approval should the five-fold configuration be run with `examples/tasks/feta_seg/contract.yaml` and `baseline.yaml`, passing the local data root and a CUDA-capable runtime.
 
 Outputs live below the configured `.auto-researcher` directory. Best `.pt` checkpoints remain outside git and are referenced by relative path, size and SHA-256. Generic artefacts contain aggregate evidence only, never MRI voxels or segmentation volumes.
 
 ## Current execution status
 
-The optional mechanics were tested with Python 3.12.0, PyTorch 2.8.0, MONAI 1.5.1, NumPy 2.0.2 and nibabel 5.3.3. The development machine is macOS/arm64 with an Apple M5 GPU and no CUDA. Therefore the genuine five-fold baseline is **FULL BASELINE BLOCKED** with `feta_cuda_unavailable_for_full_baseline`. A smoke result is not scientific evidence. PR 11 must not begin until all five locked folds have completed on CUDA, verified, and recorded with zero hold-out calls.
+The full five-fold OOF runner and task-owned metric panel are implemented, but the current validation host is macOS/arm64 with no `nvidia-smi` and `torch.cuda.is_available() == False`. The audited dataset identity gate passes locally. Therefore the real-data CUDA engineering smoke and genuine five-fold baseline remain **GPU BLOCKED on this host**. A generated smoke or CPU-side unit test is not scientific evidence. Do not start the five-fold run until the real-data CUDA engineering smoke passes and the operator explicitly approves it.

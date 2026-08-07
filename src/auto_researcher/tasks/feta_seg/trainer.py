@@ -53,6 +53,9 @@ def require_full_baseline_environment() -> dict:
     try:
         import torch
         import monai
+        import nibabel
+        import numpy
+        import scipy  # type: ignore[import-untyped]
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
     if not torch.cuda.is_available():
@@ -60,6 +63,9 @@ def require_full_baseline_environment() -> dict:
     return {
         "torch": torch.__version__,
         "monai": monai.__version__,
+        "nibabel": nibabel.__version__,
+        "numpy": numpy.__version__,
+        "scipy": scipy.__version__,
         "cuda": torch.version.cuda,
         "cudnn": str(torch.backends.cudnn.version()),
         "gpu": torch.cuda.get_device_name(0),
