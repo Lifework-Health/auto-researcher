@@ -498,3 +498,19 @@ def test_feta_and_synthetic_share_graph_topology_and_direct_node_sequence(tmp_pa
         {"configurable": {"thread_id": "synthetic-shared-thread"}},
     )
     assert feta_final["executed_nodes"] == synthetic_final["executed_nodes"]
+
+def test_feta_direct_normalisation_keeps_vector_constants_task_owned():
+    task = FeTASegTask()
+    normalised = task.normalise_configuration(
+        {"mode": "full", "maximum_epochs": 300, "fold_count": 5}
+    )
+    assert normalised == {
+        "mode": "full",
+        "maximum_epochs": 300,
+        "fold_count": 5,
+    }
+    rebuilt = FeTASegConfiguration.model_validate(normalised)
+    assert rebuilt.blocks_down == (1, 2, 2, 4)
+    assert rebuilt.blocks_up == (1, 1, 1)
+    assert rebuilt.spacing_mm == (0.5, 0.5, 0.5)
+    assert rebuilt.patch_size == (128, 128, 128)

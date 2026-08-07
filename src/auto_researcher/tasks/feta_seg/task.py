@@ -163,9 +163,16 @@ class FeTASegTask:
     def normalise_configuration(
         self, configuration: dict[str, JsonValue]
     ) -> dict[str, JsonValue]:
-        return FeTASegConfiguration.model_validate(
-            configuration
-        ).scientific_configuration()
+        validated = FeTASegConfiguration.model_validate(configuration)
+        # DIRECT treats list values as choice sets. Keep fixed vector-valued
+        # architecture/preprocessing constants task-owned and out of the DIRECT
+        # search space; the evaluator reconstructs them from FeTASegConfiguration
+        # defaults.
+        return {
+            "mode": validated.mode,
+            "maximum_epochs": validated.maximum_epochs,
+            "fold_count": validated.fold_count,
+        }
 
     def dataset_manifest(self, context: TaskRuntimeContext):
         return build_dataset_manifest(context)
