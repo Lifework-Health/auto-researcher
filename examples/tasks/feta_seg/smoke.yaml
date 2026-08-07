@@ -1,0 +1,12 @@
+task: {id: feta_seg, version: "1.0"}
+agents: {mode: mock}
+search:
+  type: DIRECT
+  configuration:
+    mode: smoke
+    maximum_epochs: 1
+    fold_count: 1
+runtime:
+  output_dir: .auto-researcher/feta-smoke
+  workspace_dir: .auto-researcher/feta-smoke-workspace
+  task_options: {mode: smoke}
