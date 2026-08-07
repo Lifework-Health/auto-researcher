@@ -30,7 +30,7 @@ from auto_researcher.search.openevolve.upstream_models import (
     ExecutorIsolationResult,
     HardenedExecutorPolicy,
 )
-from auto_researcher.tasks.synthetic import SyntheticEvolvableComponent
+from auto_researcher.tasks.synthetic import SyntheticEvolvableComponent, SyntheticTask
 
 pytestmark = [
     pytest.mark.live_agent,
@@ -139,6 +139,7 @@ def test_one_approved_synthetic_mutation(tmp_path):
         bridge,
         executor_policy,
         isolation,
+        task=SyntheticTask(),
         workspace_root=tmp_path / "hardened-workspace",
     )
     component = SyntheticEvolvableComponent().component_spec()

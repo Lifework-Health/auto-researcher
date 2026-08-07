@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import JsonValue
 
@@ -42,6 +43,9 @@ SYNTHETIC_DATA_HASH = hashlib.sha256(SYNTHETIC_DATA_SEED).hexdigest()
 class SyntheticTask:
     task_id = "synthetic"
     task_version = "1.0"
+
+    def live_mutation_dataset_class(self) -> Literal["synthetic"]:
+        return "synthetic"
 
     def descriptor(self) -> TaskDescriptor:
         return TaskDescriptor(

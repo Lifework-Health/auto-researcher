@@ -19,6 +19,10 @@ from pydantic import (
 
 from auto_researcher.agents.models import ModelCallConfig
 from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.search.openevolve.live_dataset import (
+    LiveMutationDatasetClass,
+    PROHIBITED_LIVE_MUTATION_DATASET_CLASSES,
+)
 
 OPENEVOLVE_MUTATION_PROMPT_V1: Final[Literal["openevolve-mutation-prompt-v1"]] = (
     "openevolve-mutation-prompt-v1"
@@ -59,7 +63,7 @@ class LiveMutationApproval(LiveMutationModel):
     executor_policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     mutable_file: str = Field(pattern=r"^[A-Za-z0-9_.-]+\.py$")
-    permitted_dataset_class: Literal["synthetic"] = "synthetic"
+    permitted_dataset_class: LiveMutationDatasetClass = "synthetic"
     prohibited_dataset_classes: tuple[str, ...] = (
         "aura",
         "genuine_icca",
@@ -104,12 +108,10 @@ class LiveMutationApproval(LiveMutationModel):
             raise ValueError("live_mutation_approval_expiry_too_long")
         if self.model_id.lower().endswith(("-latest", ":latest")):
             raise ValueError("live_mutation_model_not_approved")
-        if set(self.prohibited_dataset_classes) != {
-            "aura",
-            "genuine_icca",
-            "mri",
-            "patient_data",
-        }:
+        if (
+            set(self.prohibited_dataset_classes)
+            != PROHIBITED_LIVE_MUTATION_DATASET_CLASSES
+        ):
             raise ValueError("live_mutation_approval_mismatch")
         if not (info.context or {}).get("skip_approval_hash") and (
             approval_content_hash(self) != self.approval_hash
@@ -220,7 +222,7 @@ class OpenEvolveModelCallContext(LiveMutationModel):
     executor_policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     mutable_file: str = Field(pattern=r"^[A-Za-z0-9_.-]+\.py$")
-    dataset_class: Literal["synthetic"] = "synthetic"
+    dataset_class: LiveMutationDatasetClass = "synthetic"
     model_budget_identity: str = Field(min_length=1)
     maximum_model_calls: int = Field(ge=1)
     maximum_model_cost: float = Field(gt=0)

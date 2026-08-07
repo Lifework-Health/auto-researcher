@@ -78,3 +78,15 @@ fold rows, predictions, or confusion matrices.
 The optional retained-image isolation smoke requires the pre-approved hardened
 executor image and digest. It does not rebuild or retag Docker. Keep this gate
 opt-in and run it only with the explicit retained image environment variables.
+
+## Live-mutation classification
+
+The trusted `iris_knn@1.0` plugin classifies this fixed dataset as
+`public_benchmark` for explicit live OpenEvolve approval. This narrow class
+means public, non-patient benchmark data evaluated by the host. Raw observations,
+row-linked labels, folds, and predictions are not supplied to the mutation
+model or candidate. It is not a general claim that public data are safe.
+
+Each live run still needs a fresh approval matching `public_benchmark` and all
+other run, task, component, provider, prompt, and executor identities. Patient
+data, genuine iCCA, MRI, and Aura remain prohibited.
