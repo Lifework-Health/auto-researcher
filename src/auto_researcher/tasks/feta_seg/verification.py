@@ -1,25 +1,47 @@
 """Scientific-integrity verification for FeTA development-only evidence."""
 
+from __future__ import annotations
+
 import math
 
 from auto_researcher.contracts.enums import EvidenceStatus
 from auto_researcher.contracts.models import EvaluationResult, ResearchContract
 from auto_researcher.tasks.feta_seg.evaluator import EVALUATOR_VERSION
-from auto_researcher.tasks.feta_seg.splits import FOLD_ID, SPLIT_ID
+from auto_researcher.tasks.feta_seg.manifests import EXPECTED_MANIFEST_HASH
+from auto_researcher.tasks.feta_seg.splits import (
+    EXPECTED_FOLD_HASH,
+    EXPECTED_SPLIT_HASH,
+    FOLD_ID,
+    SPLIT_ID,
+)
 from auto_researcher.tasks.models import PolicyDecision
 
 
 class FeTASegVerificationPolicy:
-    policy_id = "feta-seg-evidence-policy-v1"
+    policy_id = "feta-seg-evidence-policy-v2"
     required_metrics = frozenset(
         {
             "mean_subject_macro_dice",
+            "mean_subject_macro_hd95_mm",
+            "mean_subject_macro_volume_similarity",
+            "mean_subject_macro_euler_distance",
+            "per_class_summary",
+            "subject_metrics",
             "per_tissue_dice",
             "reconstruction_macro_dice",
             "reconstruction_gap",
+            "empty_prediction_count",
+            "dataset_version",
+            "dataset_manifest_hash",
             "split_identity",
+            "split_hash",
             "fold_identity",
+            "fold_hash",
             "evaluator_version",
+            "evaluator_code_version",
+            "metric_version",
+            "hd95_version",
+            "topology_version",
             "folds_completed",
             "oof_subject_count",
             "holdout_subjects_evaluated",
@@ -42,9 +64,14 @@ class FeTASegVerificationPolicy:
             reasons.append("feta_required_metrics_missing")
         if (
             evaluation.metrics.get("split_identity") != SPLIT_ID
-            or evaluation.metrics.get("fold_identity") != FOLD_ID
+            or evaluation.metrics.get("split_hash") != EXPECTED_SPLIT_HASH
         ):
-            reasons.append("feta_partition_identity_mismatch")
+            reasons.append("feta_split_identity_mismatch")
+        if (
+            evaluation.metrics.get("fold_identity") != FOLD_ID
+            or evaluation.metrics.get("fold_hash") != EXPECTED_FOLD_HASH
+        ):
+            reasons.append("feta_fold_identity_mismatch")
         if evaluation.metrics.get("evaluator_version") != EVALUATOR_VERSION:
             reasons.append("feta_evaluator_identity_mismatch")
         if evaluation.metrics.get("holdout_subjects_evaluated") != 0:
@@ -58,11 +85,13 @@ class FeTASegVerificationPolicy:
             or evaluation.metrics.get("oof_subject_count") != expected_subjects
         ):
             reasons.append("feta_fold_evaluation_incomplete")
-        if (
-            mode == "smoke"
-            and evaluation.metrics.get("scientific_baseline") is not False
-        ):
-            reasons.append("feta_smoke_identity_invalid")
+        if mode == "smoke":
+            if evaluation.metrics.get("scientific_baseline") is not False:
+                reasons.append("feta_smoke_identity_invalid")
+        elif evaluation.metrics.get("dataset_manifest_hash") != EXPECTED_MANIFEST_HASH:
+            reasons.append("feta_dataset_identity_mismatch")
+        if contract.primary_metric != "mean_subject_macro_dice":
+            reasons.append("feta_contract_metric_mismatch")
         if not evaluation.constraint_results or not all(
             evaluation.constraint_results.values()
         ):

@@ -8,6 +8,8 @@ import pytest
 
 from auto_researcher.agents.mock import MockHypothesisAgent, MockPlannerAgent
 from auto_researcher.contracts.enums import RunStatus, SearchType
+from auto_researcher.contracts.enums import ProvenanceKind
+from auto_researcher.contracts.models import ExperimentSpec
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.dependencies import task_memory_dependencies
 from auto_researcher.runtime.execution import start_run
@@ -18,9 +20,32 @@ from auto_researcher.tasks.feta_seg import (
     smoke_configuration,
 )
 from auto_researcher.tasks.feta_seg.manifests import discover_pairs
+from auto_researcher.tasks.feta_seg.manifests import (
+    EXPECTED_MANIFEST_HASH,
+    FeTASubject,
+)
 from auto_researcher.tasks.feta_seg.metrics import aggregate_subject_metrics, dice
+from auto_researcher.tasks.feta_seg.evaluator import (
+    EVALUATOR_ID,
+    EVALUATOR_VERSION,
+    FeTASegEvaluator,
+    evaluator_code_version,
+)
+from auto_researcher.tasks.feta_seg.runner import (
+    FoldExecutionResult,
+    orchestrate_development_folds,
+)
 from auto_researcher.tasks.feta_seg.splits import locked_partition
-from auto_researcher.tasks.models import TaskRuntimeContext
+from auto_researcher.tasks.models import (
+    DatasetManifest,
+    ExperimentMetadata,
+    TaskRuntimeContext,
+)
+from auto_researcher.tasks.synthetic import (
+    SyntheticTask,
+    default_synthetic_configuration,
+    default_synthetic_contract,
+)
 from auto_researcher.tasks.registry import default_task_registry
 
 
@@ -38,6 +63,106 @@ def smoke_context(tmp_path: Path) -> TaskRuntimeContext:
         task_options={"mode": "smoke"},
         manifest_created_at=datetime(2026, 8, 7, tzinfo=UTC),
     )
+
+
+def fake_subjects() -> tuple[FeTASubject, ...]:
+    return tuple(
+        FeTASubject(
+            subject_id,
+            method,
+            Path(f"{subject_id}_image.nii.gz"),
+            Path(f"{subject_id}_label.nii.gz"),
+            "a" * 64,
+            "b" * 64,
+            (8, 8, 8),
+            (0.5, 0.5, 0.5),
+            tuple(range(8)),
+        )
+        for subject_id, method in methods().items()
+    )
+
+
+def complete_fake_metrics() -> dict:
+    rows = []
+    partition = locked_partition(methods())
+    for subject_id in partition.development:
+        method = methods()[subject_id]
+        per_class = {
+            str(label): {
+                "label_name": f"label-{label}",
+                "dice": 0.5,
+                "hd95_mm": 2.0,
+                "volume_similarity": 0.75,
+                "euler_distance": 0,
+                "empty_prediction": False,
+            }
+            for label in range(1, 8)
+        }
+        rows.append(
+            {
+                "subject_id": subject_id,
+                "reconstruction_method": method,
+                "fold": partition.folds[subject_id],
+                "per_class": per_class,
+                "macro_dice": 0.5,
+                "macro_hd95_mm": 2.0,
+                "macro_volume_similarity": 0.75,
+                "macro_euler_distance": 0.0,
+                "empty_prediction_count": 0,
+            }
+        )
+    result = aggregate_subject_metrics(rows)
+    result.update(
+        {
+            "folds_completed": 5,
+            "oof_subject_count": 68,
+            "holdout_subjects_evaluated": 0,
+            "failed_training_folds": 0,
+            "valid_prediction_labels": list(range(8)),
+            "fold_summaries": [],
+            "checkpoint_references": [],
+            "environment": {},
+        }
+    )
+    return result
+
+
+def fake_full_evaluator(
+    tmp_path: Path, runner, *, manifest_hash=EXPECTED_MANIFEST_HASH
+):
+    dataset_version = f"feta-2.1-export-80+{manifest_hash}"
+    manifest = DatasetManifest(
+        task_id="feta_seg",
+        dataset_version=dataset_version,
+        files=(),
+        hashes={},
+        loader_version="fixture",
+        created_at=datetime(2026, 8, 7, tzinfo=UTC),
+        metadata={"manifest_hash": manifest_hash},
+    )
+    metadata = ExperimentMetadata(
+        evaluator_id=EVALUATOR_ID,
+        code_version=evaluator_code_version(dataset_version),
+        dataset_version=dataset_version,
+        provenance=ProvenanceKind.REAL,
+    )
+    context = TaskRuntimeContext(
+        run_id="feta-full-fixture",
+        output_dir=None,
+        workspace_dir=tmp_path,
+    )
+    evaluator = FeTASegEvaluator(context, metadata, manifest, full_runner=runner)
+    experiment = ExperimentSpec(
+        experiment_id="feta-full-experiment",
+        hypothesis_id="hypothesis",
+        search_request_id="request",
+        configuration=FeTASegConfiguration().scientific_configuration(),
+        evaluator_id=metadata.evaluator_id,
+        code_version=metadata.code_version,
+        dataset_version=metadata.dataset_version,
+        provenance=metadata.provenance,
+    )
+    return evaluator, experiment
 
 
 def test_task_registered_direct_only():
@@ -179,3 +304,213 @@ def test_smoke_identity_cannot_validate_as_full():
         smoke.scientific_configuration()
         != FeTASegConfiguration().scientific_configuration()
     )
+
+
+def test_full_fold_orchestration_is_oof_complete_and_never_exposes_holdout():
+    partition = locked_partition(methods())
+    calls = []
+
+    def execute(fold, training, validation):
+        calls.append((fold, training, validation))
+        rows = tuple({"subject_id": subject.subject_id} for subject in validation)
+        return FoldExecutionResult(
+            fold=fold,
+            subject_metrics=rows,
+            best_epoch=5,
+            validation_score=0.5,
+            training_duration_seconds=1.0,
+            total_duration_seconds=2.0,
+            peak_gpu_memory_bytes=1024,
+            checkpoint={"relative_path": f"fold-{fold}/best.pt"},
+            seed=20260807 + fold,
+        )
+
+    results = orchestrate_development_folds(
+        FeTASegConfiguration(), fake_subjects(), partition, execute
+    )
+    assert len(results) == 5
+    assert {
+        row["subject_id"] for result in results for row in result.subject_metrics
+    } == set(partition.development)
+    for _, training, validation in calls:
+        exposed = {subject.subject_id for subject in training + validation}
+        assert exposed.isdisjoint(partition.holdout)
+
+
+def test_fold_orchestration_rejects_incomplete_or_wrong_oof_membership():
+    partition = locked_partition(methods())
+
+    def execute(fold, training, validation):
+        rows = tuple({"subject_id": subject.subject_id} for subject in validation[:-1])
+        return FoldExecutionResult(
+            fold=fold,
+            subject_metrics=rows,
+            best_epoch=5,
+            validation_score=0.5,
+            training_duration_seconds=1.0,
+            total_duration_seconds=2.0,
+            peak_gpu_memory_bytes=1024,
+            checkpoint={},
+            seed=20260807 + fold,
+        )
+
+    with pytest.raises(ValueError, match="feta_oof_membership_invalid"):
+        orchestrate_development_folds(
+            FeTASegConfiguration(), fake_subjects(), partition, execute
+        )
+
+
+def test_full_evaluator_accepts_complete_finite_fake_runner(tmp_path):
+    evaluator, experiment = fake_full_evaluator(
+        tmp_path, lambda context, configuration, experiment_id: complete_fake_metrics()
+    )
+    result = evaluator.evaluate(experiment, default_feta_contract())
+    assert result.success is True
+    assert result.evaluator_version == EVALUATOR_VERSION
+    assert result.primary_score == pytest.approx(0.5)
+    assert all(result.constraint_results.values())
+    assert result.metrics["holdout_subjects_evaluated"] == 0
+
+
+def test_full_evaluator_rejects_non_finite_scientific_json(tmp_path):
+    def non_finite(*args):
+        result = complete_fake_metrics()
+        result["mean_subject_macro_hd95_mm"] = float("nan")
+        return result
+
+    evaluator, experiment = fake_full_evaluator(tmp_path, non_finite)
+    result = evaluator.evaluate(experiment, default_feta_contract())
+    assert result.success is False
+    assert result.error == "feta_scientific_json_invalid"
+    assert result.artefact_references == ()
+
+
+def test_full_evaluator_rejects_dataset_identity_mismatch(tmp_path):
+    evaluator, experiment = fake_full_evaluator(
+        tmp_path, lambda *args: complete_fake_metrics(), manifest_hash="0" * 64
+    )
+    result = evaluator.evaluate(experiment, default_feta_contract())
+    assert result.success is False
+    assert result.constraint_results["dataset_identity_exact"] is False
+
+
+def test_feta_artefact_publication_failure_returns_no_references(tmp_path, monkeypatch):
+    task = FeTASegTask()
+    context = smoke_context(tmp_path)
+    evaluator = task.create_evaluator(context)
+    metadata = task.experiment_metadata(context)
+    experiment = ExperimentSpec(
+        experiment_id="feta-persistence-failure",
+        hypothesis_id="hypothesis",
+        search_request_id="request",
+        configuration=smoke_configuration(),
+        evaluator_id=metadata.evaluator_id,
+        code_version=metadata.code_version,
+        dataset_version=metadata.dataset_version,
+        provenance=metadata.provenance,
+    )
+
+    def fail_bundle(*args, **kwargs):
+        raise OSError("private filesystem detail")
+
+    monkeypatch.setattr(
+        "auto_researcher.tasks.feta_seg.evaluator.write_artefact_bundle",
+        fail_bundle,
+    )
+    result = evaluator.evaluate(experiment, default_feta_contract())
+    assert result.success is False
+    assert result.artefact_references == ()
+    assert result.error == "artefact_bundle_publication_failed:OSError"
+    assert "private filesystem detail" not in result.model_dump_json()
+
+
+def test_feta_verifier_rejects_split_fold_and_evaluator_identity_drift(tmp_path):
+    evaluator, experiment = fake_full_evaluator(
+        tmp_path, lambda *args: complete_fake_metrics()
+    )
+    result = evaluator.evaluate(experiment, default_feta_contract())
+    assert result.success is True
+    policy = FeTASegTask().create_verification_policy(default_feta_contract())
+    for field, value, reason in (
+        ("split_hash", "wrong", "feta_split_identity_mismatch"),
+        ("fold_hash", "wrong", "feta_fold_identity_mismatch"),
+        ("evaluator_version", "wrong", "feta_evaluator_identity_mismatch"),
+    ):
+        metrics = dict(result.metrics)
+        metrics[field] = value
+        changed = result.model_copy(update={"metrics": metrics})
+        decision = policy.evaluate_constraints(changed, default_feta_contract())
+        assert decision.constraint_compliant is False
+        assert reason in decision.reasons
+
+
+def test_feta_and_synthetic_share_graph_topology_and_direct_node_sequence(tmp_path):
+    feta_contract = default_feta_contract()
+    feta_dependencies = task_memory_dependencies(
+        FeTASegTask(),
+        smoke_context(tmp_path / "feta"),
+        feta_contract,
+        smoke_configuration(),
+        hypothesis_agent=MockHypothesisAgent(),
+        planner_agent=MockPlannerAgent(
+            search_type=SearchType.DIRECT,
+            configuration=smoke_configuration(),
+            experiment_budget=1,
+        ),
+        search_type=SearchType.DIRECT,
+    )
+    synthetic_contract = default_synthetic_contract()
+    synthetic_dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(manifest_created_at=datetime(2026, 8, 7, tzinfo=UTC)),
+        synthetic_contract,
+        default_synthetic_configuration(),
+        hypothesis_agent=MockHypothesisAgent(),
+        planner_agent=MockPlannerAgent(
+            search_type=SearchType.DIRECT,
+            configuration=default_synthetic_configuration(),
+            experiment_budget=1,
+        ),
+        search_type=SearchType.DIRECT,
+    )
+    feta_graph = build_graph(feta_dependencies)
+    synthetic_graph = build_graph(synthetic_dependencies)
+    assert (
+        feta_graph.get_graph().draw_mermaid()
+        == synthetic_graph.get_graph().draw_mermaid()
+    )
+    feta_final = start_run(
+        feta_graph,
+        {
+            "run_id": "feta-shared",
+            "thread_id": "feta-shared-thread",
+            "contract": feta_contract,
+        },
+        {"configurable": {"thread_id": "feta-shared-thread"}},
+    )
+    synthetic_final = start_run(
+        synthetic_graph,
+        {
+            "run_id": "synthetic-shared",
+            "thread_id": "synthetic-shared-thread",
+            "contract": synthetic_contract,
+        },
+        {"configurable": {"thread_id": "synthetic-shared-thread"}},
+    )
+    assert feta_final["executed_nodes"] == synthetic_final["executed_nodes"]
+
+def test_feta_direct_normalisation_keeps_vector_constants_task_owned():
+    task = FeTASegTask()
+    normalised = task.normalise_configuration(
+        {"mode": "full", "maximum_epochs": 300, "fold_count": 5}
+    )
+    assert normalised == {
+        "mode": "full",
+        "maximum_epochs": 300,
+        "fold_count": 5,
+    }
+    rebuilt = FeTASegConfiguration.model_validate(normalised)
+    assert rebuilt.blocks_down == (1, 2, 2, 4)
+    assert rebuilt.blocks_up == (1, 1, 1)
+    assert rebuilt.spacing_mm == (0.5, 0.5, 0.5)
+    assert rebuilt.patch_size == (128, 128, 128)

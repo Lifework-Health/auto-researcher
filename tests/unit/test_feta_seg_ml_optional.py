@@ -11,6 +11,18 @@ from auto_researcher.tasks.feta_seg.model import (  # noqa: E402
     create_segresnet,
     trainable_parameter_count,
 )
+from auto_researcher.tasks.feta_seg.metrics import (  # noqa: E402
+    cubical_betti_numbers,
+    cubical_euler_characteristic,
+    evaluate_subject_segmentation,
+    physical_fov_diagonal,
+    physical_hd95,
+    topology_metrics,
+    volume_similarity_counts,
+)
+from auto_researcher.tasks.feta_seg.runner import (  # noqa: E402
+    restore_prediction_to_native,
+)
 from auto_researcher.tasks.feta_seg.trainer import (  # noqa: E402
     checkpoint_reference,
     create_loss,
@@ -76,3 +88,73 @@ def test_augmentation_is_training_only_and_sliding_window_is_whole_volume():
     inputs = torch.randn(1, 1, 16, 16, 16)
     result = sliding_window_predict(inputs, torch.nn.Identity(), FeTASegConfiguration())
     assert result.shape == inputs.shape
+
+
+def test_hd95_uses_physical_mm_and_empty_prediction_penalty():
+    actual = np.zeros((5, 5, 5), dtype=bool)
+    predicted = np.zeros_like(actual)
+    actual[1, 1, 1] = True
+    predicted[2, 1, 1] = True
+    value, empty = physical_hd95(actual, predicted, (2.0, 1.0, 1.0))
+    assert value == pytest.approx(2.0)
+    assert empty is False
+    penalty, empty = physical_hd95(actual, np.zeros_like(actual), (2.0, 1.0, 1.0))
+    assert penalty == pytest.approx(
+        physical_fov_diagonal(actual.shape, (2.0, 1.0, 1.0))
+    )
+    assert empty is True and np.isfinite(penalty)
+
+
+def test_volume_similarity_arithmetic_and_empty_prediction():
+    assert volume_similarity_counts(10, 10) == pytest.approx(1.0)
+    assert volume_similarity_counts(10, 5) == pytest.approx(2 / 3)
+    assert volume_similarity_counts(10, 0) == 0.0
+    with pytest.raises(ValueError, match="feta_subject_tissue_absent"):
+        volume_similarity_counts(0, 1)
+
+
+def test_known_cubical_topology_fixtures():
+    one = np.zeros((5, 5, 5), dtype=bool)
+    one[2, 2, 2] = True
+    two = one.copy()
+    two[0, 0, 0] = True
+    cavity = np.ones((3, 3, 3), dtype=bool)
+    cavity[1, 1, 1] = False
+    loop = np.zeros((3, 3, 3), dtype=bool)
+    loop[:, :, 1] = True
+    loop[1, 1, 1] = False
+    assert cubical_euler_characteristic(one) == 1
+    assert cubical_betti_numbers(one) == (1, 0, 0)
+    assert cubical_betti_numbers(two) == (2, 0, 0)
+    assert cubical_betti_numbers(cavity) == (1, 0, 1)
+    assert cubical_betti_numbers(loop) == (1, 1, 0)
+    assert topology_metrics(two, 2)["euler_distance"] == 0
+    assert topology_metrics(one, 2)["euler_distance"] == 1
+
+
+def test_complete_panel_empty_prediction_is_finite_and_flagged():
+    actual = np.zeros((7, 7, 7), dtype=np.uint8)
+    for label in range(1, 8):
+        actual[label - 1, 0, 0] = label
+    predicted = np.zeros_like(actual)
+    metrics = evaluate_subject_segmentation(actual, predicted, (0.5, 0.5, 0.5))
+    assert metrics["macro_dice"] == 0.0
+    assert metrics["macro_volume_similarity"] == 0.0
+    assert metrics["empty_prediction_count"] == 7
+    assert np.isfinite(metrics["macro_hd95_mm"])
+    assert all(row["empty_prediction"] for row in metrics["per_class"].values())
+
+
+def test_native_geometry_restore_uses_nearest_labels(tmp_path: Path):
+    import nibabel as nib
+
+    reference_path = tmp_path / "reference.nii.gz"
+    native = np.zeros((4, 4, 4), dtype=np.uint8)
+    nib.save(nib.Nifti1Image(native, np.eye(4)), reference_path)
+    prediction = np.zeros((2, 2, 2), dtype=np.uint8)
+    prediction[1, 1, 1] = 7
+    restored = restore_prediction_to_native(
+        prediction, np.diag([2.0, 2.0, 2.0, 1.0]), reference_path
+    )
+    assert restored.shape == native.shape
+    assert set(np.unique(restored)).issubset({0, 7})

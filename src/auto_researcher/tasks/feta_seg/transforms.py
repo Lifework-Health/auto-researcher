@@ -1,6 +1,6 @@
 """Locked deterministic and training-only MONAI transform factories."""
 
-PREPROCESSING_VERSION = "feta-ras-0.5mm-foreground-zscore-v1"
+PREPROCESSING_VERSION = "feta-ras-0.5mm-foreground-zscore-patchpad128-v2"
 AUGMENTATION_VERSION = "feta-flip-scale-shift-v1"
 CACHE_IDENTITY_VERSION = "feta-persistent-cache-identity-v1"
 
@@ -19,6 +19,7 @@ def create_transforms(*, training: bool):
             RandShiftIntensityd,
             RandCropByPosNegLabeld,
             Spacingd,
+            SpatialPadd,
         )
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
@@ -50,6 +51,13 @@ def create_transforms(*, training: bool):
                 pos=1,
                 neg=1,
                 num_samples=2,
+                allow_smaller=True,
+            ),
+            SpatialPadd(
+                keys=("image", "label"),
+                spatial_size=(128, 128, 128),
+                method="symmetric",
+                mode="constant",
             ),
             RandFlipd(keys=("image", "label"), prob=0.2, spatial_axis=0),
             RandFlipd(keys=("image", "label"), prob=0.2, spatial_axis=1),

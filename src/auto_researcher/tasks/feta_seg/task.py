@@ -18,8 +18,13 @@ from auto_researcher.tasks.feta_seg.evaluator import (
 )
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
+    EXPECTED_MANIFEST_HASH,
     build_dataset_manifest,
     discover_pairs,
+)
+from auto_researcher.tasks.feta_seg.splits import (
+    EXPECTED_FOLD_HASH,
+    EXPECTED_SPLIT_HASH,
 )
 from auto_researcher.tasks.feta_seg.verification import FeTASegVerificationPolicy
 from auto_researcher.tasks.models import (
@@ -63,7 +68,20 @@ class FeTASegTask:
                 ready=True, checks=smoke_checks, warnings=("not_scientific_baseline",)
             )
         available = context.data_dir is not None and context.data_dir.exists()
-        inventory = labels = False
+        inventory = identity = dependencies = cuda = False
+        try:
+            import monai
+            import nibabel
+            import numpy
+            import scipy  # type: ignore[import-untyped]
+            import torch
+
+            dependencies = all(
+                module is not None for module in (monai, nibabel, numpy, scipy, torch)
+            )
+            cuda = bool(torch.cuda.is_available())
+        except ImportError:
+            pass
         if available:
             try:
                 assert context.data_dir is not None
@@ -74,9 +92,16 @@ class FeTASegTask:
                     and sum(item[2] == "mial" for item in pairs.values()) == 40
                     and sum(item[2] == "irtk" for item in pairs.values()) == 40
                 )
-                from auto_researcher.tasks.feta_seg.manifests import inspect_subjects
+                from auto_researcher.tasks.feta_seg.manifests import (
+                    inspect_subjects,
+                    manifest_hash,
+                )
 
-                labels = len(inspect_subjects(data_dir)) == 80
+                subjects = inspect_subjects(data_dir, inspect_labels=False)
+                identity = (
+                    len(subjects) == 80
+                    and manifest_hash(subjects) == EXPECTED_MANIFEST_HASH
+                )
             except Exception:
                 pass
         checks = (
@@ -91,9 +116,19 @@ class FeTASegTask:
                 message="Inventory must contain 80 paired subjects split 40 MIAL/40 IRTK.",
             ),
             ReadinessCheck(
-                code="feta_labels_complete",
-                passed=labels,
-                message="Every subject must contain labels 0–7.",
+                code="feta_dataset_identity_exact",
+                passed=identity,
+                message="The path-free manifest hash must match the audited FeTA export.",
+            ),
+            ReadinessCheck(
+                code="feta_ml_dependencies_available",
+                passed=dependencies,
+                message="The pinned feta optional dependency set must be installed.",
+            ),
+            ReadinessCheck(
+                code="feta_cuda_available",
+                passed=cuda,
+                message="The locked full baseline requires a CUDA-capable PyTorch runtime.",
             ),
         )
         errors = tuple(item.code for item in checks if not item.passed)
@@ -114,13 +149,30 @@ class FeTASegTask:
             raise ValueError("feta_direct_only")
         if contract.constraints.get("holdout_policy") != "sealed-no-evaluation":
             raise ValueError("feta_holdout_policy_missing")
+        expected_constraints = {
+            "dataset_manifest_hash": EXPECTED_MANIFEST_HASH,
+            "split_hash": EXPECTED_SPLIT_HASH,
+            "fold_hash": EXPECTED_FOLD_HASH,
+        }
+        if any(
+            contract.constraints.get(key) != value
+            for key, value in expected_constraints.items()
+        ):
+            raise ValueError("feta_contract_scientific_identity_mismatch")
 
     def normalise_configuration(
         self, configuration: dict[str, JsonValue]
     ) -> dict[str, JsonValue]:
-        return FeTASegConfiguration.model_validate(
-            configuration
-        ).scientific_configuration()
+        validated = FeTASegConfiguration.model_validate(configuration)
+        # DIRECT treats list values as choice sets. Keep fixed vector-valued
+        # architecture/preprocessing constants task-owned and out of the DIRECT
+        # search space; the evaluator reconstructs them from FeTASegConfiguration
+        # defaults.
+        return {
+            "mode": validated.mode,
+            "maximum_epochs": validated.maximum_epochs,
+            "fold_count": validated.fold_count,
+        }
 
     def dataset_manifest(self, context: TaskRuntimeContext):
         return build_dataset_manifest(context)
@@ -167,7 +219,10 @@ class FeTASegTask:
                 {"raw_mri", "raw_segmentation", "holdout_prediction", "holdout_metric"}
             ),
             contains_sensitive_data=True,
-            retention_notes="Aggregate development evidence only; MRI, masks and checkpoints remain outside git.",
+            retention_notes=(
+                "Aggregate and safe-ID per-development-subject metrics only; "
+                "MRI, masks, predictions and checkpoints remain outside git."
+            ),
         )
 
     def create_agent_context(
@@ -201,7 +256,9 @@ class FeTASegTask:
             optuna_space_summary={},
             fixed_scientific_context={
                 "split_identity": "feta-development-holdout-v1",
+                "split_hash": EXPECTED_SPLIT_HASH,
                 "fold_identity": "feta-dev-5fold-v1",
+                "fold_hash": EXPECTED_FOLD_HASH,
             },
             task_limitations=(
                 "No hold-out evaluation; no clinical claim; full result requires CUDA.",
@@ -225,8 +282,11 @@ def default_feta_contract() -> ResearchContract:
         objective="maximise locked-development five-fold mean subject-level macro Dice",
         constraints={
             "dataset_release": DATASET_RELEASE,
+            "dataset_manifest_hash": EXPECTED_MANIFEST_HASH,
             "split_identity": "feta-development-holdout-v1",
+            "split_hash": EXPECTED_SPLIT_HASH,
             "fold_identity": "feta-dev-5fold-v1",
+            "fold_hash": EXPECTED_FOLD_HASH,
             "holdout_policy": "sealed-no-evaluation",
             "score_minimum": 0.0,
             "score_maximum": 1.0,

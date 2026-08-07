@@ -15,6 +15,9 @@ from auto_researcher.tasks.feta_seg.metrics import LABEL_NAMES
 from auto_researcher.tasks.models import DatasetManifest, TaskRuntimeContext
 
 DATASET_RELEASE = "feta-2.1-export-80"
+EXPECTED_MANIFEST_HASH = (
+    "6d6f375fda99512a93bbaaa715d6edb5031c4d4f2356584b578f2ebd9631eacf"
+)
 MANIFEST_VERSION = "feta-dataset-manifest-v1"
 LOADER_VERSION = "feta-flat-nifti-loader-v1"
 FILE_PATTERN = re.compile(r"^(sub-\d{3})_rec-(mial|irtk)_(T2w|dseg)\.nii(?:\.gz)?$")
@@ -40,9 +43,9 @@ class FeTASubject:
             "segmentation_identity": self.segmentation_path.name,
             "image_sha256": self.image_sha256,
             "segmentation_sha256": self.segmentation_sha256,
-            "shape": self.shape,
-            "spacing": self.spacing,
-            "labels": self.labels,
+            "shape": list(self.shape),
+            "spacing": list(self.spacing),
+            "labels": list(self.labels),
         }
 
 
@@ -174,9 +177,14 @@ def build_dataset_manifest(context: TaskRuntimeContext) -> DatasetManifest:
         )
     if context.data_dir is None:
         raise RuntimeError("feta_data_unavailable")
-    subjects = inspect_subjects(context.data_dir)
+    # The registered byte identities prove the audited label content. Building a
+    # runtime manifest reads hold-out headers/hashes but never decodes hold-out
+    # label voxels; only development labels enter training or metric code.
+    subjects = inspect_subjects(context.data_dir, inspect_labels=False)
     payload = canonical_manifest_payload(subjects)
     identity = manifest_hash(subjects)
+    if identity != EXPECTED_MANIFEST_HASH:
+        raise ValueError("feta_dataset_identity_mismatch")
     return DatasetManifest(
         task_id="feta_seg",
         dataset_version=f"{DATASET_RELEASE}+{identity}",

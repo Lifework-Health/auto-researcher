@@ -9,6 +9,8 @@ from auto_researcher.runtime.identity import payload_hash
 SPLIT_ID = "feta-development-holdout-v1"
 FOLD_ID = "feta-dev-5fold-v1"
 SPLIT_SEED = 20260807
+EXPECTED_SPLIT_HASH = "3ee6e9f02b4d35f7611bb70cdf19aea3ebc12f81ef89b57291eac9983df66561"
+EXPECTED_FOLD_HASH = "45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e"
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,10 @@ def locked_partition(subject_methods: dict[str, str]) -> Partition:
         tuple(sorted(holdout)), tuple(sorted(development)), dict(sorted(folds.items()))
     )
     validate_partition(result, subject_methods)
+    if result.split_hash != EXPECTED_SPLIT_HASH:
+        raise ValueError("feta_split_identity_mismatch")
+    if result.fold_hash != EXPECTED_FOLD_HASH:
+        raise ValueError("feta_fold_identity_mismatch")
     return result
 
 
