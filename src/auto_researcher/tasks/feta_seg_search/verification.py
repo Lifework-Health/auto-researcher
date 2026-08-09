@@ -14,18 +14,17 @@ from auto_researcher.tasks.feta_seg.splits import (
     SPLIT_ID,
 )
 from auto_researcher.tasks.feta_seg_search.evaluator import EVALUATOR_VERSION
+from auto_researcher.tasks.feta_seg_search.metric_tiers import (
+    FULL_PANEL_METRIC_NAMES,
+)
 from auto_researcher.tasks.models import PolicyDecision
 
 
 class FeTASegSearchVerificationPolicy:
-    policy_id = "feta-seg-search-evidence-policy-v1"
+    policy_id = "feta-seg-search-evidence-policy-v2"
     required_metrics = frozenset(
         {
             "mean_subject_macro_dice",
-            "mean_subject_macro_hd95_mm",
-            "mean_subject_macro_volume_similarity",
-            "mean_subject_macro_euler_distance",
-            "per_class_summary",
             "subject_metrics",
             "per_tissue_dice",
             "reconstruction_macro_dice",
@@ -33,14 +32,32 @@ class FeTASegSearchVerificationPolicy:
             "empty_prediction_count",
             "best_epoch",
             "validation_score",
+            "cache_prepare_seconds",
+            "validation_prepare_seconds",
+            "training_seconds",
             "training_duration_seconds",
+            "validation_inference_seconds",
+            "endpoint_metric_seconds",
             "total_duration_seconds",
             "peak_gpu_memory_bytes",
+            "duplicate_endpoint_inference_avoided",
             "validation_epochs",
             "checkpoint_reference",
+            "last_checkpoint_reference",
             "environment",
             "environment_identity",
             "configuration_identity",
+            "trajectory_identity",
+            "cache_identity",
+            "cache_identity_version",
+            "cache_reused",
+            "metric_tier",
+            "metric_tier_policy_version",
+            "resumed",
+            "resumed_from_epoch",
+            "source_checkpoint_sha256",
+            "continuation_version",
+            "continuation_semantics",
             "dataset_manifest_hash",
             "split_identity",
             "split_hash",
@@ -68,6 +85,17 @@ class FeTASegSearchVerificationPolicy:
             reasons.append("feta_search_primary_score_invalid")
         if not self.required_metrics.issubset(evaluation.metrics):
             reasons.append("feta_search_required_metrics_missing")
+        tier = evaluation.metrics.get("metric_tier")
+        if tier not in {"screen", "full"}:
+            reasons.append("feta_search_metric_tier_invalid")
+        elif tier == "full" and not FULL_PANEL_METRIC_NAMES.issubset(
+            evaluation.metrics
+        ):
+            reasons.append("feta_search_full_metrics_missing")
+        elif tier == "screen" and FULL_PANEL_METRIC_NAMES & set(
+            evaluation.metrics
+        ):
+            reasons.append("feta_search_screen_metrics_masquerade_as_full")
         if evaluation.metrics.get("dataset_manifest_hash") != EXPECTED_MANIFEST_HASH:
             reasons.append("feta_search_dataset_identity_mismatch")
         if (
