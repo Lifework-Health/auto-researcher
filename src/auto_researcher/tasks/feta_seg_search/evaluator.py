@@ -36,6 +36,14 @@ from auto_researcher.tasks.feta_seg_search.configuration import (
     CONFIGURATION_SCHEMA_VERSION,
     FeTASegSearchConfiguration,
 )
+from auto_researcher.tasks.feta_seg_search.cache import CACHE_IDENTITY_VERSION
+from auto_researcher.tasks.feta_seg_search.continuation import CONTINUATION_VERSION
+from auto_researcher.tasks.feta_seg_search.metric_tiers import (
+    FULL_PANEL_METRIC_NAMES,
+    METRIC_TIER_POLICY_VERSION,
+    SCREEN_METRIC_VERSION,
+    metric_tier_for_fidelity,
+)
 from auto_researcher.tasks.feta_seg_search.runner import (
     RUNNER_VERSION,
     run_search_candidate,
@@ -64,7 +72,7 @@ from auto_researcher.tasks.scientific_json import (
 )
 
 EVALUATOR_ID = "feta-segresnet-search-evaluator"
-EVALUATOR_VERSION = "feta-segresnet-search-evaluator-v1"
+EVALUATOR_VERSION = "feta-segresnet-search-evaluator-v2"
 FETA_SEARCH_SCIENTIFIC_JSON_POLICY = ScientificJsonPolicy(
     permitted_nan_paths=frozenset()
 )
@@ -91,9 +99,13 @@ def evaluator_code_version(dataset_version: str) -> str:
             OPTIMISER_VERSION,
             INFERENCE_VERSION,
             METRIC_PANEL_VERSION,
+            SCREEN_METRIC_VERSION,
             HD95_VERSION,
             EMPTY_PREDICTION_VERSION,
             TOPOLOGY_VERSION,
+            METRIC_TIER_POLICY_VERSION,
+            CACHE_IDENTITY_VERSION,
+            CONTINUATION_VERSION,
             RUNNER_VERSION,
             SCIENTIFIC_JSON_ENCODING_VERSION,
             ARTEFACT_BUNDLE_SCHEMA_VERSION,
@@ -134,6 +146,9 @@ class FeTASegSearchEvaluator:
             "fold_hash": EXPECTED_FOLD_HASH,
             "search_scope": "development-fold-0-only",
             "metric_panel_version": METRIC_PANEL_VERSION,
+            "metric_tier_policy_version": METRIC_TIER_POLICY_VERSION,
+            "cache_identity_version": CACHE_IDENTITY_VERSION,
+            "continuation_version": CONTINUATION_VERSION,
             "result_encoding_version": SCIENTIFIC_JSON_ENCODING_VERSION,
             "artefact_bundle_schema_version": ARTEFACT_BUNDLE_SCHEMA_VERSION,
             "holdout_evaluator_calls": 0,
@@ -206,6 +221,9 @@ class FeTASegSearchEvaluator:
             )
         except Exception:
             return self._failure(experiment, "feta_search_configuration_invalid")
+        expected_metric_tier = metric_tier_for_fidelity(
+            configuration.maximum_epochs
+        )
 
         try:
             metrics = self.search_runner(
@@ -224,6 +242,42 @@ class FeTASegSearchEvaluator:
                 "feta_search_fold_zero_membership_invalid",
                 "feta_search_training_loss_non_finite",
                 "feta_search_best_checkpoint_missing",
+                "feta_search_best_prediction_identity_mismatch",
+                "feta_search_validation_prediction_count_mismatch",
+                "feta_search_validation_preparation_incomplete",
+                "feta_search_endpoint_prediction_count_mismatch",
+                "feta_search_shared_cache_manifest_invalid",
+                "feta_search_shared_cache_identity_mismatch",
+                "feta_search_shared_cache_manifest_missing",
+                "feta_search_shared_cache_completion_invalid",
+                "feta_search_shared_cache_completion_mismatch",
+                "feta_search_shared_cache_population_mismatch",
+                "feta_search_shared_cache_population_incomplete",
+                "feta_search_shared_cache_record_invalid",
+                "feta_search_resume_candidate_root_invalid",
+                "feta_search_resume_checkpoint_missing",
+                "feta_search_resume_best_checkpoint_missing",
+                "feta_search_resume_checkpoint_unreadable",
+                "feta_search_resume_checkpoint_invalid",
+                "feta_search_resume_checkpoint_identity_mismatch",
+                "feta_search_resume_continuation_identity_mismatch",
+                "feta_search_resume_runtime_identity_mismatch",
+                "feta_search_resume_fold_mismatch",
+                "feta_search_resume_seed_mismatch",
+                "feta_search_resume_configuration_invalid",
+                "feta_search_resume_source_fidelity_invalid",
+                "feta_search_resume_source_fidelity_mismatch",
+                "feta_search_resume_configuration_identity_mismatch",
+                "feta_search_resume_trajectory_mismatch",
+                "feta_search_resume_fidelity_not_higher",
+                "feta_search_resume_best_checkpoint_invalid",
+                "feta_search_resume_best_checkpoint_identity_mismatch",
+                "feta_search_resume_best_checkpoint_unreadable",
+                "feta_search_resume_rng_state_invalid",
+                "feta_search_resume_best_score_mismatch",
+                "feta_search_resume_best_prediction_identity_mismatch",
+                "feta_search_resume_best_model_state_invalid",
+                "feta_search_resume_optimisation_state_invalid",
             }
             return self._failure(
                 experiment,
@@ -244,10 +298,13 @@ class FeTASegSearchEvaluator:
                 "loss_version": LOSS_VERSION,
                 "optimiser_version": OPTIMISER_VERSION,
                 "inference_version": INFERENCE_VERSION,
-                "metric_version": METRIC_PANEL_VERSION,
+                "metric_version": METRIC_PANEL_VERSION
+                if expected_metric_tier == "full"
+                else SCREEN_METRIC_VERSION,
                 "hd95_version": HD95_VERSION,
                 "empty_prediction_version": EMPTY_PREDICTION_VERSION,
                 "topology_version": TOPOLOGY_VERSION,
+                "metric_tier_policy_version": METRIC_TIER_POLICY_VERSION,
                 "search_scope": "development-fold-0-only",
             }
         )
@@ -264,12 +321,8 @@ class FeTASegSearchEvaluator:
         if not math.isfinite(score):
             return self._failure(experiment, "feta_search_scientific_json_invalid")
 
-        required_metric_names = {
+        common_required_metric_names = {
             "mean_subject_macro_dice",
-            "mean_subject_macro_hd95_mm",
-            "mean_subject_macro_volume_similarity",
-            "mean_subject_macro_euler_distance",
-            "per_class_summary",
             "per_tissue_dice",
             "subject_metrics",
             "reconstruction_macro_dice",
@@ -277,14 +330,35 @@ class FeTASegSearchEvaluator:
             "empty_prediction_count",
             "best_epoch",
             "validation_score",
+            "cache_prepare_seconds",
+            "validation_prepare_seconds",
+            "training_seconds",
             "training_duration_seconds",
+            "validation_inference_seconds",
+            "endpoint_metric_seconds",
             "total_duration_seconds",
             "peak_gpu_memory_bytes",
+            "duplicate_endpoint_inference_avoided",
             "validation_epochs",
             "checkpoint_reference",
+            "last_checkpoint_reference",
             "environment",
             "environment_identity",
+            "cache_identity",
+            "cache_identity_version",
+            "cache_reused",
+            "trajectory_identity",
+            "resumed",
+            "resumed_from_epoch",
+            "source_checkpoint_sha256",
+            "continuation_version",
+            "continuation_semantics",
+            "metric_tier",
+            "metric_tier_policy_version",
         }
+        required_metric_names = set(common_required_metric_names)
+        if expected_metric_tier == "full":
+            required_metric_names.update(FULL_PANEL_METRIC_NAMES)
         try:
             empty_prediction_count = int(metrics.get("empty_prediction_count", -1))
         except (TypeError, ValueError):
@@ -309,6 +383,18 @@ class FeTASegSearchEvaluator:
             "valid_prediction_labels": metrics.get("valid_prediction_labels")
             == list(range(8)),
             "required_metrics_complete": required_metric_names.issubset(metrics),
+            "metric_tier_exact": metrics.get("metric_tier")
+            == expected_metric_tier,
+            "metric_tier_policy_exact": metrics.get(
+                "metric_tier_policy_version"
+            )
+            == METRIC_TIER_POLICY_VERSION,
+            "screen_metrics_exclude_full_panel": expected_metric_tier == "full"
+            or not (FULL_PANEL_METRIC_NAMES & set(metrics)),
+            "duplicate_endpoint_inference_avoided": metrics.get(
+                "duplicate_endpoint_inference_avoided"
+            )
+            is True,
             "empty_prediction_count_valid": 0
             <= empty_prediction_count
             <= 14 * len(LABELS),

@@ -32,6 +32,17 @@ from auto_researcher.tasks.feta_seg_search.evaluator import (
     FeTASegSearchEvaluator,
     evaluator_code_version,
 )
+from auto_researcher.tasks.feta_seg_search.cache import CACHE_IDENTITY_VERSION
+from auto_researcher.tasks.feta_seg_search.continuation import (
+    CONTINUATION_SEMANTICS,
+    CONTINUATION_VERSION,
+    candidate_trajectory_identity,
+)
+from auto_researcher.tasks.feta_seg_search.metric_tiers import (
+    METRIC_TIER_POLICY_VERSION,
+    aggregate_screen_subject_metrics,
+    metric_tier_for_fidelity,
+)
 from auto_researcher.tasks.feta_seg_search.transforms import (
     augmentation_policy,
     positive_negative_counts,
@@ -86,20 +97,51 @@ def _metrics(configuration: FeTASegSearchConfiguration) -> dict:
                 "empty_prediction_count": 0,
             }
         )
-    result = aggregate_subject_metrics(rows)
+    tier = metric_tier_for_fidelity(configuration.maximum_epochs)
+    if tier == "screen":
+        screen_rows = [
+            {
+                **row,
+                "per_class": {
+                    label: {
+                        "label_name": values["label_name"],
+                        "dice": values["dice"],
+                        "empty_prediction": values["empty_prediction"],
+                    }
+                    for label, values in row["per_class"].items()
+                },
+            }
+            for row in rows
+        ]
+        result = aggregate_screen_subject_metrics(screen_rows)
+    else:
+        result = aggregate_subject_metrics(rows)
+    trajectory_identity = candidate_trajectory_identity(configuration)
     result.update(
         {
+            "metric_tier": tier,
+            "metric_tier_policy_version": METRIC_TIER_POLICY_VERSION,
             "best_epoch": 25,
             "validation_score": 0.6,
+            "cache_prepare_seconds": 0.1,
+            "validation_prepare_seconds": 0.1,
+            "training_seconds": 0.8,
             "training_duration_seconds": 1.0,
+            "validation_inference_seconds": 0.1,
+            "endpoint_metric_seconds": 0.1,
             "total_duration_seconds": 2.0,
             "peak_gpu_memory_bytes": 1024,
+            "duplicate_endpoint_inference_avoided": True,
             "validation_epochs": list(configuration.validation_epochs()),
             "training_subject_count": 54,
             "validation_subject_count": 14,
             "holdout_subjects_evaluated": 0,
             "fold": 0,
             "configuration_identity": payload_hash(configuration),
+            "trajectory_identity": trajectory_identity,
+            "cache_identity": "c" * 64,
+            "cache_identity_version": CACHE_IDENTITY_VERSION,
+            "cache_reused": True,
             "checkpoint_reference": {
                 "fold": 0,
                 "relative_path": "checkpoints/best.pt",
@@ -107,6 +149,14 @@ def _metrics(configuration: FeTASegSearchConfiguration) -> dict:
                 "sha256": "a" * 64,
                 "best_epoch": 25,
                 "validation_score": 0.6,
+            },
+            "last_checkpoint_reference": {
+                "checkpoint_type": "continuation-last",
+                "relative_path": "checkpoints/last.pt",
+                "size_bytes": 1,
+                "sha256": "b" * 64,
+                "completed_epoch": configuration.maximum_epochs,
+                "trajectory_identity": trajectory_identity,
             },
             "environment": {"gpu": "fixture"},
             "environment_identity": payload_hash({"gpu": "fixture"}),
@@ -116,12 +166,17 @@ def _metrics(configuration: FeTASegSearchConfiguration) -> dict:
             "split_hash": EXPECTED_SPLIT_HASH,
             "fold_identity": FOLD_ID,
             "fold_hash": EXPECTED_FOLD_HASH,
+            "resumed": False,
+            "resumed_from_epoch": None,
+            "source_checkpoint_sha256": None,
+            "continuation_version": CONTINUATION_VERSION,
+            "continuation_semantics": CONTINUATION_SEMANTICS,
         }
     )
     return result
 
 
-def _evaluator(tmp_path: Path, runner):
+def _evaluator(tmp_path: Path, runner, *, maximum_epochs: int = 50):
     dataset_version = f"feta-2.1-export-80+{EXPECTED_MANIFEST_HASH}"
     manifest = DatasetManifest(
         task_id="feta_seg_search",
@@ -139,7 +194,7 @@ def _evaluator(tmp_path: Path, runner):
         provenance=ProvenanceKind.REAL,
     )
     context = TaskRuntimeContext(workspace_dir=tmp_path)
-    configuration = FeTASegSearchConfiguration()
+    configuration = FeTASegSearchConfiguration(maximum_epochs=maximum_epochs)
     experiment = ExperimentSpec(
         experiment_id="candidate",
         hypothesis_id="hypothesis",
@@ -411,6 +466,10 @@ def test_generated_runner_result_is_valid_and_verifiable(tmp_path):
     result = evaluator.evaluate(experiment, contract)
     assert result.success is True
     assert result.primary_score == pytest.approx(0.6)
+    assert result.metrics["metric_tier"] == "screen"
+    assert "mean_subject_macro_hd95_mm" not in result.metrics
+    assert "mean_subject_macro_volume_similarity" not in result.metrics
+    assert "mean_subject_macro_euler_distance" not in result.metrics
     reconstructed = FeTASegSearchConfiguration.model_validate(
         experiment.configuration
     )
@@ -420,6 +479,48 @@ def test_generated_runner_result_is_valid_and_verifiable(tmp_path):
         contract
     ).evaluate_constraints(result, contract)
     assert decision.constraint_compliant is True
+
+
+@pytest.mark.parametrize("maximum_epochs", [25, 50])
+def test_evaluator_accepts_screen_metric_tier(maximum_epochs, tmp_path):
+    evaluator, experiment, _ = _evaluator(
+        tmp_path,
+        lambda _context, candidate, _experiment_id: _metrics(candidate),
+        maximum_epochs=maximum_epochs,
+    )
+    result = evaluator.evaluate(experiment, default_feta_search_contract())
+    assert result.success is True
+    assert result.metrics["metric_tier"] == "screen"
+    assert "mean_subject_macro_hd95_mm" not in result.metrics
+
+
+@pytest.mark.parametrize("maximum_epochs", [100, 150, 300])
+def test_evaluator_accepts_full_metric_tier(maximum_epochs, tmp_path):
+    evaluator, experiment, _ = _evaluator(
+        tmp_path,
+        lambda _context, candidate, _experiment_id: _metrics(candidate),
+        maximum_epochs=maximum_epochs,
+    )
+    result = evaluator.evaluate(experiment, default_feta_search_contract())
+    assert result.success is True
+    assert result.metrics["metric_tier"] == "full"
+    assert "mean_subject_macro_hd95_mm" in result.metrics
+    assert "mean_subject_macro_volume_similarity" in result.metrics
+    assert "mean_subject_macro_euler_distance" in result.metrics
+
+
+def test_evaluator_rejects_incomplete_full_metric_tier(tmp_path):
+    def incomplete(_context, candidate, _experiment_id):
+        metrics = _metrics(candidate)
+        metrics.pop("mean_subject_macro_hd95_mm")
+        return metrics
+
+    evaluator, experiment, _ = _evaluator(
+        tmp_path, incomplete, maximum_epochs=100
+    )
+    result = evaluator.evaluate(experiment, default_feta_search_contract())
+    assert result.success is False
+    assert result.error == "feta_search_scientific_constraints_failed"
 
 
 @pytest.mark.parametrize(
