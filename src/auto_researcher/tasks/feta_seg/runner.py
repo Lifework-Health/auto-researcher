@@ -31,11 +31,15 @@ from auto_researcher.tasks.feta_seg.trainer import (
     sliding_window_predict,
 )
 from auto_researcher.tasks.feta_seg.transforms import create_transforms
+from auto_researcher.tasks.feta_seg.fold_resume import (
+    load_fold_result,
+    persist_fold_result,
+)
 from auto_researcher.tasks.models import TaskRuntimeContext
 
 ENGINEERING_SMOKE_VERSION = "feta-real-data-gpu-engineering-smoke-v1"
-RUNNER_VERSION = "feta-five-fold-oof-runner-v2"
-DATA_LOADER_VERSION = "monai-persistent-train-uncached-validation-workers4-v2"
+RUNNER_VERSION = "feta-five-fold-oof-runner-v3"
+DATA_LOADER_VERSION = "monai-persistent-train-spawn4-uncached-validation-v3"
 
 
 @dataclass(frozen=True)
@@ -44,11 +48,15 @@ class FoldExecutionResult:
     subject_metrics: tuple[dict[str, Any], ...]
     best_epoch: int
     validation_score: float
-    training_duration_seconds: float
-    total_duration_seconds: float
-    peak_gpu_memory_bytes: int
+    training_duration_seconds: float | None
+    total_duration_seconds: float | None
+    peak_gpu_memory_bytes: int | None
     checkpoint: dict[str, Any]
     seed: int
+    reused_fold_result: bool = False
+    recovered_checkpoint: bool = False
+    source_runner_version: str | None = None
+    source_data_loader_version: str | None = None
 
 
 FoldExecutor = Callable[
@@ -202,6 +210,7 @@ def _run_cuda_fold(
         num_workers=4,
         pin_memory=True,
         persistent_workers=True,
+        multiprocessing_context="spawn",
         generator=generator,
     )
 
@@ -296,6 +305,8 @@ def _run_cuda_fold(
         peak_gpu_memory_bytes=peak_memory,
         checkpoint=reference,
         seed=seed,
+        source_runner_version=RUNNER_VERSION,
+        source_data_loader_version=DATA_LOADER_VERSION,
     )
 
 
@@ -362,12 +373,39 @@ def run_full_baseline(
     checkpoint_root = root / "checkpoints"
     cache_root = root / "cache"
 
+    resume_value = context.task_options.get("resume_root")
+    resume_root = (
+        Path(resume_value).expanduser()
+        if isinstance(resume_value, str) and resume_value.strip()
+        else None
+    )
+    if resume_root is not None and not resume_root.is_dir():
+        raise RuntimeError("feta_resume_root_missing")
+
     def execute(
         fold: int,
         training: tuple[FeTASubject, ...],
         validation: tuple[FeTASubject, ...],
     ) -> FoldExecutionResult:
-        return _run_cuda_fold(
+        if resume_root is not None:
+            reused = load_fold_result(
+                resume_root,
+                root,
+                FoldExecutionResult,
+                configuration,
+                fold,
+                validation,
+            )
+            if reused is not None:
+                persist_fold_result(
+                    root,
+                    reused,
+                    configuration,
+                    validation,
+                )
+                return reused
+
+        result = _run_cuda_fold(
             fold,
             training,
             validation,
@@ -375,6 +413,23 @@ def run_full_baseline(
             checkpoint_root=checkpoint_root,
             cache_root=cache_root,
         )
+
+        expected_subjects = {
+            subject.subject_id for subject in validation
+        }
+        observed_subjects = {
+            str(row["subject_id"]) for row in result.subject_metrics
+        }
+        if result.fold != fold or observed_subjects != expected_subjects:
+            raise ValueError("feta_oof_membership_invalid")
+
+        persist_fold_result(
+            root,
+            result,
+            configuration,
+            validation,
+        )
+        return result
 
     fold_results = orchestrate_development_folds(
         configuration, subjects, partition, execute
@@ -394,6 +449,10 @@ def run_full_baseline(
                 "total_duration_seconds": result.total_duration_seconds,
                 "peak_gpu_memory_bytes": result.peak_gpu_memory_bytes,
                 "validation_subject_count": len(result.subject_metrics),
+                "reused_fold_result": result.reused_fold_result,
+                "recovered_checkpoint": result.recovered_checkpoint,
+                "source_runner_version": result.source_runner_version,
+                "source_data_loader_version": result.source_data_loader_version,
             }
             for result in fold_results
         ],
