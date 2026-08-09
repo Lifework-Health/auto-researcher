@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from auto_researcher.cli import _load_task_configuration, _load_yaml
 from auto_researcher.contracts.enums import ProvenanceKind, SearchType
 from auto_researcher.contracts.models import ExperimentSpec, SearchRequest
 from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.tasks.feta_seg import FeTASegTask
 from auto_researcher.tasks.feta_seg.manifests import EXPECTED_MANIFEST_HASH
 from auto_researcher.tasks.feta_seg.metrics import LABEL_NAMES, aggregate_subject_metrics
@@ -142,7 +144,9 @@ def _evaluator(tmp_path: Path, runner):
         experiment_id="candidate",
         hypothesis_id="hypothesis",
         search_request_id="request",
-        configuration=configuration.scientific_configuration(),
+        configuration=FeTASegSearchTask().normalise_configuration(
+            configuration.scientific_configuration()
+        ),
         evaluator_id=metadata.evaluator_id,
         code_version=metadata.code_version,
         dataset_version=metadata.dataset_version,
@@ -166,6 +170,32 @@ def test_registry_keeps_baseline_and_adds_search_task():
         SearchType.DIRECT,
         SearchType.OPTUNA,
     }
+
+
+def test_checked_in_search_examples_bind_runtime_data_and_optuna_controls():
+    examples = (
+        Path(__file__).resolve().parents[2] / "examples" / "tasks" / "feta_seg_search"
+    )
+    direct_path = examples / "direct-50.yaml"
+    optuna_path = examples / "optuna-50.yaml"
+
+    for path in (direct_path, optuna_path):
+        payload = _load_yaml(path)
+        assert payload["task"] == {"id": "feta_seg_search", "version": "1.0"}
+        assert payload["runtime"]["data_dir"] == "/absolute/path/to/feta"
+        assert "--data-dir" not in path.read_text(encoding="utf-8")
+
+    direct, direct_runtime = _load_task_configuration(
+        direct_path, "feta_seg_search", "1.0"
+    )
+    optuna, optuna_runtime = _load_task_configuration(
+        optuna_path, "feta_seg_search", "1.0"
+    )
+    assert direct["maximum_epochs"] == 50
+    assert direct_runtime["data_dir"] == "/absolute/path/to/feta"
+    assert optuna_runtime["data_dir"] == "/absolute/path/to/feta"
+    assert optuna["seed"] == 20260807
+    assert optuna["n_startup_trials"] == 12
 
 
 @pytest.mark.parametrize(
@@ -293,13 +323,84 @@ def test_optuna_space_can_be_narrowed_and_registered_axis_pinned():
 
 def test_direct_baseline_configuration_normalises_at_calibration_fidelities():
     task = FeTASegSearchTask()
+    expected_fields = {
+        "fold",
+        "maximum_epochs",
+        "learning_rate",
+        "weight_decay",
+        "dropout",
+        "dice_weight",
+        "positive_negative_ratio",
+        "augmentation_strength",
+    }
     for fidelity in (25, 50, 100, 150):
         normalised = task.normalise_configuration(
             baseline_search_configuration(fidelity)
         )
+        assert set(normalised) == expected_fields
+        assert not any(isinstance(value, list) for value in normalised.values())
         assert normalised["maximum_epochs"] == fidelity
         assert normalised["learning_rate"] == 1e-4
         assert normalised["augmentation_strength"] == "baseline"
+
+
+def test_direct_backend_reconstructs_task_owned_vector_constants():
+    task = FeTASegSearchTask()
+    metadata = ExperimentMetadata(
+        evaluator_id=EVALUATOR_ID,
+        code_version="fixture-code",
+        dataset_version="fixture-data",
+        provenance=ProvenanceKind.REAL,
+    )
+    normalised = task.normalise_configuration(baseline_search_configuration(25))
+    request = SearchRequest(
+        request_id="direct-vector-regression",
+        hypothesis_id="hypothesis",
+        search_type=SearchType.DIRECT,
+        target="mean_subject_macro_dice",
+        search_space=normalised,
+        experiment_budget=1,
+        rationale="Reproduce the real DIRECT vector-configuration path.",
+    )
+    experiment = DirectSearchBackend(
+        metadata, task.normalise_configuration
+    ).create_experiment(
+        request,
+        default_feta_search_contract(),
+        run_id="direct-vector-regression",
+    )
+    reconstructed = FeTASegSearchConfiguration.model_validate(
+        experiment.configuration
+    )
+    assert reconstructed.blocks_down == (1, 2, 2, 4)
+    assert reconstructed.blocks_up == (1, 1, 1)
+    assert reconstructed.spacing_mm == (0.5, 0.5, 0.5)
+    assert reconstructed.patch_size == (128, 128, 128)
+
+
+def test_optuna_candidate_normalises_to_scalar_fields_and_reconstructs_defaults():
+    task = FeTASegSearchTask()
+    specification = task.create_optuna_study_spec(
+        default_feta_search_contract(), _request(maximum_epochs=50)
+    )
+    candidate = dict(specification.fixed_configuration)
+    candidate.update(
+        {
+            "learning_rate": 1e-4,
+            "weight_decay": 1e-5,
+            "dropout": 0.2,
+            "dice_weight": 1.0,
+            "positive_negative_ratio": "1:1",
+            "augmentation_strength": "baseline",
+        }
+    )
+    normalised = task.normalise_configuration(candidate)
+    assert not any(isinstance(value, list) for value in normalised.values())
+    reconstructed = FeTASegSearchConfiguration.model_validate(normalised)
+    assert reconstructed.patch_size == (128, 128, 128)
+    assert payload_hash(reconstructed) == payload_hash(
+        FeTASegSearchConfiguration(maximum_epochs=50)
+    )
 
 
 def test_generated_runner_result_is_valid_and_verifiable(tmp_path):
@@ -310,6 +411,11 @@ def test_generated_runner_result_is_valid_and_verifiable(tmp_path):
     result = evaluator.evaluate(experiment, contract)
     assert result.success is True
     assert result.primary_score == pytest.approx(0.6)
+    reconstructed = FeTASegSearchConfiguration.model_validate(
+        experiment.configuration
+    )
+    assert result.metrics["configuration_identity"] == payload_hash(reconstructed)
+    assert result.metrics["configuration"]["blocks_down"] == [1, 2, 2, 4]
     decision = FeTASegSearchTask().create_verification_policy(
         contract
     ).evaluate_constraints(result, contract)

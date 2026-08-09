@@ -10,6 +10,6 @@ experiment:
   positive_negative_ratio: "1:1"
   augmentation_strength: baseline
 runtime:
+  data_dir: /absolute/path/to/feta
   output_dir: .auto-researcher/feta-search
   workspace_dir: .auto-researcher/feta-search-workspace
-# Supply the local export at runtime with --data-dir; never commit it here.
