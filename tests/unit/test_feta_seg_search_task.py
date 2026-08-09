@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from auto_researcher.cli import _load_task_configuration, _load_yaml
 from auto_researcher.contracts.enums import ProvenanceKind, SearchType
 from auto_researcher.contracts.models import ExperimentSpec, SearchRequest
 from auto_researcher.runtime.identity import payload_hash
@@ -166,6 +167,32 @@ def test_registry_keeps_baseline_and_adds_search_task():
         SearchType.DIRECT,
         SearchType.OPTUNA,
     }
+
+
+def test_checked_in_search_examples_bind_runtime_data_and_optuna_controls():
+    examples = (
+        Path(__file__).resolve().parents[2] / "examples" / "tasks" / "feta_seg_search"
+    )
+    direct_path = examples / "direct-50.yaml"
+    optuna_path = examples / "optuna-50.yaml"
+
+    for path in (direct_path, optuna_path):
+        payload = _load_yaml(path)
+        assert payload["task"] == {"id": "feta_seg_search", "version": "1.0"}
+        assert payload["runtime"]["data_dir"] == "/absolute/path/to/feta"
+        assert "--data-dir" not in path.read_text(encoding="utf-8")
+
+    direct, direct_runtime = _load_task_configuration(
+        direct_path, "feta_seg_search", "1.0"
+    )
+    optuna, optuna_runtime = _load_task_configuration(
+        optuna_path, "feta_seg_search", "1.0"
+    )
+    assert direct["maximum_epochs"] == 50
+    assert direct_runtime["data_dir"] == "/absolute/path/to/feta"
+    assert optuna_runtime["data_dir"] == "/absolute/path/to/feta"
+    assert optuna["seed"] == 20260807
+    assert optuna["n_startup_trials"] == 12
 
 
 @pytest.mark.parametrize(
