@@ -15,6 +15,16 @@ DROPOUT_BOUNDS = (0.0, 0.4)
 DICE_WEIGHT_BOUNDS = (0.5, 1.5)
 POSITIVE_NEGATIVE_RATIOS = ("1:1", "2:1", "3:1")
 AUGMENTATION_STRENGTHS = ("light", "baseline", "strong")
+CANDIDATE_CONFIGURATION_FIELDS = (
+    "fold",
+    "maximum_epochs",
+    "learning_rate",
+    "weight_decay",
+    "dropout",
+    "dice_weight",
+    "positive_negative_ratio",
+    "augmentation_strength",
+)
 
 
 def validation_epochs(maximum_epochs: int) -> tuple[int, ...]:
@@ -122,6 +132,9 @@ def baseline_search_configuration(maximum_epochs: int = 50) -> dict[str, Any]:
 
 
 def normalise_search_configuration(configuration: dict[str, Any]) -> dict[str, Any]:
-    return FeTASegSearchConfiguration.model_validate(configuration).model_dump(
+    validated = FeTASegSearchConfiguration.model_validate(configuration).model_dump(
         mode="json"
     )
+    # DIRECT treats JSON lists as choice sets. Keep vector-valued fixed scientific
+    # constants task-owned; the evaluator reconstructs them from model defaults.
+    return {name: validated[name] for name in CANDIDATE_CONFIGURATION_FIELDS}
