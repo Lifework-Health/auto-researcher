@@ -54,11 +54,13 @@ def default_task_registry() -> TaskRegistry:
     from auto_researcher.tasks.icca_nbs import ICCANBSTask
     from auto_researcher.tasks.iris_knn import IrisKNNTask
     from auto_researcher.tasks.feta_seg import FeTASegTask
+    from auto_researcher.tasks.feta_seg_search import FeTASegSearchTask
     from auto_researcher.tasks.synthetic import SyntheticTask
 
     registry = TaskRegistry()
     registry.register(SyntheticTask)
     registry.register(IrisKNNTask)
     registry.register(FeTASegTask)
+    registry.register(FeTASegSearchTask)
     registry.register(ICCANBSTask)
     return registry

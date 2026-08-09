@@ -1,0 +1,14 @@
+task: {id: feta_seg_search, version: "1.0"}
+agents: {mode: mock}
+search:
+  type: OPTUNA
+  trial_budget: 48
+  seed: 20260807
+  n_startup_trials: 12
+  fixed:
+    fold: 0
+    maximum_epochs: 50
+runtime:
+  output_dir: .auto-researcher/feta-search
+  workspace_dir: .auto-researcher/feta-search-workspace
+# Supply the local export at runtime with --data-dir; never commit it here.
