@@ -378,7 +378,9 @@ def test_mutation_context_is_metadata_only_and_reaches_generic_constraints():
     context = json.loads(json.dumps(spec.task_mutation_context))
     encoded = json.dumps(context, sort_keys=True).casefold()
     assert "subject_id" not in encoded
-    assert "checkpoint" in context["data_boundary"].casefold()
+    assert context["data_boundary"] == (
+        "Only the approved aggregate task metadata and bounded policy schema are exposed."
+    )
     assert "/users/" not in encoded and "/home/" not in encoded
     constraints = mutation_constraints(spec)
     assert (

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 
-from auto_researcher.search.openevolve.identity import openevolve_hash, source_hash
+from auto_researcher.search.openevolve.identity import (
+    component_interface_identity,
+    source_hash,
+)
 from auto_researcher.search.openevolve.models import (
     CandidateValidationResult,
     CandidateValidationStatus,
@@ -186,18 +189,7 @@ def validate_candidate(
         reasons.add("candidate_patch_invalid")
     if source_hash(payload) != candidate.source_hash:
         reasons.add("candidate_patch_invalid")
-    interface_hash = openevolve_hash(
-        "openevolve-component-interface-v1",
-        {
-            "component_id": component.component_id,
-            "component_version": component.component_version,
-            "contract": component.immutable_interface_contract,
-            "entry_point": component.entry_point,
-            "parameter_schema": component.parameter_schema,
-            "output_schema": component.output_schema,
-            "allowed_files": component.allowed_files,
-        },
-    )
+    interface_hash = component_interface_identity(component)
     if candidate.component_interface_hash != interface_hash:
         reasons.add("candidate_interface_mismatch")
     try:

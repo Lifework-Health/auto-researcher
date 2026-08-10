@@ -7,6 +7,9 @@ from pydantic import JsonValue
 from auto_researcher.agents.models import TaskAgentContext
 from auto_researcher.contracts.enums import ProvenanceKind, SearchType
 from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.search.openevolve.live_boundary import (
+    MetadataOnlyMutationBoundary,
+)
 from auto_researcher.search.protocols import SearchCapability
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
@@ -46,6 +49,9 @@ from auto_researcher.tasks.models import (
 class FeTASegEvolveTask:
     task_id = "feta_seg_evolve"
     task_version = "1.0"
+
+    def live_mutation_boundary(self) -> MetadataOnlyMutationBoundary:
+        return MetadataOnlyMutationBoundary(underlying_dataset_class="mri")
 
     def descriptor(self) -> TaskDescriptor:
         return TaskDescriptor(

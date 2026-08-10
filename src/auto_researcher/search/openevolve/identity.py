@@ -26,6 +26,21 @@ def source_hash(source: str) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def component_interface_identity(spec) -> str:
+    return openevolve_hash(
+        "openevolve-component-interface-v1",
+        {
+            "component_id": spec.component_id,
+            "component_version": spec.component_version,
+            "contract": spec.immutable_interface_contract,
+            "entry_point": spec.entry_point,
+            "parameter_schema": spec.parameter_schema,
+            "output_schema": spec.output_schema,
+            "allowed_files": spec.allowed_files,
+        },
+    )
+
+
 def candidate_id(
     *,
     search_request_id: str,
