@@ -32,9 +32,7 @@ from auto_researcher.tasks.feta_seg.splits import (
 from auto_researcher.tasks.feta_seg.trainer import checkpoint_reference
 from auto_researcher.tasks.feta_seg_search.cache import (
     cache_record_hash,
-    mark_shared_cache_complete,
-    prepare_shared_cache,
-    shared_cache_is_complete,
+    prepare_or_reuse_shared_cache,
 )
 from auto_researcher.tasks.feta_seg_search.configuration import (
     FeTASegSearchConfiguration,
@@ -56,6 +54,10 @@ from auto_researcher.tasks.feta_seg_search.metric_tiers import (
     aggregate_screen_subject_metrics,
     evaluate_screen_subject,
     metric_tier_for_fidelity,
+)
+from auto_researcher.tasks.feta_seg_search.gpu_scheduler import (
+    gpu_scheduler_policy,
+    wait_for_gpu_admission,
 )
 from auto_researcher.tasks.feta_seg_search.trainer import (
     create_loss,
@@ -314,6 +316,7 @@ def run_search_candidate(
     total_started = time.perf_counter()
     if context.data_dir is None or context.workspace_dir is None:
         raise RuntimeError("feta_search_runner_paths_missing")
+    scheduler_policy = gpu_scheduler_policy(context)
     environment = require_search_environment()
     subjects = inspect_subjects(context.data_dir, inspect_labels=False)
     if len(subjects) != 80 or manifest_hash(subjects) != EXPECTED_MANIFEST_HASH:
@@ -361,25 +364,23 @@ def run_search_candidate(
             raise ValueError("feta_search_resume_candidate_root_invalid")
 
     cache_started = time.perf_counter()
-    shared_cache = prepare_shared_cache(
-        context.workspace_dir, configuration, training_subjects
-    )
-    cache_reused = shared_cache_is_complete(
-        shared_cache, expected_items=len(training_subjects)
-    )
-    if not cache_reused:
+    def populate_shared_cache(preparation: Any) -> None:
         deterministic_training_dataset = PersistentDataset(
             _dataset_records(training_subjects),
             transform=create_transforms(configuration, training=False),
-            cache_dir=shared_cache.training_cache_dir,
+            cache_dir=preparation.training_cache_dir,
             hash_func=cache_record_hash,
         )
         for index in range(len(deterministic_training_dataset)):
             deterministic_training_dataset[index]
-        mark_shared_cache_complete(
-            shared_cache, expected_items=len(training_subjects)
-        )
         del deterministic_training_dataset
+
+    shared_cache, cache_reused = prepare_or_reuse_shared_cache(
+        context.workspace_dir,
+        configuration,
+        training_subjects,
+        populate=populate_shared_cache,
+    )
     cache_prepare_seconds = time.perf_counter() - cache_started
 
     validation_dataset = Dataset(
@@ -391,6 +392,10 @@ def run_search_candidate(
     )
     del validation_dataset
 
+    admission = wait_for_gpu_admission(
+        scheduler_policy, maximum_epochs=configuration.maximum_epochs
+    )
+    admission_metrics = {} if admission is None else admission.as_metrics()
     seed = seed_everything(configuration)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
@@ -577,6 +582,7 @@ def run_search_candidate(
     torch.cuda.empty_cache()
     return {
         **aggregate,
+        **admission_metrics,
         "metric_tier": metric_tier,
         "metric_tier_policy_version": METRIC_TIER_POLICY_VERSION,
         "best_epoch": retained.epoch,
