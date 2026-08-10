@@ -1,0 +1,32 @@
+task: {id: feta_seg_evolve, version: "1.0"}
+agents: {mode: mock}
+search:
+  type: OPENEVOLVE
+  openevolve:
+    population_size: 1
+    maximum_generations: 2
+    maximum_candidate_evaluations: 3
+    maximum_wall_time_seconds: 86400.0
+    maximum_model_calls: 0
+    maximum_failed_candidates: 2
+    maximum_consecutive_failures: 2
+    maximum_artefact_bytes: 20000000
+    random_seed: 20260810
+    objective_direction: MAXIMIZE
+    objective_threshold: null
+    sandbox_policy_id: openevolve-sandbox-v1
+    evaluator_identity: feta-segresnet-evolve-evaluator@feta-seg-evolve-task-1.0+feta-2.1-export-80+6d6f375fda99512a93bbaaa715d6edb5031c4d4f2356584b578f2ebd9631eacf+feta-development-holdout-v1+3ee6e9f02b4d35f7611bb70cdf19aea3ebc12f81ef89b57291eac9983df66561+feta-dev-5fold-v1+45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e+feta-segresnet-evolve-configuration-v1+feta-training-policy-v1+feta-ras-0.5mm-foreground-zscore-patchpad128-v2+feta-evolve-bounded-numeric-v1+feta-evolve-static-numeric-flip-scale-shift-v1+monai-segresnet-3d-32-1224-111-search-dropout-v1+dice-ce-dynamic-diceweight-ce1-v1+adamw-host-interpreted-lr-policy-v1+sliding-window-128-overlap0.5-gaussian-native-restore-v2+feta-dice-hd95-vs-euler-panel-v2+feta-dice-reconstruction-screen-panel-v1+monai-symmetric-percentile95-physical-mm-v1+fov-diagonal-hd95-penalty-v1+cubical-euler-fg26-bg6-betti-v1+feta-search-fidelity-metric-tier-v1+feta-search-courteous-gpu-admission-v1+feta-fold0-training-policy-runner-v1+monai-shared-persistent-train-spawn4-evolve-v1+scientific-json-v1+experiment-bundle-v2
+    verifier_identity: deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v1
+    candidate_cpu_time_seconds: 2
+    candidate_wall_time_seconds: 3.0
+    candidate_memory_bytes: 268435456
+    candidate_process_limit: 1
+    candidate_output_bytes: 64000
+    candidate_log_bytes: 8000
+    candidate_file_count_limit: 8
+    candidate_workspace_bytes: 1048576
+    candidate_file_size_bytes: 64000
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: .auto-researcher/feta-evolve-deterministic
+  workspace_dir: .auto-researcher/feta-evolve-workspace
