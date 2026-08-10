@@ -114,7 +114,7 @@ class FeTASegEvolvableComponent:
     def component_spec(self) -> EvolvableComponentSpec:
         safe_base = self.base_configuration.model_dump(mode="json")
         safe_context = {
-            "objective": "maximise fold-0 mean subject-level macro Dice",
+            "objective": "maximise fold-0 validation macro Dice",
             "immutable_architecture": "3D SegResNet 32 filters, blocks 1-2-2-4 / 1-1-1",
             "immutable_preprocessing": "RAS, 0.5 mm, foreground crop, nonzero z-score, 128^3 patches",
             "base_configuration": safe_base,
@@ -130,7 +130,7 @@ class FeTASegEvolvableComponent:
                 "reconstruction_gap",
                 "per_tissue_dice",
             ],
-            "data_boundary": "No MRI voxels, masks, paths, subject rows, predictions, checkpoints, holdout information, or evaluator internals are exposed.",
+            "data_boundary": "Only the approved aggregate task metadata and bounded policy schema are exposed.",
         }
         return EvolvableComponentSpec(
             component_id=COMPONENT_ID,

@@ -378,7 +378,9 @@ def test_mutation_context_is_metadata_only_and_reaches_generic_constraints():
     context = json.loads(json.dumps(spec.task_mutation_context))
     encoded = json.dumps(context, sort_keys=True).casefold()
     assert "subject_id" not in encoded
-    assert "checkpoint" in context["data_boundary"].casefold()
+    assert context["data_boundary"] == (
+        "Only the approved aggregate task metadata and bounded policy schema are exposed."
+    )
     assert "/users/" not in encoded and "/home/" not in encoded
     constraints = mutation_constraints(spec)
     assert (
@@ -427,6 +429,24 @@ def test_generation_zero_counts_toward_candidate_budget():
 def test_live_model_mutation_remains_fail_closed_for_mri_task():
     task = FeTASegEvolveTask()
     assert not hasattr(task, "live_mutation_dataset_class")
+
+
+def test_agent_context_describes_attested_metadata_only_live_boundary():
+    context = FeTASegEvolveTask().create_agent_context(
+        default_feta_evolve_contract(),
+        TaskRuntimeContext(),
+        {},
+    )
+    limitations = " ".join(context.task_limitations)
+    assert "No live-model mutation approval for MRI-backed tasks." not in limitations
+    assert limitations == (
+        "Live-model mutation requires a fresh attested metadata-only v2 approval; "
+        "no MRI or evaluator data may cross the mutation-model boundary."
+    )
+    assert context.safety_notes == (
+        "No MRI, masks, paths, subject rows, predictions, checkpoints or holdout "
+        "information enter mutation context.",
+    )
 
 
 def test_examples_parse_and_build_real_search_contracts():

@@ -8,13 +8,19 @@ from pathlib import Path
 
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.identity import source_hash
+from auto_researcher.search.openevolve.identity import component_interface_identity
 from auto_researcher.search.openevolve.models import (
     EvolvableComponentSpec,
     MutationReservation,
     OpenEvolveCandidate,
 )
 from auto_researcher.search.openevolve.live_models import (
+    MetadataOnlyLiveMutationApproval,
     OPENEVOLVE_MUTATION_PROMPT_V2,
+)
+from auto_researcher.search.openevolve.live_boundary import (
+    metadata_only_model_exposure_identity,
+    mutation_constraints_for_component,
 )
 from auto_researcher.search.openevolve.protocols import StructuredMutationClient
 from auto_researcher.search.openevolve.upstream_models import (
@@ -36,6 +42,7 @@ from auto_researcher.search.openevolve.live_dataset import (
 )
 from auto_researcher.tasks.protocols import (
     LiveMutationDatasetClassCapableTask,
+    MetadataOnlyLiveMutationCapableTask,
     ResearchTask,
 )
 
@@ -59,27 +66,7 @@ DISABLED_UPSTREAM_FEATURES = (
 
 
 def mutation_constraints(component: EvolvableComponentSpec) -> MutationConstraints:
-    return MutationConstraints(
-        mutable_file=component.mutable_file,
-        allowed_files=component.allowed_files,
-        entry_point=component.entry_point,
-        immutable_interface_contract=component.immutable_interface_contract,
-        maximum_source_bytes=component.maximum_source_bytes,
-        allowed_imports=component.allowed_imports,
-        allowed_dependencies=component.allowed_dependencies,
-        allowed_imports_display=(
-            ", ".join(component.allowed_imports)
-            if component.allowed_imports
-            else "NONE"
-        ),
-        allowed_dependencies_display=(
-            ", ".join(component.allowed_dependencies)
-            if component.allowed_dependencies
-            else "NONE"
-        ),
-        parameter_schema=component.parameter_schema,
-        output_schema=component.output_schema,
-    )
+    return mutation_constraints_for_component(component)
 
 
 def dependency_lock_hash(path: Path) -> str:
@@ -349,26 +336,58 @@ def build_approved_live_upstream_runtime(
     isolation: ExecutorIsolationResult,
     *,
     task: ResearchTask,
+    component_spec: EvolvableComponentSpec | None = None,
     workspace_root: Path | None = None,
 ) -> tuple[UpstreamOpenEvolveAdapter, HardenedDockerExecutor]:
     """Pair the durable bridge only with the exact approved hardened runner."""
 
     if bridge.approval is None:
         raise ValueError("live_mutation_approval_required")
-    if not isinstance(task, LiveMutationDatasetClassCapableTask):
-        raise ValueError("live_mutation_dataset_class_unavailable")
-    dataset_class = task.live_mutation_dataset_class()
-    if dataset_class not in ALLOWED_LIVE_MUTATION_DATASET_CLASSES:
-        raise ValueError("live_mutation_dataset_class_unavailable")
-    if (
-        task.task_id != bridge.context.task_id
-        or task.task_version != bridge.context.task_version
-        or task.task_id != bridge.approval.task_id
-        or task.task_version != bridge.approval.task_version
-        or dataset_class != bridge.context.dataset_class
-        or dataset_class != bridge.approval.permitted_dataset_class
-    ):
-        raise ValueError("live_mutation_approval_mismatch")
+    if isinstance(bridge.approval, MetadataOnlyLiveMutationApproval):
+        if not isinstance(task, MetadataOnlyLiveMutationCapableTask):
+            raise ValueError("metadata_only_live_mutation_boundary_unavailable")
+        if component_spec is None:
+            raise ValueError("metadata_only_component_spec_required")
+        boundary = task.live_mutation_boundary()
+        interface_identity = component_interface_identity(component_spec)
+        exposure_identity = metadata_only_model_exposure_identity(component_spec)
+        if (
+            bridge.metadata_only_boundary != boundary
+            or task.task_id != bridge.context.task_id
+            or task.task_version != bridge.context.task_version
+            or task.task_id != bridge.approval.task_id
+            or task.task_version != bridge.approval.task_version
+            or component_spec.component_id != bridge.context.component_id
+            or component_spec.component_version != bridge.context.component_version
+            or component_spec.mutable_file != bridge.context.mutable_file
+            or component_spec.mutable_file != bridge.approval.mutable_file
+            or interface_identity != bridge.context.component_interface_hash
+            or interface_identity != bridge.approval.component_interface_hash
+            or exposure_identity != bridge.context.model_exposure_identity
+            or exposure_identity != bridge.approval.model_exposure_identity
+            or boundary.underlying_dataset_class
+            != bridge.context.underlying_dataset_class
+            or boundary.underlying_dataset_class
+            != bridge.approval.underlying_dataset_class
+            or boundary.exposure_class != bridge.context.exposure_class
+            or boundary.exposure_class != bridge.approval.exposure_class
+        ):
+            raise ValueError("live_mutation_approval_mismatch")
+    else:
+        if not isinstance(task, LiveMutationDatasetClassCapableTask):
+            raise ValueError("live_mutation_dataset_class_unavailable")
+        dataset_class = task.live_mutation_dataset_class()
+        if dataset_class not in ALLOWED_LIVE_MUTATION_DATASET_CLASSES:
+            raise ValueError("live_mutation_dataset_class_unavailable")
+        if (
+            task.task_id != bridge.context.task_id
+            or task.task_version != bridge.context.task_version
+            or task.task_id != bridge.approval.task_id
+            or task.task_version != bridge.approval.task_version
+            or dataset_class != bridge.context.dataset_class
+            or dataset_class != bridge.approval.permitted_dataset_class
+        ):
+            raise ValueError("live_mutation_approval_mismatch")
     adapter_hash = payload_hash(adapter_contract)
     if (
         bridge.context.adapter_identity_hash != adapter_hash

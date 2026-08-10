@@ -14,9 +14,11 @@ Candidate source preparation is CPU-only and sandboxed. Each scientific evaluati
 
 ## Live-mutation security status
 
-Deterministic and injected fake-production mutation are supported. Live-model mutation is **blocked**. Existing approval semantics limit `public_benchmark` to fixed public non-patient data and explicitly prohibit MRI and patient data. FeTA is MRI-backed, so this task deliberately does not implement `live_mutation_dataset_class`; approved live upstream assembly fails closed with `live_mutation_dataset_class_unavailable`.
+Deterministic and injected fake-production mutation remain supported. PR 10.7 adds a distinct approved live path: FeTA declares its underlying evaluator class as `mri` and its model exposure as `metadata_only`. It does not implement or inherit the v1 `live_mutation_dataset_class`, and must never be relabelled as `public_benchmark`.
 
-Do not relabel FeTA as `public_benchmark`. A future generic change needs a separately attested metadata/code-only mutation class that binds `mri_access=false`, proves the exact model-facing context, and preserves the hardened executor and approval gates.
+A live run requires a fresh external `live-mutation-approval-v2-metadata-only` binding the exact run, contract, component interface, model-facing schema/context identity, mutable file, adapter, hardened executor and image, provider/model/prompt hash, finite budget and expiry. MRI, patient data, underlying data, filesystem, network and evaluator runtime context access must all be false. An old v1 approval cannot be used.
+
+The provider receives the current candidate source plus the exact attested `MutationConstraints`: interface, parameter/output schemas, bounded context, imports/dependencies and source cap. It receives no FeTA directory, MRI, masks, subject/case rows, predictions, checkpoints, holdout information or evaluator runtime context. Nested input tampering and unsafe candidate output fail before evaluation.
 
 ## Preflight
 
@@ -28,7 +30,8 @@ Do not relabel FeTA as `public_benchmark`. A future generic change needs a separ
 6. Set the one-device CUDA binding and verify the scheduler's physical GPU index.
 7. Run static configuration/component tests on the server before any training.
 8. Start with 25 epochs and deterministic mutation; inspect seed/evolved lineage and aggregate metrics before increasing the budget.
-9. Do not configure a live provider or live approval for FeTA.
+9. For deterministic runs, do not configure a provider or approval. For live mutation, validate a fresh v2 metadata-only approval and independently match its component interface, exposure, prompt, adapter and executor identities before constructing the provider.
+10. Confirm the runtime uses `openevolve-hardened-executor-v2`; local sandbox preparation is not approved for a real live-model campaign.
 
 Example command after replacing the data path:
 

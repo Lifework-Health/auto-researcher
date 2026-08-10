@@ -7,6 +7,7 @@ from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.identity import (
     candidate_id,
+    component_interface_identity,
     openevolve_hash,
     source_hash,
 )
@@ -54,19 +55,7 @@ class OpenEvolveBackend:
 
     @property
     def interface_hash(self) -> str:
-        spec = self.component_spec
-        return openevolve_hash(
-            "openevolve-component-interface-v1",
-            {
-                "component_id": spec.component_id,
-                "component_version": spec.component_version,
-                "contract": spec.immutable_interface_contract,
-                "entry_point": spec.entry_point,
-                "parameter_schema": spec.parameter_schema,
-                "output_schema": spec.output_schema,
-                "allowed_files": spec.allowed_files,
-            },
-        )
+        return component_interface_identity(self.component_spec)
 
     @property
     def dependency_hash(self) -> str:

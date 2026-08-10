@@ -18,12 +18,20 @@ from auto_researcher.contracts.enums import (
 from auto_researcher.providers.protocols import ProviderCallError, StructuredModelClient
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.live_models import (
-    LiveMutationApproval,
+    LiveMutationApprovalEnvelope,
+    MetadataOnlyLiveMutationApproval,
+    MetadataOnlyOpenEvolveModelCallContext,
     OPENEVOLVE_MUTATION_PROMPT_V1,
     OPENEVOLVE_MUTATION_PROMPT_V2,
     OpenEvolveModelBridgeContract,
     OpenEvolveModelCallContext,
     validate_approval,
+    validate_metadata_only_approval,
+)
+from auto_researcher.search.openevolve.live_boundary import (
+    MetadataOnlyMutationBoundary,
+    assert_no_prohibited_dynamic_content,
+    validate_metadata_only_request,
 )
 from auto_researcher.search.openevolve.upstream_models import (
     ModelBridgeReservation,
@@ -62,12 +70,13 @@ class DurableOpenEvolveModelBridge:
         self,
         *,
         contract: OpenEvolveModelBridgeContract,
-        context: OpenEvolveModelCallContext,
-        approval: LiveMutationApproval | None,
+        context: OpenEvolveModelCallContext | MetadataOnlyOpenEvolveModelCallContext,
+        approval: LiveMutationApprovalEnvelope | None,
         store: AgentCallStore,
         provider_factory: ProviderFactory | None,
         now: Callable[[], datetime],
         system_prompt: str,
+        metadata_only_boundary: MetadataOnlyMutationBoundary | None = None,
         crash_after_response: bool = False,
     ) -> None:
         self.contract = contract
@@ -78,6 +87,7 @@ class DurableOpenEvolveModelBridge:
         self.provider_factory = provider_factory
         self.now = now
         self.system_prompt = system_prompt
+        self.metadata_only_boundary = metadata_only_boundary
         self.crash_after_response = crash_after_response
 
     def complete(
@@ -540,6 +550,18 @@ class DurableOpenEvolveModelBridge:
                 != constraints.maximum_source_bytes
             ):
                 raise LiveMutationBridgeError("model_call_input_invalid")
+            if isinstance(self.approval, MetadataOnlyLiveMutationApproval):
+                if not isinstance(self.context, MetadataOnlyOpenEvolveModelCallContext):
+                    raise LiveMutationBridgeError("live_mutation_approval_mismatch")
+                try:
+                    validate_metadata_only_request(
+                        request,
+                        expected_exposure_identity=self.context.model_exposure_identity,
+                    )
+                except (TypeError, ValueError):
+                    raise LiveMutationBridgeError(
+                        "metadata_only_model_input_rejected"
+                    ) from None
         parent = request.get("parent")
         if (
             not isinstance(parent, dict)
@@ -596,6 +618,17 @@ class DurableOpenEvolveModelBridge:
             response_text,
         ):
             raise ValueError("model_call_response_unsafe")
+        if isinstance(self.approval, MetadataOnlyLiveMutationApproval):
+            try:
+                assert_no_prohibited_dynamic_content(
+                    {
+                        "source": envelope.source,
+                        "description": envelope.description,
+                        "upstream_program_id": envelope.upstream_program_id,
+                    }
+                )
+            except ValueError:
+                raise ValueError("model_call_response_unsafe") from None
 
     @staticmethod
     def _safe_identifier(value: str | None) -> str | None:
@@ -603,10 +636,30 @@ class DurableOpenEvolveModelBridge:
             return None
         return value
 
-    def _validate_approval(self, context: OpenEvolveModelCallContext) -> None:
+    def _validate_approval(
+        self,
+        context: OpenEvolveModelCallContext | MetadataOnlyOpenEvolveModelCallContext,
+    ) -> None:
         assert self.approval is not None
         try:
-            validate_approval(self.approval, context, self.contract, now=self.now())
+            if isinstance(self.approval, MetadataOnlyLiveMutationApproval):
+                if (
+                    not isinstance(context, MetadataOnlyOpenEvolveModelCallContext)
+                    or self.metadata_only_boundary is None
+                    or self.approval.prompt_hash != payload_hash(self.system_prompt)
+                ):
+                    raise ValueError("live_mutation_approval_mismatch")
+                validate_metadata_only_approval(
+                    self.approval,
+                    context,
+                    self.contract,
+                    self.metadata_only_boundary,
+                    now=self.now(),
+                )
+            else:
+                if not isinstance(context, OpenEvolveModelCallContext):
+                    raise ValueError("live_mutation_approval_mismatch")
+                validate_approval(self.approval, context, self.contract, now=self.now())
         except ValueError as exc:
             raise LiveMutationBridgeError(str(exc)) from None
 

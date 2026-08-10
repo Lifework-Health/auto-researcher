@@ -33,5 +33,9 @@ the full adapter hash, executor policy hash, image digest, and all three isolati
 results before returning the paired adapter and `HardenedDockerExecutor`. A
 local runner is not returned by this path.
 
-No live task, model, executor image, patient dataset, Aura access, iCCA, or MRI
-workflow is approved by this infrastructure.
+Infrastructure alone grants no live approval. V1 remains limited to synthetic
+and fixed public non-patient benchmarks. The separate metadata-only v2 path can
+assemble an MRI-backed task only when the task explicitly opts in and a fresh
+approval binds the exact component exposure, prompt, provider, budget and
+verified hardened executor. It never approves model access to MRI or patient
+data.

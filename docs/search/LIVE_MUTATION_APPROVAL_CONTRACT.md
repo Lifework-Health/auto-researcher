@@ -22,3 +22,13 @@ The additive class extension retains `live-mutation-approval-v1`: existing
 synthetic payloads, defaults, hashes, and equality semantics are unchanged. A
 public-benchmark approval is a distinct identity and cannot authorise synthetic
 or any prohibited class.
+
+## Attested metadata-only v2
+
+`live-mutation-approval-v2-metadata-only` is a separate two-axis approval; it does not modify or reinterpret v1. It records the host evaluator's true underlying dataset class, including `mri`, and separately fixes the model exposure to `metadata_only`.
+
+The v2 approval additionally binds the component interface hash, the exact model-facing schema/context identity, prompt-content hash, and explicit false values for underlying-data, MRI, patient-data, filesystem, network and evaluator-runtime-context access. Runtime assembly recomputes the interface and exposure identities from the trusted component specification and requires the existing hardened executor evidence.
+
+The v2 approval hash uses `canonical-json-sha256-v2` with domain `auto-researcher-metadata-only-live-mutation-approval`. The distinct protocol, schema, context and hash domain ensure that no v1 approval can authorise this path.
+
+See [ADR 020](../decisions/ADR_020_METADATA_ONLY_LIVE_MUTATION.md) for the complete two-axis decision and rejection boundary.

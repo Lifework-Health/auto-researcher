@@ -15,6 +15,9 @@ from auto_researcher.contracts.models import (
 from auto_researcher.search.optuna.models import OptunaStudySpec
 from auto_researcher.search.openevolve.protocols import EvolvableComponent
 from auto_researcher.search.openevolve.live_dataset import LiveMutationDatasetClass
+from auto_researcher.search.openevolve.live_boundary import (
+    MetadataOnlyMutationBoundary,
+)
 from auto_researcher.search.protocols import SearchCapability
 from auto_researcher.knowledge.models import (
     KnowledgeGroundingPolicy,
@@ -108,6 +111,13 @@ class LiveMutationDatasetClassCapableTask(Protocol):
     """Trusted opt-in classification for approved live OpenEvolve mutation."""
 
     def live_mutation_dataset_class(self) -> LiveMutationDatasetClass: ...
+
+
+@runtime_checkable
+class MetadataOnlyLiveMutationCapableTask(Protocol):
+    """Explicit opt-in for the separately attested metadata-only v2 path."""
+
+    def live_mutation_boundary(self) -> MetadataOnlyMutationBoundary: ...
 
 
 @runtime_checkable

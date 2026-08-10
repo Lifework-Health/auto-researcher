@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import math
 from datetime import UTC, datetime, timedelta
-from typing import Final, Literal
+from typing import Final, Literal, TypeAlias
 
 from pydantic import (
     AwareDatetime,
@@ -22,6 +22,11 @@ from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.live_dataset import (
     LiveMutationDatasetClass,
     PROHIBITED_LIVE_MUTATION_DATASET_CLASSES,
+)
+from auto_researcher.search.openevolve.live_boundary import (
+    MetadataOnlyMutationBoundary,
+    ModelExposureClass,
+    UnderlyingDatasetClass,
 )
 
 OPENEVOLVE_MUTATION_PROMPT_V1: Final[Literal["openevolve-mutation-prompt-v1"]] = (
@@ -142,8 +147,126 @@ def approval_content_hash(approval: LiveMutationApproval | dict) -> str:
     )
 
 
-def parse_live_mutation_approval(payload: dict) -> LiveMutationApproval:
-    return LiveMutationApproval.model_validate(payload)
+class MetadataOnlyLiveMutationApproval(LiveMutationModel):
+    """Distinct approval for a separately attested metadata/code-only boundary."""
+
+    protocol_version: Literal["live-mutation-approval-v2-metadata-only"] = (
+        "live-mutation-approval-v2-metadata-only"
+    )
+    approval_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    contract_id: str = Field(min_length=1)
+    contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_id: str = Field(min_length=1)
+    task_version: str = Field(min_length=1)
+    component_id: str = Field(min_length=1)
+    component_version: str = Field(min_length=1)
+    component_interface_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_exposure_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    boundary_version: Literal["metadata-only-model-boundary-v1"] = (
+        "metadata-only-model-boundary-v1"
+    )
+    underlying_dataset_class: UnderlyingDatasetClass
+    exposure_class: Literal["metadata_only"] = "metadata_only"
+    adapter_id: str = Field(min_length=1)
+    adapter_version: str = Field(min_length=1)
+    adapter_identity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    prompt_id: str = Field(min_length=1)
+    prompt_version: Literal["openevolve-mutation-prompt-v2"] = (
+        OPENEVOLVE_MUTATION_PROMPT_V2
+    )
+    prompt_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mutation_operator_version: str = Field(min_length=1)
+    maximum_model_calls: int = Field(ge=1)
+    maximum_input_tokens: int = Field(ge=1)
+    maximum_output_tokens: int = Field(ge=1)
+    maximum_total_cost: float = Field(gt=0)
+    currency: str = Field(min_length=1)
+    pricing_version: str = Field(min_length=1)
+    executor_policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    mutable_file: str = Field(pattern=r"^[A-Za-z0-9_.-]+\.py$")
+    created_at: AwareDatetime
+    expires_at: AwareDatetime
+    reviewer_identity: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
+    residual_risk_acknowledged: Literal[True]
+    aura_access: Literal[False] = False
+    underlying_data_access: Literal[False] = False
+    patient_data_access: Literal[False] = False
+    mri_access: Literal[False] = False
+    filesystem_access: Literal[False] = False
+    network_access: Literal[False] = False
+    evaluator_runtime_context_access: Literal[False] = False
+    direct_upstream_provider_access: Literal[False] = False
+    local_subprocess_fallback: Literal[False] = False
+    model_retries: Literal[False] = False
+    package_installation: Literal[False] = False
+    multiple_mutable_files: Literal[False] = False
+    evaluator_or_verifier_mutation: Literal[False] = False
+    approval_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("maximum_total_cost")
+    @classmethod
+    def finite_cost_limit(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("live_mutation_finite_budget_required")
+        return value
+
+    @model_validator(mode="after")
+    def immutable_identity_is_valid(
+        self, info: ValidationInfo
+    ) -> "MetadataOnlyLiveMutationApproval":
+        if self.created_at.astimezone(UTC) >= self.expires_at.astimezone(UTC):
+            raise ValueError("live_mutation_approval_expired")
+        if self.expires_at.astimezone(UTC) - self.created_at.astimezone(
+            UTC
+        ) > timedelta(hours=24):
+            raise ValueError("live_mutation_approval_expiry_too_long")
+        if self.model_id.lower().endswith(("-latest", ":latest")):
+            raise ValueError("live_mutation_model_not_approved")
+        if not (info.context or {}).get("skip_approval_hash") and (
+            metadata_only_approval_content_hash(self) != self.approval_hash
+        ):
+            raise ValueError("live_mutation_approval_tampered")
+        return self
+
+
+def metadata_only_approval_content_hash(
+    approval: MetadataOnlyLiveMutationApproval | dict,
+) -> str:
+    if isinstance(approval, MetadataOnlyLiveMutationApproval):
+        payload = approval.model_dump(mode="python")
+    else:
+        raw = dict(approval)
+        raw.pop("approval_hash", None)
+        payload = MetadataOnlyLiveMutationApproval.model_validate(
+            {**raw, "approval_hash": "0" * 64},
+            context={"skip_approval_hash": True},
+        ).model_dump(mode="python")
+    payload.pop("approval_hash", None)
+    return payload_hash(
+        {
+            "domain": "auto-researcher-metadata-only-live-mutation-approval",
+            "version": "canonical-json-sha256-v2",
+            "payload": payload,
+        }
+    )
+
+
+LiveMutationApprovalEnvelope: TypeAlias = (
+    LiveMutationApproval | MetadataOnlyLiveMutationApproval
+)
+
+
+def parse_live_mutation_approval(payload: dict) -> LiveMutationApprovalEnvelope:
+    version = payload.get("protocol_version", "live-mutation-approval-v1")
+    if version == "live-mutation-approval-v1":
+        return LiveMutationApproval.model_validate(payload)
+    if version == "live-mutation-approval-v2-metadata-only":
+        return MetadataOnlyLiveMutationApproval.model_validate(payload)
+    raise ValueError("live_mutation_approval_protocol_unsupported")
 
 
 class OpenEvolveModelBridgeContract(LiveMutationModel):
@@ -176,9 +299,9 @@ class OpenEvolveModelBridgeContract(LiveMutationModel):
         "no-automatic-redispatch-v1"
     )
     accounting_policy: Literal["model-call-accounting-v1"] = "model-call-accounting-v1"
-    approval_policy_version: Literal["live-mutation-approval-v1"] = (
-        "live-mutation-approval-v1"
-    )
+    approval_policy_version: Literal[
+        "live-mutation-approval-v1", "live-mutation-approval-v2-metadata-only"
+    ] = "live-mutation-approval-v1"
     model_store_protocol_version: Literal["agent-call-store-v2"] = "agent-call-store-v2"
     provider_mode: Literal["auto_researcher_owned"] = "auto_researcher_owned"
 
@@ -190,6 +313,11 @@ class OpenEvolveModelBridgeContract(LiveMutationModel):
         if config.provider not in {"anthropic", "fake-production"}:
             raise ValueError("live_mutation_provider_not_supported")
         if config.prompt_version != self.prompt_version:
+            raise ValueError("model_call_prompt_not_approved")
+        if (
+            self.approval_policy_version == "live-mutation-approval-v2-metadata-only"
+            and self.prompt_version != OPENEVOLVE_MUTATION_PROMPT_V2
+        ):
             raise ValueError("model_call_prompt_not_approved")
         finite = (
             config.temperature,
@@ -228,6 +356,52 @@ class OpenEvolveModelCallContext(LiveMutationModel):
     maximum_model_cost: float = Field(gt=0)
 
 
+class MetadataOnlyOpenEvolveModelCallContext(LiveMutationModel):
+    protocol_version: Literal["metadata-only-model-call-context-v1"] = (
+        "metadata-only-model-call-context-v1"
+    )
+    run_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    contract_id: str = Field(min_length=1)
+    contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_id: str = Field(min_length=1)
+    task_version: str = Field(min_length=1)
+    search_request_id: str = Field(min_length=1)
+    generation: int = Field(ge=1)
+    parent_candidate_id: str = Field(min_length=1)
+    component_id: str = Field(min_length=1)
+    component_version: str = Field(min_length=1)
+    component_interface_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_exposure_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    boundary_version: Literal["metadata-only-model-boundary-v1"] = (
+        "metadata-only-model-boundary-v1"
+    )
+    underlying_dataset_class: UnderlyingDatasetClass
+    exposure_class: ModelExposureClass = "metadata_only"
+    adapter_id: str = Field(min_length=1)
+    adapter_version: str = Field(min_length=1)
+    adapter_identity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    executor_policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    mutable_file: str = Field(pattern=r"^[A-Za-z0-9_.-]+\.py$")
+    underlying_data_access: Literal[False] = False
+    mri_access: Literal[False] = False
+    patient_data_access: Literal[False] = False
+    filesystem_access: Literal[False] = False
+    network_access: Literal[False] = False
+    evaluator_runtime_context_access: Literal[False] = False
+    model_budget_identity: str = Field(min_length=1)
+    maximum_model_calls: int = Field(ge=1)
+    maximum_model_cost: float = Field(gt=0)
+
+    @field_validator("maximum_model_cost")
+    @classmethod
+    def finite_cost_limit(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("live_mutation_finite_budget_required")
+        return value
+
+
 def validate_approval(
     approval: LiveMutationApproval,
     context: OpenEvolveModelCallContext,
@@ -240,6 +414,8 @@ def validate_approval(
     if now.astimezone(UTC) < approval.created_at.astimezone(UTC):
         raise ValueError("live_mutation_approval_mismatch")
     config = bridge.model_config_contract
+    if bridge.approval_policy_version != "live-mutation-approval-v1":
+        raise ValueError("live_mutation_approval_mismatch")
     expected = (
         (approval.run_id, context.run_id),
         (approval.contract_id, context.contract_id),
@@ -262,6 +438,69 @@ def validate_approval(
         (approval.image_digest, context.image_digest),
         (approval.mutable_file, context.mutable_file),
         (approval.permitted_dataset_class, context.dataset_class),
+    )
+    if context.adapter_version != bridge.supported_adapter_version:
+        raise ValueError("live_mutation_approval_mismatch")
+    if any(left != right for left, right in expected):
+        raise ValueError("live_mutation_approval_mismatch")
+    if config.maximum_output_tokens > approval.maximum_output_tokens:
+        raise ValueError("live_mutation_approval_mismatch")
+    if context.maximum_model_calls > approval.maximum_model_calls:
+        raise ValueError("live_mutation_approval_mismatch")
+    if context.maximum_model_cost > approval.maximum_total_cost:
+        raise ValueError("model_call_cost_limit_exceeded")
+    if config.maximum_cost_per_call > approval.maximum_total_cost:
+        raise ValueError("model_call_cost_limit_exceeded")
+    if re.search(
+        r"(?i)(api[_-]?key|bearer|secret|password)", approval.model_dump_json()
+    ):
+        raise ValueError("live_mutation_approval_sensitive_field")
+
+
+def validate_metadata_only_approval(
+    approval: MetadataOnlyLiveMutationApproval,
+    context: MetadataOnlyOpenEvolveModelCallContext,
+    bridge: OpenEvolveModelBridgeContract,
+    boundary: MetadataOnlyMutationBoundary,
+    *,
+    now: datetime,
+) -> None:
+    if now.astimezone(UTC) >= approval.expires_at.astimezone(UTC):
+        raise ValueError("live_mutation_approval_expired")
+    if now.astimezone(UTC) < approval.created_at.astimezone(UTC):
+        raise ValueError("live_mutation_approval_mismatch")
+    if bridge.approval_policy_version != "live-mutation-approval-v2-metadata-only":
+        raise ValueError("live_mutation_approval_mismatch")
+    config = bridge.model_config_contract
+    expected = (
+        (approval.run_id, context.run_id),
+        (approval.contract_id, context.contract_id),
+        (approval.contract_hash, context.contract_hash),
+        (approval.task_id, context.task_id),
+        (approval.task_version, context.task_version),
+        (approval.component_id, context.component_id),
+        (approval.component_version, context.component_version),
+        (approval.component_interface_hash, context.component_interface_hash),
+        (approval.model_exposure_identity, context.model_exposure_identity),
+        (approval.boundary_version, context.boundary_version),
+        (approval.boundary_version, boundary.boundary_version),
+        (approval.underlying_dataset_class, context.underlying_dataset_class),
+        (approval.underlying_dataset_class, boundary.underlying_dataset_class),
+        (approval.exposure_class, context.exposure_class),
+        (approval.exposure_class, boundary.exposure_class),
+        (approval.adapter_id, context.adapter_id),
+        (approval.adapter_version, context.adapter_version),
+        (approval.adapter_identity_hash, context.adapter_identity_hash),
+        (approval.provider, config.provider),
+        (approval.model_id, config.model_id),
+        (approval.prompt_id, bridge.prompt_id),
+        (approval.prompt_version, bridge.prompt_version),
+        (approval.mutation_operator_version, bridge.mutation_operator_version),
+        (approval.pricing_version, config.pricing.version),
+        (approval.currency, config.pricing.currency),
+        (approval.executor_policy_hash, context.executor_policy_hash),
+        (approval.image_digest, context.image_digest),
+        (approval.mutable_file, context.mutable_file),
     )
     if context.adapter_version != bridge.supported_adapter_version:
         raise ValueError("live_mutation_approval_mismatch")

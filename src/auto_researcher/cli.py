@@ -42,6 +42,7 @@ from auto_researcher.knowledge.store import SQLiteKnowledgeRetrievalStore
 from auto_researcher.knowledge.templates import default_template_registry
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.search.openevolve.live_models import (
+    MetadataOnlyLiveMutationApproval,
     parse_live_mutation_approval,
 )
 from auto_researcher.runtime.dependencies import (
@@ -159,6 +160,12 @@ def validate_live_mutation_approval(
     if approval is None:
         typer.echo(f"outcome={outcome}", err=True)
         raise typer.Exit(code=2)
+    dataset_summary = (
+        f"underlying_dataset={approval.underlying_dataset_class} "
+        f"exposure={approval.exposure_class} "
+        if isinstance(approval, MetadataOnlyLiveMutationApproval)
+        else f"dataset={approval.permitted_dataset_class} "
+    )
     typer.echo(
         f"approval_id={approval.approval_id} version={approval.protocol_version} "
         f"expiry={approval.expires_at.isoformat()} task={approval.task_id}@{approval.task_version} "
@@ -168,7 +175,7 @@ def validate_live_mutation_approval(
         f"maximum_calls={approval.maximum_model_calls} "
         f"maximum_cost={approval.maximum_total_cost} {approval.currency} "
         f"executor_digest={approval.image_digest} "
-        f"dataset={approval.permitted_dataset_class} "
+        f"{dataset_summary}"
         f"approval_hash={approval.approval_hash} outcome=valid"
     )
 
