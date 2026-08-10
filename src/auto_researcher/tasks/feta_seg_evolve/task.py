@@ -227,7 +227,9 @@ class FeTASegEvolveTask:
                 "fold_hash": EXPECTED_FOLD_HASH,
                 "fold": 0,
             },
-            task_limitations=("No live-model mutation approval for MRI-backed tasks.",),
+            task_limitations=(
+                "Live-model mutation requires a fresh attested metadata-only v2 approval; no MRI or evaluator data may cross the mutation-model boundary.",
+            ),
             safety_notes=(
                 "No MRI, masks, paths, subject rows, predictions, checkpoints or holdout information enter mutation context.",
             ),

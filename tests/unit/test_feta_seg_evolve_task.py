@@ -431,6 +431,24 @@ def test_live_model_mutation_remains_fail_closed_for_mri_task():
     assert not hasattr(task, "live_mutation_dataset_class")
 
 
+def test_agent_context_describes_attested_metadata_only_live_boundary():
+    context = FeTASegEvolveTask().create_agent_context(
+        default_feta_evolve_contract(),
+        TaskRuntimeContext(),
+        {},
+    )
+    limitations = " ".join(context.task_limitations)
+    assert "No live-model mutation approval for MRI-backed tasks." not in limitations
+    assert limitations == (
+        "Live-model mutation requires a fresh attested metadata-only v2 approval; "
+        "no MRI or evaluator data may cross the mutation-model boundary."
+    )
+    assert context.safety_notes == (
+        "No MRI, masks, paths, subject rows, predictions, checkpoints or holdout "
+        "information enter mutation context.",
+    )
+
+
 def test_examples_parse_and_build_real_search_contracts():
     root = Path(__file__).parents[2] / "examples" / "tasks" / "feta_seg_evolve"
     for name, expected_mode in (
