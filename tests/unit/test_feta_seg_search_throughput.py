@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -11,11 +13,15 @@ from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.tasks.feta_seg.manifests import FeTASubject
 from auto_researcher.tasks.feta_seg.splits import locked_partition
 from auto_researcher.tasks.feta_seg_search.cache import (
+    CACHE_LOCK_VERSION,
     CACHE_MANIFEST_FILENAME,
     cache_record_hash,
     deterministic_cache_identity,
     mark_shared_cache_complete,
+    prepare_or_reuse_shared_cache,
     prepare_shared_cache,
+    shared_cache_advisory_lock,
+    shared_cache_lock_path,
     shared_cache_root,
     shared_cache_is_complete,
 )
@@ -181,6 +187,86 @@ def test_complete_shared_cache_is_reused_without_repopulation(tmp_path):
         (prepared.training_cache_dir / f"{index}.pt").write_bytes(b"cached")
     mark_shared_cache_complete(prepared, expected_items=54)
     assert shared_cache_is_complete(prepared, expected_items=54) is True
+
+
+def test_shared_cache_population_is_locked_and_second_initializer_rechecks(tmp_path):
+    training, _ = _fold_zero_subjects()
+    configuration = FeTASegSearchConfiguration(maximum_epochs=25)
+    population_calls = 0
+
+    def populate(preparation):
+        nonlocal population_calls
+        population_calls += 1
+        for index in range(54):
+            (preparation.training_cache_dir / f"{index}.pt").write_bytes(b"cached")
+
+    first, first_reused = prepare_or_reuse_shared_cache(
+        tmp_path, configuration, training, populate=populate
+    )
+    second, second_reused = prepare_or_reuse_shared_cache(
+        tmp_path,
+        configuration,
+        training,
+        populate=lambda _preparation: pytest.fail("completed cache was rebuilt"),
+    )
+    assert first.identity == second.identity
+    assert first_reused is False
+    assert second_reused is True
+    assert population_calls == 1
+
+
+def test_partial_shared_cache_fails_closed_after_lock_acquisition(tmp_path):
+    training, _ = _fold_zero_subjects()
+    configuration = FeTASegSearchConfiguration(maximum_epochs=25)
+    preparation = prepare_shared_cache(tmp_path, configuration, training)
+    (preparation.training_cache_dir / "partial.pt").write_bytes(b"partial")
+    with pytest.raises(ValueError, match="shared_cache_population_partial"):
+        prepare_or_reuse_shared_cache(
+            tmp_path,
+            configuration,
+            training,
+            populate=lambda _preparation: pytest.fail("partial cache was reused"),
+        )
+
+
+def test_shared_cache_lock_is_cross_process_advisory_and_crash_safe(tmp_path):
+    lock_path = shared_cache_lock_path(tmp_path, "identity")
+    acquired_path = tmp_path / "child-acquired"
+    child_code = """
+import fcntl
+import pathlib
+import sys
+lock = pathlib.Path(sys.argv[1])
+marker = pathlib.Path(sys.argv[2])
+lock.parent.mkdir(parents=True, exist_ok=True)
+with lock.open('a+') as handle:
+    print('READY', flush=True)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    marker.write_text('acquired', encoding='utf-8')
+"""
+    with shared_cache_advisory_lock(tmp_path, "identity"):
+        child = subprocess.Popen(
+            [sys.executable, "-c", child_code, str(lock_path), str(acquired_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "READY"
+        assert acquired_path.exists() is False
+    stdout, stderr = child.communicate(timeout=5)
+    assert child.returncode == 0, (stdout, stderr)
+    assert acquired_path.read_text(encoding="utf-8") == "acquired"
+
+
+def test_lock_does_not_change_shared_cache_scientific_identity(tmp_path):
+    training, _ = _fold_zero_subjects()
+    configuration = FeTASegSearchConfiguration(maximum_epochs=25)
+    before = deterministic_cache_identity(configuration, training)
+    with shared_cache_advisory_lock(tmp_path, before) as lock_path:
+        assert lock_path == shared_cache_lock_path(tmp_path, before)
+        assert CACHE_LOCK_VERSION == "feta-search-shared-cache-flock-v1"
+    assert deterministic_cache_identity(configuration, training) == before
 
 
 def test_validation_samples_and_native_labels_materialise_once_and_reuse():

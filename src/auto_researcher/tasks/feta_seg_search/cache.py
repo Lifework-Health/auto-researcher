@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import fcntl
 
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.tasks.artifacts import atomic_json_write
@@ -30,6 +33,8 @@ MONAI_CACHE_SCHEMA_VERSION = "monai-persistent-dataset-1.5.1-v1"
 CACHE_RECORD_HASH_VERSION = "feta-path-free-record-sha256-v1"
 CACHE_MANIFEST_FILENAME = "cache_identity.json"
 CACHE_COMPLETION_FILENAME = "cache_complete.json"
+CACHE_LOCK_VERSION = "feta-search-shared-cache-flock-v1"
+CACHE_LOCK_DIRECTORY = "_locks"
 
 
 @dataclass(frozen=True)
@@ -142,6 +147,35 @@ def shared_cache_root(workspace_dir: Path, identity: str) -> Path:
     return workspace_dir / "feta_seg_search" / "_shared_cache" / identity
 
 
+def shared_cache_lock_path(workspace_dir: Path, identity: str) -> Path:
+    return (
+        workspace_dir
+        / "feta_seg_search"
+        / "_shared_cache"
+        / CACHE_LOCK_DIRECTORY
+        / f"{identity}.lock"
+    )
+
+
+@contextmanager
+def shared_cache_advisory_lock(
+    workspace_dir: Path, identity: str
+) -> Iterator[Path]:
+    """Serialise population with a crash-safe OS advisory lock outside git."""
+
+    lock_path = shared_cache_lock_path(workspace_dir, identity)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield lock_path
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        raise RuntimeError("feta_search_shared_cache_lock_failed") from exc
+
+
 def prepare_shared_cache(
     workspace_dir: Path,
     configuration: FeTASegSearchConfiguration,
@@ -176,3 +210,30 @@ def prepare_shared_cache(
         training_cache_dir=training_cache_dir,
         prepare_seconds=time.perf_counter() - started,
     )
+
+
+def prepare_or_reuse_shared_cache(
+    workspace_dir: Path,
+    configuration: FeTASegSearchConfiguration,
+    training_subjects: Sequence[FeTASubject],
+    *,
+    populate: Callable[[SharedCachePreparation], None],
+) -> tuple[SharedCachePreparation, bool]:
+    """Populate once under ``flock`` and re-check completion after lock acquisition."""
+
+    identity = deterministic_cache_identity(configuration, training_subjects)
+    with shared_cache_advisory_lock(workspace_dir, identity):
+        preparation = prepare_shared_cache(
+            workspace_dir, configuration, training_subjects
+        )
+        expected_items = len(training_subjects)
+        reused = shared_cache_is_complete(
+            preparation, expected_items=expected_items
+        )
+        if reused:
+            return preparation, True
+        if any(preparation.training_cache_dir.iterdir()):
+            raise ValueError("feta_search_shared_cache_population_partial")
+        populate(preparation)
+        mark_shared_cache_complete(preparation, expected_items=expected_items)
+        return preparation, False

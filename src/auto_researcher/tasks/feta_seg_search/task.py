@@ -414,7 +414,7 @@ class FeTASegSearchTask:
 
 
 def default_feta_search_contract(
-    *, maximum_experiments: int = 48
+    *, maximum_experiments: int = 64
 ) -> ResearchContract:
     return ResearchContract(
         contract_id="feta-segresnet-fold0-search-contract",

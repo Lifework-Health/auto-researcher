@@ -43,6 +43,9 @@ from auto_researcher.tasks.feta_seg_search.metric_tiers import (
     aggregate_screen_subject_metrics,
     metric_tier_for_fidelity,
 )
+from auto_researcher.tasks.feta_seg_search.gpu_scheduler import (
+    GPU_SCHEDULER_VERSION,
+)
 from auto_researcher.tasks.feta_seg_search.transforms import (
     augmentation_policy,
     positive_negative_counts,
@@ -176,7 +179,13 @@ def _metrics(configuration: FeTASegSearchConfiguration) -> dict:
     return result
 
 
-def _evaluator(tmp_path: Path, runner, *, maximum_epochs: int = 50):
+def _evaluator(
+    tmp_path: Path,
+    runner,
+    *,
+    maximum_epochs: int = 50,
+    task_options: dict | None = None,
+):
     dataset_version = f"feta-2.1-export-80+{EXPECTED_MANIFEST_HASH}"
     manifest = DatasetManifest(
         task_id="feta_seg_search",
@@ -193,7 +202,9 @@ def _evaluator(tmp_path: Path, runner, *, maximum_epochs: int = 50):
         dataset_version=dataset_version,
         provenance=ProvenanceKind.REAL,
     )
-    context = TaskRuntimeContext(workspace_dir=tmp_path)
+    context = TaskRuntimeContext(
+        workspace_dir=tmp_path, task_options=task_options or {}
+    )
     configuration = FeTASegSearchConfiguration(maximum_epochs=maximum_epochs)
     experiment = ExperimentSpec(
         experiment_id="candidate",
@@ -251,6 +262,50 @@ def test_checked_in_search_examples_bind_runtime_data_and_optuna_controls():
     assert optuna_runtime["data_dir"] == "/absolute/path/to/feta"
     assert optuna["seed"] == 20260807
     assert optuna["n_startup_trials"] == 12
+
+
+def test_two_study_gpu_campaign_examples_parse_through_real_cli_loader():
+    examples = (
+        Path(__file__).resolve().parents[2] / "examples" / "tasks" / "feta_seg_search"
+    )
+    cases = (
+        ("optuna-primary-25.yaml", "primary", 0, 20260820),
+        ("optuna-opportunistic-25.yaml", "opportunistic", 1, 20260821),
+    )
+    for filename, mode, gpu, seed in cases:
+        path = examples / filename
+        payload = _load_yaml(path)
+        assert payload["task"] == {"id": "feta_seg_search", "version": "1.0"}
+        search, runtime = _load_task_configuration(
+            path, "feta_seg_search", "1.0"
+        )
+        assert search["trial_budget"] == 64
+        assert search["n_startup_trials"] == 12
+        assert search["seed"] == seed
+        assert search["fixed"] == {"fold": 0, "maximum_epochs": 25}
+        assert runtime["data_dir"] == "/absolute/path/to/feta"
+        scheduler = runtime["options"]["gpu_scheduler"]
+        assert scheduler["mode"] == mode
+        assert scheduler["physical_gpu_index"] == gpu
+        request = SearchRequest(
+            request_id=f"{mode}-campaign",
+            hypothesis_id="hypothesis",
+            search_type=SearchType.OPTUNA,
+            target="mean_subject_macro_dice",
+            search_space=search,
+            experiment_budget=64,
+            rationale="Validate the checked-in two-study campaign.",
+        )
+        specification = FeTASegSearchTask().create_optuna_study_spec(
+            default_feta_search_contract(), request
+        )
+        assert specification.trial_budget == 64
+        assert specification.n_startup_trials == 12
+        assert specification.seed == seed
+        assert specification.fixed_configuration["seed"] == 20260807
+        assert specification.fixed_configuration["maximum_epochs"] == 25
+    assert _load_yaml(examples / "contract.yaml")["maximum_experiments"] == 64
+    assert default_feta_search_contract().maximum_experiments == 64
 
 
 @pytest.mark.parametrize(
@@ -479,6 +534,68 @@ def test_generated_runner_result_is_valid_and_verifiable(tmp_path):
         contract
     ).evaluate_constraints(result, contract)
     assert decision.constraint_compliant is True
+
+
+def _enabled_scheduler_options() -> dict:
+    return {
+        "gpu_scheduler": {
+            "mode": "primary",
+            "physical_gpu_index": 0,
+            "poll_seconds": 20,
+            "stable_idle_seconds": 0,
+            "minimum_free_memory_mib": 40000,
+            "maximum_utilization_percent": 10,
+            "allowed_fidelities": [25, 50, 100, 150, 300],
+        }
+    }
+
+
+def _scheduler_metrics() -> dict:
+    return {
+        "gpu_scheduler_version": GPU_SCHEDULER_VERSION,
+        "gpu_scheduler_mode": "primary",
+        "physical_gpu_index": 0,
+        "gpu_admission_wait_seconds": 20.0,
+        "gpu_admission_poll_count": 2,
+        "gpu_admission_free_memory_mib": 48000,
+        "gpu_admission_utilization_percent": 0,
+        "gpu_admission_foreign_process_count": 0,
+        "gpu_admission_stable_idle_seconds": 0,
+    }
+
+
+def test_evaluator_accepts_valid_enabled_scheduler_telemetry(tmp_path):
+    def runner(_context, candidate, _experiment_id):
+        return {**_metrics(candidate), **_scheduler_metrics()}
+
+    evaluator, experiment, _ = _evaluator(
+        tmp_path, runner, task_options=_enabled_scheduler_options()
+    )
+    result = evaluator.evaluate(experiment, default_feta_search_contract())
+    assert result.success is True
+    assert result.constraint_results["gpu_scheduler_telemetry_valid"] is True
+
+
+@pytest.mark.parametrize(
+    "telemetry_update",
+    [{"gpu_admission_poll_count": None}, {"physical_gpu_index": 1}],
+)
+def test_evaluator_rejects_missing_or_mismatched_scheduler_telemetry(
+    tmp_path, telemetry_update
+):
+    def runner(_context, candidate, _experiment_id):
+        telemetry = {**_scheduler_metrics(), **telemetry_update}
+        if telemetry["gpu_admission_poll_count"] is None:
+            telemetry.pop("gpu_admission_poll_count")
+        return {**_metrics(candidate), **telemetry}
+
+    evaluator, experiment, _ = _evaluator(
+        tmp_path, runner, task_options=_enabled_scheduler_options()
+    )
+    result = evaluator.evaluate(experiment, default_feta_search_contract())
+    assert result.success is False
+    assert result.error == "feta_search_scientific_constraints_failed"
+    assert result.constraint_results["gpu_scheduler_telemetry_valid"] is False
 
 
 @pytest.mark.parametrize("maximum_epochs", [25, 50])

@@ -1,0 +1,23 @@
+task: {id: feta_seg_search, version: "1.0"}
+agents: {mode: mock}
+search:
+  type: OPTUNA
+  trial_budget: 64
+  seed: 20260820
+  n_startup_trials: 12
+  fixed:
+    fold: 0
+    maximum_epochs: 25
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: .auto-researcher/feta-search-primary-25
+  workspace_dir: .auto-researcher/feta-search-workspace
+  options:
+    gpu_scheduler:
+      mode: primary
+      physical_gpu_index: 0
+      poll_seconds: 20
+      stable_idle_seconds: 0
+      minimum_free_memory_mib: 40000
+      maximum_utilization_percent: 10
+      allowed_fidelities: [25, 50, 100, 150, 300]

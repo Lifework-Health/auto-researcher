@@ -38,6 +38,11 @@ from auto_researcher.tasks.feta_seg_search.configuration import (
 )
 from auto_researcher.tasks.feta_seg_search.cache import CACHE_IDENTITY_VERSION
 from auto_researcher.tasks.feta_seg_search.continuation import CONTINUATION_VERSION
+from auto_researcher.tasks.feta_seg_search.gpu_scheduler import (
+    GPU_SCHEDULER_VERSION,
+    gpu_scheduler_policy,
+    scheduler_telemetry_is_valid,
+)
 from auto_researcher.tasks.feta_seg_search.metric_tiers import (
     FULL_PANEL_METRIC_NAMES,
     METRIC_TIER_POLICY_VERSION,
@@ -72,7 +77,7 @@ from auto_researcher.tasks.scientific_json import (
 )
 
 EVALUATOR_ID = "feta-segresnet-search-evaluator"
-EVALUATOR_VERSION = "feta-segresnet-search-evaluator-v2"
+EVALUATOR_VERSION = "feta-segresnet-search-evaluator-v3"
 FETA_SEARCH_SCIENTIFIC_JSON_POLICY = ScientificJsonPolicy(
     permitted_nan_paths=frozenset()
 )
@@ -106,6 +111,7 @@ def evaluator_code_version(dataset_version: str) -> str:
             METRIC_TIER_POLICY_VERSION,
             CACHE_IDENTITY_VERSION,
             CONTINUATION_VERSION,
+            GPU_SCHEDULER_VERSION,
             RUNNER_VERSION,
             SCIENTIFIC_JSON_ENCODING_VERSION,
             ARTEFACT_BUNDLE_SCHEMA_VERSION,
@@ -149,6 +155,7 @@ class FeTASegSearchEvaluator:
             "metric_tier_policy_version": METRIC_TIER_POLICY_VERSION,
             "cache_identity_version": CACHE_IDENTITY_VERSION,
             "continuation_version": CONTINUATION_VERSION,
+            "gpu_scheduler_version": GPU_SCHEDULER_VERSION,
             "result_encoding_version": SCIENTIFIC_JSON_ENCODING_VERSION,
             "artefact_bundle_schema_version": ARTEFACT_BUNDLE_SCHEMA_VERSION,
             "holdout_evaluator_calls": 0,
@@ -224,6 +231,12 @@ class FeTASegSearchEvaluator:
         expected_metric_tier = metric_tier_for_fidelity(
             configuration.maximum_epochs
         )
+        try:
+            scheduler_policy = gpu_scheduler_policy(self.context)
+        except ValueError:
+            return self._failure(
+                experiment, "feta_search_gpu_scheduler_configuration_invalid"
+            )
 
         try:
             metrics = self.search_runner(
@@ -253,7 +266,14 @@ class FeTASegSearchEvaluator:
                 "feta_search_shared_cache_completion_mismatch",
                 "feta_search_shared_cache_population_mismatch",
                 "feta_search_shared_cache_population_incomplete",
+                "feta_search_shared_cache_population_partial",
                 "feta_search_shared_cache_record_invalid",
+                "feta_search_shared_cache_lock_failed",
+                "feta_search_gpu_scheduler_configuration_invalid",
+                "feta_search_gpu_binding_mismatch",
+                "feta_search_gpu_probe_failed",
+                "feta_search_gpu_probe_parse_failed",
+                "feta_search_gpu_fidelity_disallowed",
                 "feta_search_resume_candidate_root_invalid",
                 "feta_search_resume_checkpoint_missing",
                 "feta_search_resume_best_checkpoint_missing",
@@ -357,6 +377,20 @@ class FeTASegSearchEvaluator:
             "metric_tier_policy_version",
         }
         required_metric_names = set(common_required_metric_names)
+        if scheduler_policy.mode != "disabled":
+            required_metric_names.update(
+                {
+                    "gpu_scheduler_version",
+                    "gpu_scheduler_mode",
+                    "physical_gpu_index",
+                    "gpu_admission_wait_seconds",
+                    "gpu_admission_poll_count",
+                    "gpu_admission_free_memory_mib",
+                    "gpu_admission_utilization_percent",
+                    "gpu_admission_foreign_process_count",
+                    "gpu_admission_stable_idle_seconds",
+                }
+            )
         if expected_metric_tier == "full":
             required_metric_names.update(FULL_PANEL_METRIC_NAMES)
         try:
@@ -400,6 +434,9 @@ class FeTASegSearchEvaluator:
             <= 14 * len(LABELS),
             "configuration_identity_exact": metrics.get("configuration_identity")
             == payload_hash(configuration),
+            "gpu_scheduler_telemetry_valid": scheduler_telemetry_is_valid(
+                metrics, scheduler_policy
+            ),
             "evaluator_identity_exact": metrics.get("evaluator_version")
             == self.version
             and metrics.get("evaluator_code_version") == self.metadata.code_version,
