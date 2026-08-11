@@ -13,16 +13,20 @@ from auto_researcher.tasks.feta_seg.splits import (
     FOLD_ID,
     SPLIT_ID,
 )
+from auto_researcher.tasks.feta_seg_evolve.feasibility import (
+    scientific_feasibility_reasons,
+)
 from auto_researcher.tasks.models import PolicyDecision
 
 
 class FeTASegEvolveVerificationPolicy:
-    policy_id = "feta-seg-evolve-evidence-policy-v1"
+    policy_id = "feta-seg-evolve-evidence-policy-v2"
     required_metrics = frozenset(
         {
             "mean_subject_macro_dice",
             "subject_metrics",
             "per_tissue_dice",
+            "empty_prediction_count",
             "reconstruction_macro_dice",
             "reconstruction_gap",
             "training_policy_identity",
@@ -70,6 +74,7 @@ class FeTASegEvolveVerificationPolicy:
             evaluation.constraint_results.values()
         ):
             reasons.append("feta_evolve_evaluator_constraint_failure")
+        reasons.extend(scientific_feasibility_reasons(evaluation, contract))
         return PolicyDecision(
             constraint_compliant=not reasons,
             evidence_status=EvidenceStatus.SUPPORTED

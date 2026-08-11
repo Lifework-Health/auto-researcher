@@ -17,6 +17,9 @@ constraints:
   holdout_policy: sealed-no-evaluation
   search_scope: development-fold-0-only
   mutable_surface: TrainingPolicy@feta-training-policy-v1-only
+  scientific_feasibility_policy: feta-evolve-scientific-feasibility-v1
+  maximum_empty_predictions: 0
+  minimum_per_tissue_dice: 0.5
   score_minimum: 0.0
   score_maximum: 1.0
 allowed_search_types: [DIRECT, OPENEVOLVE]

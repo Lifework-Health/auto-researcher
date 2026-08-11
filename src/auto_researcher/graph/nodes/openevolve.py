@@ -130,15 +130,21 @@ def select_openevolve_parent(
     collection = state["openevolve_candidates"]
     candidates = collection.candidates
     assert population is not None and search_contract is not None and candidates
-    parent_id = (
-        population.best_known_candidate_ids[0]
-        if population.best_known_candidate_ids
-        else population.active_population_candidate_ids[0]
+    backend = _backend(dependencies)
+    eligible_ids = {
+        outcome.candidate_id
+        for outcome in population.outcomes
+        if backend.parent_eligible(outcome)
+    }
+    parent_ids = (
+        *population.best_known_candidate_ids,
+        *population.active_population_candidate_ids,
     )
+    parent_id = next((item for item in parent_ids if item in eligible_ids), None)
+    if parent_id is None:
+        raise ValueError("no_feasible_candidates")
     parent = next(item for item in candidates if item.candidate_id == parent_id)
-    reservation = _backend(dependencies).reserve_mutation(
-        search_contract, population, parent
-    )
+    reservation = backend.reserve_mutation(search_contract, population, parent)
     population = population.model_copy(
         update={
             "selected_parent_ids": (*population.selected_parent_ids, parent_id),
@@ -401,6 +407,16 @@ def record_openevolve_candidate(
                 "evaluation_identity": evaluation_identity,
             }
         )
+        (
+            selection_outcome,
+            replacement_outcome,
+            rejection_reason,
+        ) = _backend(dependencies).selection_disposition(
+            verified=verification.verified,
+            constraint_compliant=verification.constraint_compliant,
+            objective_value=evaluation.primary_score,
+            reasons=verification.reasons,
+        )
         outcome = CandidateOutcome(
             candidate_id=candidate.candidate_id,
             source_hash=candidate.source_hash,
@@ -412,8 +428,9 @@ def record_openevolve_candidate(
             experiment=experiment,
             evaluation=evaluation,
             verification=verification,
-            selection_outcome="ranked",
-            replacement_outcome="eligible_for_bounded_population",
+            selection_outcome=selection_outcome,
+            rejection_reason=rejection_reason,
+            replacement_outcome=replacement_outcome,
         )
         generic = record_provenance(state, dependencies)
         event_ids.extend(
@@ -585,7 +602,9 @@ def finalise_openevolve(
         and search_contract is not None
         and population.stopping_status == "STOPPED"
     )
-    preliminary = _backend(dependencies).final_result(population)
+    backend = _backend(dependencies)
+    backend.require_supported_selection_policy(search_contract)
+    preliminary = backend.final_result(population)
     references = search_artefact_references(
         dependencies.runtime_context, search_contract.search_request_id
     )
@@ -600,11 +619,11 @@ def finalise_openevolve(
     if receipt.references != references:
         raise RuntimeError("openevolve_artefact_reference_conflict")
     best = None
-    if population.best_known_candidate_ids:
+    if result.best_candidate_ids:
         best = next(
             item
             for item in population.outcomes
-            if item.candidate_id == population.best_known_candidate_ids[0]
+            if item.candidate_id == result.best_candidate_ids[0]
         )
     event_id = _event(
         state,

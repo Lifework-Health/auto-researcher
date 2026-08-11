@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.runtime.identity import payload_hash
@@ -22,6 +24,7 @@ from auto_researcher.search.openevolve.models import (
     OpenEvolvePopulationState,
     OpenEvolveSearchContract,
     OpenEvolveSearchResult,
+    OPENEVOLVE_SELECTION_POLICY_VERSION,
     ReplacementPolicy,
     SandboxPolicy,
     SelectionPolicy,
@@ -309,11 +312,60 @@ class OpenEvolveBackend:
             else (-objective if direction == ObjectiveDirection.MAXIMIZE else objective)
         )
         return (
-            -int(outcome.constraint_compliant),
-            -int(outcome.verified),
             score_key,
             outcome.candidate_id,
         )
+
+    @staticmethod
+    def parent_eligible(outcome: CandidateOutcome) -> bool:
+        """Return whether an outcome may be active, best-known, or a parent."""
+
+        return (
+            outcome.status == CandidateStatus.VERIFIED
+            and outcome.constraint_compliant is True
+            and outcome.verified is True
+            and outcome.objective_value is not None
+            and math.isfinite(outcome.objective_value)
+        )
+
+    @staticmethod
+    def selection_disposition(
+        *,
+        verified: bool,
+        constraint_compliant: bool,
+        objective_value: float | None,
+        reasons: tuple[str, ...],
+    ) -> tuple[str, str, str | None]:
+        """Return truthful persisted selection, replacement, and reason labels."""
+
+        if (
+            verified
+            and constraint_compliant
+            and objective_value is not None
+            and math.isfinite(objective_value)
+        ):
+            return "ranked", "eligible_for_bounded_population", None
+        if verified and not constraint_compliant:
+            return (
+                "scientifically_ineligible",
+                "archive_only",
+                next(iter(reasons), "candidate_constraints_not_compliant"),
+            )
+        return (
+            "verification_ineligible",
+            "archive_only",
+            next(iter(reasons), "candidate_verification_failed"),
+        )
+
+    @staticmethod
+    def require_supported_selection_policy(
+        search_contract: OpenEvolveSearchContract,
+    ) -> None:
+        if (
+            search_contract.selection_policy.policy_id
+            != OPENEVOLVE_SELECTION_POLICY_VERSION
+        ):
+            raise ValueError("openevolve_selection_policy_version_unsupported")
 
     def update_population(
         self,
@@ -322,6 +374,7 @@ class OpenEvolveBackend:
         candidate: OpenEvolveCandidate,
         outcome: CandidateOutcome,
     ) -> OpenEvolvePopulationState:
+        self.require_supported_selection_policy(search_contract)
         if any(
             item.candidate_id == candidate.candidate_id
             and item.generation == candidate.generation
@@ -386,7 +439,7 @@ class OpenEvolveBackend:
                 raise ValueError("conflicting_completed_candidate_identity")
             return population
         outcomes = (*population.outcomes, outcome)
-        valid = [item for item in outcomes if item.status == CandidateStatus.VERIFIED]
+        valid = [item for item in outcomes if self.parent_eligible(item)]
         ranked = sorted(
             valid,
             key=lambda item: self._outcome_key(
@@ -493,7 +546,12 @@ class OpenEvolveBackend:
         population: OpenEvolvePopulationState,
         search_contract: OpenEvolveSearchContract,
     ) -> str | None:
+        self.require_supported_selection_policy(search_contract)
         budget = population.budget
+        if any(
+            outcome.evaluation is not None for outcome in population.outcomes
+        ) and not any(self.parent_eligible(outcome) for outcome in population.outcomes):
+            return "no_feasible_candidates"
         if (
             budget.candidate_evaluations
             >= search_contract.maximum_candidate_evaluations
@@ -547,6 +605,16 @@ class OpenEvolveBackend:
     def final_result(
         self, population: OpenEvolvePopulationState
     ) -> OpenEvolveSearchResult:
+        eligible_ids = {
+            outcome.candidate_id
+            for outcome in population.outcomes
+            if self.parent_eligible(outcome)
+        }
+        best_candidate_ids = tuple(
+            candidate_id
+            for candidate_id in population.best_known_candidate_ids
+            if candidate_id in eligible_ids
+        )
         return OpenEvolveSearchResult(
             search_request_id=population.search_request_id,
             search_contract_hash=population.search_contract_hash,
@@ -554,7 +622,7 @@ class OpenEvolveBackend:
             candidates_evaluated=population.budget.candidate_evaluations,
             candidates_failed=population.budget.failed_candidates,
             generations_completed=population.budget.generations_used,
-            best_candidate_ids=population.best_known_candidate_ids,
-            feasible_candidate_found=bool(population.best_known_candidate_ids),
+            best_candidate_ids=best_candidate_ids,
+            feasible_candidate_found=bool(eligible_ids),
             stop_reason=population.stop_reason or "operator_stop",
         )

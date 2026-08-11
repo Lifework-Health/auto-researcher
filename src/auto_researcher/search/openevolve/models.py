@@ -22,6 +22,7 @@ OPENEVOLVE_POPULATION_VERSION: Final = "openevolve-population-v1"
 OPENEVOLVE_LINEAGE_VERSION: Final = "openevolve-lineage-v1"
 OPENEVOLVE_SANDBOX_VERSION: Final = "openevolve-sandbox-v1"
 OPENEVOLVE_PROVENANCE_VERSION: Final = "openevolve-provenance-v1"
+OPENEVOLVE_SELECTION_POLICY_VERSION: Final = "constraint-verification-objective-v2"
 
 
 class OpenEvolveModel(BaseModel):
@@ -66,7 +67,7 @@ class MutationOperatorPolicy(OpenEvolveModel):
 
 
 class SelectionPolicy(OpenEvolveModel):
-    policy_id: str = "constraint-verification-objective-v1"
+    policy_id: str = OPENEVOLVE_SELECTION_POLICY_VERSION
     direction: ObjectiveDirection
     objective_metric: str = Field(min_length=1)
     deterministic_tie_break: Literal["candidate_id"] = "candidate_id"
