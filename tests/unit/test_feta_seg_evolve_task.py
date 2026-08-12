@@ -112,7 +112,7 @@ def _backend(component=None, operator=None, workspace=None) -> OpenEvolveBackend
     return OpenEvolveBackend(
         component or _component(),
         _metadata(),
-        "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v1",
+        "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v2",
         operator or DeterministicMutationOperator(),
         LocalSandboxRunner(workspace),
     )
@@ -145,6 +145,12 @@ def test_evolve_contract_locks_dataset_split_fold_and_holdout():
         contract.constraints["mutable_surface"]
         == "TrainingPolicy@feta-training-policy-v1-only"
     )
+    assert (
+        contract.constraints["scientific_feasibility_policy"]
+        == "feta-evolve-scientific-feasibility-v1"
+    )
+    assert contract.constraints["maximum_empty_predictions"] == 0
+    assert contract.constraints["minimum_per_tissue_dice"] == 0.5
 
 
 @pytest.mark.parametrize(
@@ -470,6 +476,13 @@ def test_examples_parse_and_build_real_search_contracts():
         assert component.seeding_mode == expected_mode
         assert contract.maximum_candidate_evaluations == 3
         assert contract.maximum_model_calls == 0
+        assert contract.verifier_identity == (
+            "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v2"
+        )
+        assert (
+            contract.selection_policy.policy_id
+            == "constraint-verification-objective-v2"
+        )
 
 
 def test_active_feta_search_scientific_and_continuation_identity_is_unchanged():

@@ -219,7 +219,7 @@ def default_feta_evolve_openevolve_configuration() -> dict[str, Any]:
             "objective_threshold": None,
             "sandbox_policy_id": "openevolve-sandbox-v1",
             "evaluator_identity": f"{EVALUATOR_ID}@{evaluator_code_version(dataset_version)}",
-            "verifier_identity": "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v1",
+            "verifier_identity": "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v2",
             "candidate_cpu_time_seconds": 2,
             "candidate_wall_time_seconds": 3.0,
             "candidate_memory_bytes": 268_435_456,

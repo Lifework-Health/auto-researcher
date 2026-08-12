@@ -85,7 +85,7 @@ def test_feta_fake_production_metadata_only_mutation_lifecycle(tmp_path):
     backend = OpenEvolveBackend(
         evidence["component"],
         metadata,
-        "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v1",
+        "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v2",
         adapter,
         hardened_executor,
     )

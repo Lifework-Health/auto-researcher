@@ -8,6 +8,8 @@ Pure OpenEvolve uses the registered base configuration and seed policy in `opene
 
 The budget includes generation zero. Three candidate evaluations mean one seed plus two evolved candidates. `maximum_candidate_evaluations`, the `SearchRequest` experiment budget and the contract's `maximum_experiments` must agree.
 
+Macro Dice remains the optimization objective, but scientific feasibility is a hard eligibility gate before parent selection and population replacement. `feta-evolve-scientific-feasibility-v1` requires zero empty predictions and Dice of at least 0.50 for every one of the seven foreground tissues at screen and full fidelity. The threshold is inclusive. Reconstruction gap remains diagnostic rather than a hard gate. Scientifically infeasible candidates remain archived with their evaluation, verification and lineage evidence, but cannot enter the active/best population or become parents.
+
 ## GPU and resource expectations
 
 Candidate source preparation is CPU-only and sandboxed. Each scientific evaluation is a full fold-0 SegResNet training run. The production template uses courteous primary admission on physical GPU 0 and permits only 25/50/100 epoch fidelities. Set `CUDA_VISIBLE_DEVICES=0`; training uses logical `cuda:0`. Use separate output/checkpoint databases and do not point this task at an active Optuna run's output directory. The deterministic preprocessing cache may safely share a workspace because population is protected by `flock` and the cache identity is unchanged.

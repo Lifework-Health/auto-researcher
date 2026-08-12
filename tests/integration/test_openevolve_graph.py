@@ -13,7 +13,12 @@ import pytest
 
 from auto_researcher.agents.call_store import InMemoryAgentCallStore
 from auto_researcher.agents.mock import MockHypothesisAgent, MockPlannerAgent
-from auto_researcher.contracts.enums import EventType, RunStatus, SearchType
+from auto_researcher.contracts.enums import (
+    EvidenceStatus,
+    EventType,
+    RunStatus,
+    SearchType,
+)
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.dependencies import (
     task_memory_dependencies,
@@ -140,6 +145,76 @@ def test_synthetic_openevolve_improves_over_multiple_generations_and_publishes(
     assert event_types.count("EVALUATION_OBSERVED") == 3
     assert event_types.count("EVIDENCE_VERIFIED") == 3
     assert event_types[-1] == "OPENEVOLVE_SEARCH_STOPPED"
+
+
+def test_all_scientifically_ineligible_outcomes_stop_without_parent_selection(
+    tmp_path,
+):
+    class IneligibleVerifier:
+        verifier_id = "deterministic-verifier"
+        version = "deterministic-verifier-v1"
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def verify(self, *args, **kwargs):
+            result = self.inner.verify(*args, **kwargs)
+            return result.model_copy(
+                update={
+                    "verified": True,
+                    "constraint_compliant": False,
+                    "evidence_status": EvidenceStatus.REFUTED,
+                    "reasons": ("scientific_guardrail_failed",),
+                }
+            )
+
+    run_id = "openevolve-no-feasible-candidate"
+    thread_id = "openevolve-no-feasible-candidate-thread"
+    context = TaskRuntimeContext(
+        run_id=run_id,
+        output_dir=tmp_path / "artefacts",
+        workspace_dir=tmp_path / "workspace",
+        manifest_created_at=FIXED_TIME,
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        context,
+        _contract(),
+        default_synthetic_openevolve_configuration(),
+        search_type=SearchType.OPENEVOLVE,
+        clock=lambda: FIXED_TIME,
+    )
+    dependencies = replace(
+        dependencies, verifier=IneligibleVerifier(dependencies.verifier)
+    )
+    final = start_run(
+        build_graph(dependencies),
+        _identity_input(run_id, thread_id, _contract()),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    population = final["openevolve_population_state"]
+    result = final["openevolve_search_result"]
+    assert final["status"] == RunStatus.COMPLETED
+    assert result.stop_reason == "no_feasible_candidates"
+    assert result.feasible_candidate_found is False
+    assert result.best_candidate_ids == ()
+    assert population.active_population_candidate_ids == ()
+    assert population.selected_parent_ids == ()
+    assert population.budget.candidate_evaluations == 1
+    assert population.budget.failed_candidates == 0
+    assert population.budget.consecutive_failures == 0
+    assert len(population.archive_candidate_ids) == 1
+    assert len(population.outcomes) == len(population.lineage) == 1
+    outcome = population.outcomes[0]
+    assert outcome.status == CandidateStatus.VERIFIED
+    assert outcome.selection_outcome == "scientifically_ineligible"
+    assert outcome.replacement_outcome == "archive_only"
+    assert outcome.rejection_reason == "scientific_guardrail_failed"
+    assert outcome.evaluation is not None
+    assert outcome.verification is not None
+    assert final["experiment_spec"] is None
+    assert final["evaluation_result"] is None
+    assert final["verification_result"] is None
 
 
 def test_seed_then_one_fake_production_mutation_uses_explicit_budgets(tmp_path):

@@ -7,8 +7,13 @@ import sys
 import pytest
 from pydantic import ValidationError
 
-from auto_researcher.contracts.enums import SearchType
-from auto_researcher.contracts.models import SearchRequest
+from auto_researcher.contracts.enums import EvidenceStatus, ProvenanceKind, SearchType
+from auto_researcher.contracts.models import (
+    EvaluationResult,
+    SearchRequest,
+    VerificationResult,
+)
+from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.runtime.dependencies import memory_dependencies
 from auto_researcher.runtime.dependencies import task_memory_dependencies
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
@@ -22,6 +27,7 @@ from auto_researcher.search.openevolve.models import (
     CandidateStatus,
     EvolvableComponentSpec,
     OpenEvolveCandidate,
+    SelectionPolicy,
 )
 from auto_researcher.search.protocols import SearchCapability
 from auto_researcher.search.registry import SearchBackendRegistry
@@ -106,6 +112,7 @@ def test_finite_search_contract_binds_task_component_evaluator_verifier_and_sand
     assert search.maximum_generations == 3
     assert search.evaluator_identity.startswith("synthetic-evaluator@")
     assert search.verifier_identity == "deterministic-verifier-v1@synthetic-policy-v1"
+    assert search.selection_policy.policy_id == "constraint-verification-objective-v2"
     assert search.sandbox_policy.network_access is False
     assert search.sandbox_policy.inherit_environment is False
 
@@ -393,3 +400,167 @@ def test_constrained_selection_preserves_negative_result_over_infeasible_high_sc
         first.candidate_id,
         second.candidate_id,
     }
+
+
+def _recorded_evidence(candidate_id: str):
+    evaluation = EvaluationResult(
+        experiment_id=f"experiment-{candidate_id[-8:]}",
+        success=True,
+        primary_score=0.99,
+        metrics={"objective": 0.99},
+        constraint_results={"integrity": True},
+        evaluator_version="test-evaluator-v1",
+        provenance=ProvenanceKind.REAL,
+    )
+    verification = VerificationResult(
+        experiment_id=evaluation.experiment_id,
+        verified=True,
+        claimed_score=0.99,
+        measured_score=0.99,
+        constraint_compliant=False,
+        evidence_status=EvidenceStatus.REFUTED,
+        reasons=("scientific_guardrail_failed",),
+        provenance=ProvenanceKind.REAL,
+    )
+    return evaluation, verification
+
+
+def test_population_capacity_never_backfills_with_ineligible_candidates():
+    backend = _backend()
+    configuration = default_synthetic_openevolve_configuration()
+    configuration["openevolve"]["population_size"] = 2
+    search = backend.create_search_contract(_request(configuration), _contract())
+    feasible = _candidate(
+        'def evolve(configuration):\n return {"model_family":"linear","complexity":3,"learning_rate":0.05}\n'
+    )
+    infeasible = _candidate(
+        'def evolve(configuration):\n return {"model_family":"tree","complexity":5,"learning_rate":0.05}\n'
+    )
+    population = backend.initialise_population(search)
+    population = backend.update_population(
+        population,
+        search,
+        feasible,
+        CandidateOutcome(
+            candidate_id=feasible.candidate_id,
+            source_hash=feasible.source_hash,
+            status=CandidateStatus.VERIFIED,
+            objective_value=0.5,
+            constraint_compliant=True,
+            verified=True,
+            selection_outcome="ranked",
+            replacement_outcome="eligible_for_bounded_population",
+        ),
+    )
+    evaluation, verification = _recorded_evidence(infeasible.candidate_id)
+    population = backend.update_population(
+        population,
+        search,
+        infeasible,
+        CandidateOutcome(
+            candidate_id=infeasible.candidate_id,
+            source_hash=infeasible.source_hash,
+            status=CandidateStatus.VERIFIED,
+            objective_value=0.99,
+            constraint_compliant=False,
+            verified=True,
+            evidence_status=EvidenceStatus.REFUTED,
+            evaluation=evaluation,
+            verification=verification,
+            selection_outcome="scientifically_ineligible",
+            rejection_reason="scientific_guardrail_failed",
+            replacement_outcome="archive_only",
+        ),
+    )
+    assert population.active_population_candidate_ids == (feasible.candidate_id,)
+    assert population.best_known_candidate_ids == (feasible.candidate_id,)
+    assert infeasible.candidate_id in population.archive_candidate_ids
+    recorded = population.outcomes[-1]
+    assert recorded.evaluation == evaluation
+    assert recorded.verification == verification
+    assert population.lineage[-1].candidate_id == infeasible.candidate_id
+    assert population.budget.failed_candidates == 0
+    assert population.budget.consecutive_failures == 0
+
+
+def test_no_feasible_candidate_stops_without_failure_accounting():
+    backend = _backend()
+    search = backend.create_search_contract(_request(), _contract())
+    candidate = _candidate(
+        'def evolve(configuration):\n return {"model_family":"tree","complexity":5,"learning_rate":0.05}\n'
+    )
+    evaluation, verification = _recorded_evidence(candidate.candidate_id)
+    population = backend.update_population(
+        backend.initialise_population(search),
+        search,
+        candidate,
+        CandidateOutcome(
+            candidate_id=candidate.candidate_id,
+            source_hash=candidate.source_hash,
+            status=CandidateStatus.VERIFIED,
+            objective_value=0.99,
+            constraint_compliant=False,
+            verified=True,
+            evidence_status=EvidenceStatus.REFUTED,
+            evaluation=evaluation,
+            verification=verification,
+            selection_outcome="scientifically_ineligible",
+            rejection_reason="scientific_guardrail_failed",
+            replacement_outcome="archive_only",
+        ),
+    )
+    assert backend.stop_reason(population, search) == "no_feasible_candidates"
+    assert population.budget.failed_candidates == 0
+    stopped = population.model_copy(
+        update={"stopping_status": "STOPPED", "stop_reason": "no_feasible_candidates"}
+    )
+    result = backend.final_result(stopped)
+    assert result.feasible_candidate_found is False
+    assert result.best_candidate_ids == ()
+    assert result.stop_reason == "no_feasible_candidates"
+
+
+@pytest.mark.parametrize(
+    ("verified", "compliant", "expected"),
+    [
+        (True, True, ("ranked", "eligible_for_bounded_population", None)),
+        (
+            True,
+            False,
+            ("scientifically_ineligible", "archive_only", "guardrail"),
+        ),
+        (False, False, ("verification_ineligible", "archive_only", "unverified")),
+    ],
+)
+def test_persisted_selection_disposition_matches_real_eligibility(
+    verified, compliant, expected
+):
+    reasons = ("guardrail",) if verified else ("unverified",)
+    assert (
+        _backend().selection_disposition(
+            verified=verified,
+            constraint_compliant=compliant,
+            objective_value=0.9,
+            reasons=reasons,
+        )
+        == expected
+    )
+
+
+def test_selection_policy_v1_is_not_silently_reinterpreted():
+    backend = _backend()
+    current = backend.create_search_contract(_request(), _contract())
+    legacy = current.model_copy(
+        update={
+            "selection_policy": SelectionPolicy(
+                policy_id="constraint-verification-objective-v1",
+                direction=current.selection_policy.direction,
+                objective_metric=current.selection_policy.objective_metric,
+            )
+        }
+    )
+    assert payload_hash(legacy) != payload_hash(current)
+    with pytest.raises(
+        ValueError, match="openevolve_selection_policy_version_unsupported"
+    ):
+        backend.stop_reason(backend.initialise_population(legacy), legacy)

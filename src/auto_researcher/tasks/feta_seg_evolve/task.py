@@ -32,6 +32,12 @@ from auto_researcher.tasks.feta_seg_evolve.evaluator import (
     FeTASegEvolveEvaluator,
     evaluator_code_version,
 )
+from auto_researcher.tasks.feta_seg_evolve.feasibility import (
+    MAXIMUM_EMPTY_PREDICTIONS,
+    MINIMUM_PER_TISSUE_DICE,
+    SCIENTIFIC_FEASIBILITY_POLICY,
+    contract_has_exact_feasibility_policy,
+)
 from auto_researcher.tasks.feta_seg_evolve.openevolve import FeTASegEvolvableComponent
 from auto_researcher.tasks.feta_seg_evolve.verification import (
     FeTASegEvolveVerificationPolicy,
@@ -100,6 +106,8 @@ class FeTASegEvolveTask:
             contract.constraints.get(key) != value for key, value in expected.items()
         ):
             raise ValueError("feta_evolve_contract_scientific_identity_mismatch")
+        if not contract_has_exact_feasibility_policy(contract):
+            raise ValueError("feta_evolve_contract_feasibility_identity_mismatch")
 
     def normalise_configuration(
         self, configuration: dict[str, JsonValue]
@@ -257,6 +265,9 @@ def default_feta_evolve_contract(*, maximum_experiments: int = 3) -> ResearchCon
             "holdout_policy": "sealed-no-evaluation",
             "search_scope": "development-fold-0-only",
             "mutable_surface": "TrainingPolicy@feta-training-policy-v1-only",
+            "scientific_feasibility_policy": SCIENTIFIC_FEASIBILITY_POLICY,
+            "maximum_empty_predictions": MAXIMUM_EMPTY_PREDICTIONS,
+            "minimum_per_tissue_dice": MINIMUM_PER_TISSUE_DICE,
             "score_minimum": 0.0,
             "score_maximum": 1.0,
         },
