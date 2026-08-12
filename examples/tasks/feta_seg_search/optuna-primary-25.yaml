@@ -20,4 +20,4 @@ runtime:
       stable_idle_seconds: 0
       minimum_free_memory_mib: 40000
       maximum_utilization_percent: 10
-      allowed_fidelities: [25, 50, 100, 150, 300]
+      allowed_fidelities: [25, 50, 100, 150, 300, 350]

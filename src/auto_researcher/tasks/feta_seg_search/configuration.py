@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 CONFIGURATION_SCHEMA_VERSION = "feta-segresnet-search-configuration-v1"
-FIDELITY_LEVELS = (25, 50, 100, 150, 300)
+FIDELITY_LEVELS = (25, 50, 100, 150, 300, 350)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
 DROPOUT_BOUNDS = (0.0, 0.4)
@@ -36,6 +36,7 @@ def validation_epochs(maximum_epochs: int) -> tuple[int, ...]:
         100: (50, 100),
         150: (50, 100, 150),
         300: tuple(range(25, 301, 25)),
+        350: tuple(range(25, 351, 25)),
     }
     try:
         return schedules[maximum_epochs]
@@ -49,7 +50,7 @@ class FeTASegSearchConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     fold: Literal[0] = 0
-    maximum_epochs: Literal[25, 50, 100, 150, 300] = 50
+    maximum_epochs: Literal[25, 50, 100, 150, 300, 350] = 50
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     dropout: float = 0.2
@@ -97,9 +98,7 @@ class FeTASegSearchConfiguration(BaseModel):
         return cls._bounded(value, DICE_WEIGHT_BOUNDS, "dice_weight")
 
     @staticmethod
-    def _bounded(
-        value: float, bounds: tuple[float, float], name: str
-    ) -> float:
+    def _bounded(value: float, bounds: tuple[float, float], name: str) -> float:
         result = float(value)
         if not math.isfinite(result) or not bounds[0] <= result <= bounds[1]:
             raise ValueError(f"feta_search_{name}_out_of_bounds")

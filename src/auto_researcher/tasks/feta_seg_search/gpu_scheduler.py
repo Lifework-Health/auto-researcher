@@ -13,13 +13,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
+from auto_researcher.tasks.feta_seg_search.configuration import FIDELITY_LEVELS
 from auto_researcher.tasks.models import TaskRuntimeContext
 
 GPU_SCHEDULER_VERSION = "feta-search-courteous-gpu-admission-v1"
 WAIT_LOG_INTERVAL_SECONDS = 300
-REGISTERED_FIDELITIES = (25, 50, 100, 150, 300)
+REGISTERED_FIDELITIES = FIDELITY_LEVELS
 OPPORTUNISTIC_DEFAULT_FIDELITIES = (25, 50, 100)
 
 
@@ -33,9 +41,7 @@ class GPUSchedulerPolicy(BaseModel):
     poll_seconds: int = Field(default=20, strict=True, gt=0)
     stable_idle_seconds: int = Field(default=0, strict=True, ge=0)
     minimum_free_memory_mib: int = Field(default=40000, strict=True, gt=0)
-    maximum_utilization_percent: int = Field(
-        default=10, strict=True, ge=0, le=100
-    )
+    maximum_utilization_percent: int = Field(default=10, strict=True, ge=0, le=100)
     allowed_fidelities: tuple[int, ...] = REGISTERED_FIDELITIES
 
     @model_validator(mode="before")
@@ -48,9 +54,7 @@ class GPUSchedulerPolicy(BaseModel):
         configured = dict(value)
         mode = configured.get("mode", "disabled")
         if "stable_idle_seconds" not in configured:
-            configured["stable_idle_seconds"] = (
-                60 if mode == "opportunistic" else 0
-            )
+            configured["stable_idle_seconds"] = 60 if mode == "opportunistic" else 0
         if "allowed_fidelities" not in configured:
             configured["allowed_fidelities"] = (
                 OPPORTUNISTIC_DEFAULT_FIDELITIES
@@ -182,7 +186,9 @@ class NvidiaSmiGPUProbe:
                 "--format=csv,noheader,nounits",
             ]
         )
-        process_rows = [row.strip() for row in process_output.splitlines() if row.strip()]
+        process_rows = [
+            row.strip() for row in process_output.splitlines() if row.strip()
+        ]
         if process_rows and all(
             row.lower().startswith("no running processes") for row in process_rows
         ):

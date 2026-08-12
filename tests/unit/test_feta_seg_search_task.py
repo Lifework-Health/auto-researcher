@@ -13,7 +13,10 @@ from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.tasks.feta_seg import FeTASegTask
 from auto_researcher.tasks.feta_seg.manifests import EXPECTED_MANIFEST_HASH
-from auto_researcher.tasks.feta_seg.metrics import LABEL_NAMES, aggregate_subject_metrics
+from auto_researcher.tasks.feta_seg.metrics import (
+    LABEL_NAMES,
+    aggregate_subject_metrics,
+)
 from auto_researcher.tasks.feta_seg.splits import (
     EXPECTED_FOLD_HASH,
     EXPECTED_SPLIT_HASH,
@@ -27,6 +30,7 @@ from auto_researcher.tasks.feta_seg_search import (
     default_feta_search_contract,
     validation_epochs,
 )
+from auto_researcher.tasks.feta_seg_search.configuration import FIDELITY_LEVELS
 from auto_researcher.tasks.feta_seg_search.evaluator import (
     EVALUATOR_ID,
     FeTASegSearchEvaluator,
@@ -219,9 +223,7 @@ def _evaluator(
         provenance=metadata.provenance,
     )
     return (
-        FeTASegSearchEvaluator(
-            context, metadata, manifest, search_runner=runner
-        ),
+        FeTASegSearchEvaluator(context, metadata, manifest, search_runner=runner),
         experiment,
         configuration,
     )
@@ -276,9 +278,7 @@ def test_two_study_gpu_campaign_examples_parse_through_real_cli_loader():
         path = examples / filename
         payload = _load_yaml(path)
         assert payload["task"] == {"id": "feta_seg_search", "version": "1.0"}
-        search, runtime = _load_task_configuration(
-            path, "feta_seg_search", "1.0"
-        )
+        search, runtime = _load_task_configuration(path, "feta_seg_search", "1.0")
         assert search["trial_budget"] == 64
         assert search["n_startup_trials"] == 12
         assert search["seed"] == seed
@@ -287,6 +287,9 @@ def test_two_study_gpu_campaign_examples_parse_through_real_cli_loader():
         scheduler = runtime["options"]["gpu_scheduler"]
         assert scheduler["mode"] == mode
         assert scheduler["physical_gpu_index"] == gpu
+        assert scheduler["allowed_fidelities"] == (
+            [25, 50, 100, 150, 300, 350] if mode == "primary" else [25, 50, 100]
+        )
         request = SearchRequest(
             request_id=f"{mode}-campaign",
             hypothesis_id="hypothesis",
@@ -344,18 +347,24 @@ def test_configuration_rejects_out_of_bounds_and_non_finite(field, value):
 
 
 def test_only_registered_fidelities_and_exact_validation_schedules():
+    assert FIDELITY_LEVELS == (25, 50, 100, 150, 300, 350)
     expected = {
         25: (25,),
         50: (25, 50),
         100: (50, 100),
         150: (50, 100, 150),
         300: tuple(range(25, 301, 25)),
+        350: tuple(range(25, 351, 25)),
     }
     for fidelity, schedule in expected.items():
-        assert FeTASegSearchConfiguration(maximum_epochs=fidelity).validation_epochs() == schedule
+        assert (
+            FeTASegSearchConfiguration(maximum_epochs=fidelity).validation_epochs()
+            == schedule
+        )
         assert validation_epochs(fidelity) == schedule
-    with pytest.raises(ValidationError):
-        FeTASegSearchConfiguration(maximum_epochs=75)
+    for unsupported in (75, 200, 400):
+        with pytest.raises(ValidationError):
+            FeTASegSearchConfiguration(maximum_epochs=unsupported)
 
 
 def test_baseline_augmentation_and_ratio_mappings_are_exact():
@@ -426,7 +435,9 @@ def test_optuna_space_can_be_narrowed_and_registered_axis_pinned():
         parameter.name for parameter in specification.parameters
     }
     dropout = next(
-        parameter for parameter in specification.parameters if parameter.name == "dropout"
+        parameter
+        for parameter in specification.parameters
+        if parameter.name == "dropout"
     )
     assert (dropout.low, dropout.high) == (0.1, 0.3)
 
@@ -479,9 +490,7 @@ def test_direct_backend_reconstructs_task_owned_vector_constants():
         default_feta_search_contract(),
         run_id="direct-vector-regression",
     )
-    reconstructed = FeTASegSearchConfiguration.model_validate(
-        experiment.configuration
-    )
+    reconstructed = FeTASegSearchConfiguration.model_validate(experiment.configuration)
     assert reconstructed.blocks_down == (1, 2, 2, 4)
     assert reconstructed.blocks_up == (1, 1, 1)
     assert reconstructed.spacing_mm == (0.5, 0.5, 0.5)
@@ -525,14 +534,14 @@ def test_generated_runner_result_is_valid_and_verifiable(tmp_path):
     assert "mean_subject_macro_hd95_mm" not in result.metrics
     assert "mean_subject_macro_volume_similarity" not in result.metrics
     assert "mean_subject_macro_euler_distance" not in result.metrics
-    reconstructed = FeTASegSearchConfiguration.model_validate(
-        experiment.configuration
-    )
+    reconstructed = FeTASegSearchConfiguration.model_validate(experiment.configuration)
     assert result.metrics["configuration_identity"] == payload_hash(reconstructed)
     assert result.metrics["configuration"]["blocks_down"] == [1, 2, 2, 4]
-    decision = FeTASegSearchTask().create_verification_policy(
-        contract
-    ).evaluate_constraints(result, contract)
+    decision = (
+        FeTASegSearchTask()
+        .create_verification_policy(contract)
+        .evaluate_constraints(result, contract)
+    )
     assert decision.constraint_compliant is True
 
 
@@ -545,7 +554,7 @@ def _enabled_scheduler_options() -> dict:
             "stable_idle_seconds": 0,
             "minimum_free_memory_mib": 40000,
             "maximum_utilization_percent": 10,
-            "allowed_fidelities": [25, 50, 100, 150, 300],
+            "allowed_fidelities": [25, 50, 100, 150, 300, 350],
         }
     }
 
@@ -611,7 +620,7 @@ def test_evaluator_accepts_screen_metric_tier(maximum_epochs, tmp_path):
     assert "mean_subject_macro_hd95_mm" not in result.metrics
 
 
-@pytest.mark.parametrize("maximum_epochs", [100, 150, 300])
+@pytest.mark.parametrize("maximum_epochs", [100, 150, 300, 350])
 def test_evaluator_accepts_full_metric_tier(maximum_epochs, tmp_path):
     evaluator, experiment, _ = _evaluator(
         tmp_path,
@@ -632,9 +641,7 @@ def test_evaluator_rejects_incomplete_full_metric_tier(tmp_path):
         metrics.pop("mean_subject_macro_hd95_mm")
         return metrics
 
-    evaluator, experiment, _ = _evaluator(
-        tmp_path, incomplete, maximum_epochs=100
-    )
+    evaluator, experiment, _ = _evaluator(tmp_path, incomplete, maximum_epochs=100)
     result = evaluator.evaluate(experiment, default_feta_search_contract())
     assert result.success is False
     assert result.error == "feta_search_scientific_constraints_failed"
