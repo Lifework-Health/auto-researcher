@@ -12,7 +12,7 @@ MetricTier = Literal["screen", "full"]
 METRIC_TIER_POLICY_VERSION = "feta-search-fidelity-metric-tier-v1"
 SCREEN_METRIC_VERSION = "feta-dice-reconstruction-screen-panel-v1"
 SCREEN_FIDELITIES = (25, 50)
-FULL_FIDELITIES = (100, 150, 300)
+FULL_FIDELITIES = (100, 150, 300, 350)
 FULL_PANEL_METRIC_NAMES = frozenset(
     {
         "mean_subject_macro_hd95_mm",
@@ -52,11 +52,7 @@ def evaluate_screen_subject(actual: Any, predicted: Any) -> dict[str, Any]:
         predicted_count = int(predicted_mask.sum())
         empty = predicted_count == 0
         intersection = int(np.logical_and(actual_mask, predicted_mask).sum())
-        score = (
-            0.0
-            if empty
-            else 2.0 * intersection / (actual_count + predicted_count)
-        )
+        score = 0.0 if empty else 2.0 * intersection / (actual_count + predicted_count)
         scores.append(score)
         empty_count += int(empty)
         per_class[str(label)] = {

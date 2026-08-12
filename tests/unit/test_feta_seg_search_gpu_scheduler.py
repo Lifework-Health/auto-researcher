@@ -13,6 +13,7 @@ from auto_researcher.tasks.feta_seg_search.gpu_scheduler import (
     GPUProbeResult,
     GPUSchedulerPolicy,
     NvidiaSmiGPUProbe,
+    REGISTERED_FIDELITIES,
     gpu_scheduler_policy,
     scheduler_telemetry_is_valid,
     wait_for_gpu_admission,
@@ -56,7 +57,7 @@ def _policy(mode="primary", **updates) -> GPUSchedulerPolicy:
         "stable_idle_seconds": 0 if mode == "primary" else 60,
         "minimum_free_memory_mib": 40000,
         "maximum_utilization_percent": 10,
-        "allowed_fidelities": [25, 50, 100, 150, 300]
+        "allowed_fidelities": [25, 50, 100, 150, 300, 350]
         if mode == "primary"
         else [25, 50, 100],
     }
@@ -83,6 +84,7 @@ def _admit(policy, observations, *, current_pid=100):
 
 
 def test_disabled_policy_does_not_gate_existing_runs():
+    assert REGISTERED_FIDELITIES == (25, 50, 100, 150, 300, 350)
     policy = gpu_scheduler_policy(TaskRuntimeContext())
     assert policy.mode == "disabled"
     assert (
@@ -202,9 +204,7 @@ def test_opportunistic_waits_for_full_stable_idle_window_without_real_sleep():
 
 
 def test_opportunistic_stability_timer_resets_when_foreign_process_appears():
-    occupied = GPUProbeResult(
-        48000, 0, (GPUComputeProcess(38122, "luis"),)
-    )
+    occupied = GPUProbeResult(48000, 0, (GPUComputeProcess(38122, "luis"),))
     telemetry, probe, clock, logs = _admit(
         _policy("opportunistic"), [FREE, FREE, occupied, FREE]
     )
@@ -216,9 +216,7 @@ def test_opportunistic_stability_timer_resets_when_foreign_process_appears():
 
 def test_opportunistic_admits_after_process_leaves_and_stability_passes():
     occupied = GPUProbeResult(48000, 0, (GPUComputeProcess(200),))
-    telemetry, probe, clock, _ = _admit(
-        _policy("opportunistic"), [occupied, FREE]
-    )
+    telemetry, probe, clock, _ = _admit(_policy("opportunistic"), [occupied, FREE])
     assert probe.calls == 5
     assert clock.sleeps == [20, 20, 20, 20]
     assert telemetry.wait_seconds == 80
@@ -288,9 +286,7 @@ def test_nvidia_smi_malformed_gpu_output_fails_closed(monkeypatch, status):
     monkeypatch.setattr(
         scheduler_module.subprocess,
         "run",
-        lambda _arguments, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=status
-        ),
+        lambda _arguments, **_kwargs: SimpleNamespace(returncode=0, stdout=status),
     )
     with pytest.raises(ValueError, match="gpu_probe_parse_failed"):
         NvidiaSmiGPUProbe().probe(1)
@@ -326,7 +322,7 @@ def test_candidate_admission_is_immediately_before_cuda_setup():
     assert "create_model" not in between_admission_and_seed
 
 
-@pytest.mark.parametrize("fidelity", [150, 300])
+@pytest.mark.parametrize("fidelity", [150, 300, 350])
 def test_opportunistic_rejects_disallowed_long_fidelity(fidelity):
     with pytest.raises(ValueError, match="gpu_fidelity_disallowed"):
         wait_for_gpu_admission(
@@ -338,9 +334,7 @@ def test_opportunistic_rejects_disallowed_long_fidelity(fidelity):
 
 
 def test_opportunistic_allows_25_epoch_fidelity():
-    telemetry, _, _, _ = _admit(
-        _policy("opportunistic", stable_idle_seconds=0), [FREE]
-    )
+    telemetry, _, _, _ = _admit(_policy("opportunistic", stable_idle_seconds=0), [FREE])
     assert telemetry.mode == "opportunistic"
 
 
@@ -367,8 +361,6 @@ def test_scheduler_telemetry_validation_rejects_missing_or_mismatched_values():
     metrics = telemetry.as_metrics()
     assert scheduler_telemetry_is_valid({}, _policy()) is False
     assert (
-        scheduler_telemetry_is_valid(
-            {**metrics, "physical_gpu_index": 1}, _policy()
-        )
+        scheduler_telemetry_is_valid({**metrics, "physical_gpu_index": 1}, _policy())
         is False
     )

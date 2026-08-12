@@ -55,8 +55,7 @@ from auto_researcher.tasks.feta_seg_search.runner import (
 
 def _methods() -> dict[str, str]:
     return {
-        f"sub-{index:03d}": "mial" if index <= 40 else "irtk"
-        for index in range(1, 81)
+        f"sub-{index:03d}": "mial" if index <= 40 else "irtk" for index in range(1, 81)
     }
 
 
@@ -90,9 +89,7 @@ def _last_payload(
     *,
     configuration: FeTASegSearchConfiguration | None = None,
 ) -> dict:
-    source = configuration or FeTASegSearchConfiguration(
-        maximum_epochs=source_epochs
-    )
+    source = configuration or FeTASegSearchConfiguration(maximum_epochs=source_epochs)
     trajectory = candidate_trajectory_identity(source)
     prediction_identity = prediction_set_identity(
         trajectory,
@@ -129,9 +126,9 @@ def test_hpo_candidates_share_deterministic_cache_identity():
         positive_negative_ratio="3:1",
         augmentation_strength="strong",
     )
-    assert deterministic_cache_identity(first, training) == deterministic_cache_identity(
-        second, training
-    )
+    assert deterministic_cache_identity(
+        first, training
+    ) == deterministic_cache_identity(second, training)
 
 
 def test_cache_record_hash_is_path_free():
@@ -392,7 +389,7 @@ def test_screen_tier_contains_dice_without_full_panel(fidelity):
     assert not FULL_PANEL_METRIC_NAMES & set(metrics)
 
 
-@pytest.mark.parametrize("fidelity", [100, 150, 300])
+@pytest.mark.parametrize("fidelity", [100, 150, 300, 350])
 def test_full_tier_contains_complete_panel(fidelity):
     _, validation = _fold_zero_subjects()
     labels = tuple(_volume() for _ in range(14))
@@ -427,12 +424,32 @@ def test_trajectory_identity_ignores_fidelity_but_binds_hpo():
     at_50 = FeTASegSearchConfiguration(maximum_epochs=50)
     changed = FeTASegSearchConfiguration(maximum_epochs=50, dropout=0.3)
     assert candidate_trajectory_identity(at_25) == candidate_trajectory_identity(at_50)
-    assert candidate_trajectory_identity(at_25) != candidate_trajectory_identity(changed)
+    assert candidate_trajectory_identity(at_25) != candidate_trajectory_identity(
+        changed
+    )
+
+
+def test_300_to_350_resume_preserves_trajectory_and_starts_at_301():
+    source = FeTASegSearchConfiguration(maximum_epochs=300)
+    requested = FeTASegSearchConfiguration(maximum_epochs=350)
+    payload = _last_payload(300, configuration=source)
+    start, trajectory = validate_resume_checkpoint_payload(
+        payload,
+        requested,
+        expected_runner_version=RUNNER_VERSION,
+        expected_data_loader_version=DATA_LOADER_VERSION,
+    )
+    assert start == 301
+    assert trajectory == payload["trajectory_identity"]
+    assert candidate_trajectory_identity(source) == candidate_trajectory_identity(
+        requested
+    )
+    assert CONTINUATION_VERSION == "feta-search-stateful-optimisation-continuation-v1"
 
 
 @pytest.mark.parametrize(
     ("source_epoch", "requested_epoch", "expected_start"),
-    [(25, 50, 26), (50, 100, 51)],
+    [(25, 50, 26), (50, 100, 51), (300, 350, 301)],
 )
 def test_valid_resume_starts_after_completed_rung(
     source_epoch, requested_epoch, expected_start
@@ -460,7 +477,8 @@ def test_resume_rejects_different_trajectory():
 
 
 @pytest.mark.parametrize(
-    ("source_epoch", "requested_epoch"), [(25, 25), (50, 25)]
+    ("source_epoch", "requested_epoch"),
+    [(25, 25), (50, 25), (350, 350), (350, 300)],
 )
 def test_resume_rejects_same_or_lower_fidelity(source_epoch, requested_epoch):
     payload = _last_payload(source_epoch)
@@ -516,23 +534,29 @@ def test_missing_resume_checkpoint_fails_closed(tmp_path):
         )
 
 
-def test_load_resume_plan_verifies_files_and_returns_next_epoch(tmp_path):
+@pytest.mark.parametrize(
+    ("source_epoch", "requested_epoch", "expected_start"),
+    [(25, 50, 26), (300, 350, 301)],
+)
+def test_load_resume_plan_verifies_files_and_returns_next_epoch(
+    tmp_path, source_epoch, requested_epoch, expected_start
+):
     import torch
 
     checkpoint_root = tmp_path / "source" / "checkpoints"
     checkpoint_root.mkdir(parents=True)
-    source = FeTASegSearchConfiguration(maximum_epochs=25)
+    source = FeTASegSearchConfiguration(maximum_epochs=source_epoch)
     trajectory = candidate_trajectory_identity(source)
     prediction_identity = prediction_set_identity(
         trajectory,
-        25,
+        source_epoch,
         0.5,
         tuple(f"safe-{index}" for index in range(14)),
     )
     best_payload = {
         "model_state_dict": {},
         "fold": 0,
-        "epoch": 25,
+        "epoch": source_epoch,
         "validation_score": 0.5,
         "seed": 20260807,
         "trajectory_identity": trajectory,
@@ -545,12 +569,12 @@ def test_load_resume_plan_verifies_files_and_returns_next_epoch(tmp_path):
         model_state_dict={},
         optimizer_state_dict={},
         scaler_state_dict={},
-        completed_epoch=25,
+        completed_epoch=source_epoch,
         configuration=source,
         trajectory_identity=trajectory,
         runner_version=RUNNER_VERSION,
         data_loader_version=DATA_LOADER_VERSION,
-        best_epoch=25,
+        best_epoch=source_epoch,
         best_score=0.5,
         best_checkpoint_sha256=best_sha,
         best_prediction_identity=prediction_identity,
@@ -559,11 +583,17 @@ def test_load_resume_plan_verifies_files_and_returns_next_epoch(tmp_path):
     torch.save(last_payload, checkpoint_root / "last.pt")
     plan = load_resume_plan(
         tmp_path / "source",
-        FeTASegSearchConfiguration(maximum_epochs=50),
+        FeTASegSearchConfiguration(maximum_epochs=requested_epoch),
         expected_runner_version=RUNNER_VERSION,
         expected_data_loader_version=DATA_LOADER_VERSION,
         map_location="cpu",
     )
-    assert plan.completed_epoch == 25
-    assert plan.start_epoch == 26
+    assert plan.completed_epoch == source_epoch
+    assert plan.start_epoch == expected_start
     assert plan.source_best_checkpoint_sha256 == best_sha
+    assert plan.source_last_checkpoint.name == "last.pt"
+    assert plan.source_best_checkpoint.name == "best.pt"
+    assert plan.last_payload["model_state_dict"] == {}
+    assert plan.last_payload["optimizer_state_dict"] == {}
+    assert plan.last_payload["scaler_state_dict"] == {}
+    assert plan.last_payload["rng_state"] == {}
