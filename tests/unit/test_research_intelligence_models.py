@@ -9,6 +9,7 @@ from auto_researcher.contracts.models import EvaluationResult
 from auto_researcher.research_intelligence.models import (
     EXTERNAL_EVIDENCE_BOUNDARY,
     ResearchProgrammeContext,
+    SourceCandidate,
     SourceRecord,
     SourceType,
     materialise_source,
@@ -33,12 +34,36 @@ def test_source_identity_tampering_and_future_publication_fail_closed():
             {**source.model_dump(mode="python"), "source_content_hash": "0" * 64}
         )
     with pytest.raises(ValidationError, match="publication date"):
-        source.__class__.model_validate(
+        SourceCandidate.model_validate(
             {
-                **source.model_dump(mode="python"),
+                **feta_nnunet_corpus()[0].source.model_dump(mode="python"),
                 "publication_or_update_date": date(2027, 1, 1),
             }
         )
+
+
+def test_unverified_source_cannot_claim_arbitrarily_high_quality():
+    candidate = feta_nnunet_corpus()[0].source
+    with pytest.raises(ValidationError, match="trust-classification cap"):
+        SourceCandidate.model_validate(
+            {
+                **candidate.model_dump(mode="python"),
+                "trust_classification": "UNVERIFIED",
+                "quality_score": 0.9,
+            }
+        )
+
+
+def test_source_type_is_not_a_universal_quality_hierarchy():
+    candidate = feta_nnunet_corpus()[0].source
+    official = SourceCandidate.model_validate(
+        {**candidate.model_dump(mode="python"), "source_type": "OFFICIAL_DOCUMENTATION"}
+    )
+    paper = SourceCandidate.model_validate(
+        {**candidate.model_dump(mode="python"), "source_type": "PEER_REVIEWED_PAPER"}
+    )
+    assert official.quality_score == paper.quality_score
+    assert official.quality_assessment_basis == paper.quality_assessment_basis
 
 
 def test_external_research_cannot_be_relabelled_as_measured_evaluation_evidence():

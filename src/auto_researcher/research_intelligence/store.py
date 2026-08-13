@@ -13,12 +13,14 @@ from auto_researcher.research_intelligence.models import (
     EvidenceCategory,
     EvidenceQuery,
     EvidenceRelationType,
+    FindingStance,
     ResearchIntelligenceRefreshRecord,
     SourceRecord,
+    SourceRetrievalRecord,
     SynthesisResult,
 )
 
-STORE_SCHEMA_VERSION = "research-intelligence-sqlite-v1"
+STORE_SCHEMA_VERSION = "research-intelligence-sqlite-v2"
 
 
 def _query_matches(card: EvidenceCard, query: EvidenceQuery) -> bool:
@@ -32,6 +34,12 @@ def _query_matches(card: EvidenceCard, query: EvidenceQuery) -> bool:
         and card.current_applicability.score >= query.minimum_applicability_score
         and card.ranking.combined_score >= query.minimum_rank_score
     )
+
+
+_ALLOWED_ID_TABLES = {
+    ("research_sources", "source_version_id"),
+    ("research_evidence_cards", "evidence_id"),
+}
 
 
 class SQLiteEvidenceStore:
@@ -51,11 +59,20 @@ class SQLiteEvidenceStore:
                     source_version_id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL,
                     source_content_hash TEXT NOT NULL,
-                    retrieved_at TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS research_sources_stable_id_idx
-                ON research_sources(source_id, retrieved_at);
+                ON research_sources(source_id, source_version_id);
+                CREATE TABLE IF NOT EXISTS research_source_retrievals (
+                    retrieval_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    source_version_id TEXT NOT NULL,
+                    retrieved_at TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    FOREIGN KEY(source_version_id) REFERENCES research_sources(source_version_id)
+                );
+                CREATE INDEX IF NOT EXISTS research_source_retrieval_time_idx
+                ON research_source_retrievals(source_version_id, retrieved_at);
                 CREATE TABLE IF NOT EXISTS research_evidence_cards (
                     evidence_id TEXT PRIMARY KEY,
                     evidence_content_hash TEXT NOT NULL,
@@ -98,6 +115,13 @@ class SQLiteEvidenceStore:
                     FOREIGN KEY(refresh_id) REFERENCES research_refreshes(refresh_id),
                     FOREIGN KEY(evidence_id) REFERENCES research_evidence_cards(evidence_id)
                 );
+                CREATE TABLE IF NOT EXISTS research_refresh_retrievals (
+                    refresh_id TEXT NOT NULL,
+                    retrieval_id TEXT NOT NULL,
+                    PRIMARY KEY(refresh_id, retrieval_id),
+                    FOREIGN KEY(refresh_id) REFERENCES research_refreshes(refresh_id),
+                    FOREIGN KEY(retrieval_id) REFERENCES research_source_retrievals(retrieval_id)
+                );
                 """
             )
             row = self._connection.execute(
@@ -119,40 +143,21 @@ class SQLiteEvidenceStore:
         source_ids = tuple(
             sorted(source.source_version_id for source in result.source_records)
         )
-        evidence_ids = tuple(sorted(card.evidence_id for card in result.evidence_cards))
-        refresh = ResearchIntelligenceRefreshRecord(
-            refresh_id=stable_identifier(
-                "research-refresh",
-                content_hash(result.programme_context),
-                *source_ids,
-                *evidence_ids,
-            ),
-            programme_context=result.programme_context,
-            source_version_ids=source_ids,
-            evidence_card_ids=evidence_ids,
-            source_count=len(source_ids),
-            evidence_count=len(evidence_ids),
-            completed_at=result.synthesised_at,
+        retrieval_ids = tuple(
+            sorted(retrieval.retrieval_id for retrieval in result.source_retrievals)
         )
+        evidence_ids = tuple(sorted(card.evidence_id for card in result.evidence_cards))
         with self._lock, self._connection:
-            existing_refresh = self._connection.execute(
-                "SELECT payload FROM research_refreshes WHERE refresh_id = ?",
-                (refresh.refresh_id,),
-            ).fetchone()
-            if existing_refresh is not None:
-                existing = ResearchIntelligenceRefreshRecord.model_validate_json(
-                    existing_refresh[0]
-                )
-                if (
-                    existing.programme_context != refresh.programme_context
-                    or existing.source_version_ids != refresh.source_version_ids
-                    or existing.evidence_card_ids != refresh.evidence_card_ids
-                ):
-                    raise ValueError("research_intelligence_refresh_conflict")
-                return existing
-
+            existing_sources = self._existing_ids(
+                "research_sources", "source_version_id", source_ids
+            )
+            existing_evidence = self._existing_ids(
+                "research_evidence_cards", "evidence_id", evidence_ids
+            )
             for source in result.source_records:
                 self._insert_source(source)
+            for retrieval in result.source_retrievals:
+                self._insert_retrieval(retrieval)
             for card in result.evidence_cards:
                 self._insert_evidence(card)
             available_evidence = {
@@ -198,6 +203,51 @@ class SQLiteEvidenceStore:
                             "VALUES (?, ?, ?)",
                             (card.evidence_id, related_id, relation.value),
                         )
+            self._reconcile_relationships(result.evidence_cards)
+            snapshot_ids = tuple(
+                sorted(
+                    card.evidence_id
+                    for card in self.query_evidence(
+                        EvidenceQuery(task_id=result.programme_context.task_id)
+                    )
+                    if card.programme_context == result.programme_context
+                )
+            )
+            snapshot_id = stable_identifier(
+                "evidence-snapshot",
+                content_hash(result.programme_context),
+                *snapshot_ids,
+            )
+            new_source_ids = tuple(sorted(set(source_ids) - existing_sources))
+            new_evidence_ids = tuple(sorted(set(evidence_ids) - existing_evidence))
+            refresh = ResearchIntelligenceRefreshRecord(
+                refresh_id=stable_identifier(
+                    "research-refresh",
+                    content_hash(result.programme_context),
+                    snapshot_id,
+                    content_hash(result.synthesised_at),
+                    *retrieval_ids,
+                ),
+                programme_context=result.programme_context,
+                evidence_snapshot_id=snapshot_id,
+                source_version_ids=source_ids,
+                source_retrieval_ids=retrieval_ids,
+                evidence_card_ids=evidence_ids,
+                snapshot_evidence_card_ids=snapshot_ids,
+                new_source_version_ids=new_source_ids,
+                new_evidence_card_ids=new_evidence_ids,
+                source_count=len(source_ids),
+                evidence_count=len(evidence_ids),
+                completed_at=result.synthesised_at,
+            )
+            existing_refresh = self._connection.execute(
+                "SELECT payload FROM research_refreshes WHERE refresh_id = ?",
+                (refresh.refresh_id,),
+            ).fetchone()
+            if existing_refresh is not None:
+                return ResearchIntelligenceRefreshRecord.model_validate_json(
+                    existing_refresh[0]
+                )
             self._connection.execute(
                 "INSERT INTO research_refreshes(refresh_id, completed_at, payload) "
                 "VALUES (?, ?, ?)",
@@ -210,40 +260,76 @@ class SQLiteEvidenceStore:
             self._connection.executemany(
                 "INSERT INTO research_refresh_evidence(refresh_id, evidence_id) "
                 "VALUES (?, ?)",
-                ((refresh.refresh_id, evidence_id) for evidence_id in evidence_ids),
+                ((refresh.refresh_id, evidence_id) for evidence_id in new_evidence_ids),
+            )
+            self._connection.executemany(
+                "INSERT INTO research_refresh_retrievals(refresh_id, retrieval_id) "
+                "VALUES (?, ?)",
+                ((refresh.refresh_id, retrieval_id) for retrieval_id in retrieval_ids),
             )
         return refresh
 
+    def _existing_ids(
+        self, table: str, column: str, identifiers: tuple[str, ...]
+    ) -> set[str]:
+        if not identifiers:
+            return set()
+        if (table, column) not in _ALLOWED_ID_TABLES:
+            raise ValueError("research_intelligence_invalid_identity_table")
+        placeholders = ",".join("?" for _ in identifiers)
+        rows = self._connection.execute(
+            f"SELECT {column} FROM {table} WHERE {column} IN ({placeholders})",
+            identifiers,
+        ).fetchall()
+        return {row[0] for row in rows}
+
     def _insert_source(self, source: SourceRecord) -> None:
         existing = self._connection.execute(
-            "SELECT source_content_hash, retrieved_at FROM research_sources "
+            "SELECT source_content_hash FROM research_sources "
             "WHERE source_version_id = ?",
             (source.source_version_id,),
         ).fetchone()
         if existing is not None:
             if existing[0] != source.source_content_hash:
                 raise ValueError("research_intelligence_source_immutable_conflict")
-            if source.retrieved_at.astimezone(UTC).isoformat() > existing[1]:
-                self._connection.execute(
-                    "UPDATE research_sources SET retrieved_at = ?, payload = ? "
-                    "WHERE source_version_id = ?",
-                    (
-                        source.retrieved_at.astimezone(UTC).isoformat(),
-                        source.model_dump_json(),
-                        source.source_version_id,
-                    ),
-                )
             return
         self._connection.execute(
             "INSERT INTO research_sources"
-            "(source_version_id, source_id, source_content_hash, retrieved_at, payload) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(source_version_id, source_id, source_content_hash, payload) "
+            "VALUES (?, ?, ?, ?)",
             (
                 source.source_version_id,
                 source.source_id,
                 source.source_content_hash,
-                source.retrieved_at.astimezone(UTC).isoformat(),
                 source.model_dump_json(),
+            ),
+        )
+
+    def _insert_retrieval(self, retrieval: SourceRetrievalRecord) -> None:
+        source = self._connection.execute(
+            "SELECT source_id FROM research_sources WHERE source_version_id = ?",
+            (retrieval.source_version_id,),
+        ).fetchone()
+        if source is None or source[0] != retrieval.source_id:
+            raise ValueError("research_intelligence_retrieval_source_missing")
+        existing = self._connection.execute(
+            "SELECT payload FROM research_source_retrievals WHERE retrieval_id = ?",
+            (retrieval.retrieval_id,),
+        ).fetchone()
+        if existing is not None:
+            if SourceRetrievalRecord.model_validate_json(existing[0]) != retrieval:
+                raise ValueError("research_intelligence_retrieval_immutable_conflict")
+            return
+        self._connection.execute(
+            "INSERT INTO research_source_retrievals"
+            "(retrieval_id, source_id, source_version_id, retrieved_at, payload) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                retrieval.retrieval_id,
+                retrieval.source_id,
+                retrieval.source_version_id,
+                retrieval.retrieved_at.astimezone(UTC).isoformat(),
+                retrieval.model_dump_json(),
             ),
         )
 
@@ -256,10 +342,6 @@ class SQLiteEvidenceStore:
         if existing is not None:
             if existing[0] != card.evidence_content_hash:
                 raise ValueError("research_intelligence_evidence_immutable_conflict")
-            self._connection.execute(
-                "UPDATE research_evidence_cards SET payload = ? WHERE evidence_id = ?",
-                (card.model_dump_json(), card.evidence_id),
-            )
             return
         self._connection.execute(
             "INSERT INTO research_evidence_cards"
@@ -276,6 +358,61 @@ class SQLiteEvidenceStore:
             ),
         )
 
+    def _reconcile_relationships(self, cards: tuple[EvidenceCard, ...]) -> None:
+        persisted = tuple(
+            EvidenceCard.model_validate_json(row[0])
+            for row in self._connection.execute(
+                "SELECT payload FROM research_evidence_cards"
+            ).fetchall()
+        )
+        for card in cards:
+            for other in persisted:
+                if (
+                    other.evidence_id == card.evidence_id
+                    or other.claim_key != card.claim_key
+                    or other.programme_context != card.programme_context
+                ):
+                    continue
+                if other.stance == card.stance:
+                    relation = EvidenceRelationType.SUPPORTS
+                elif FindingStance.MIXED not in {other.stance, card.stance}:
+                    relation = EvidenceRelationType.CONFLICTS
+                else:
+                    continue
+                self._connection.executemany(
+                    "INSERT OR IGNORE INTO research_evidence_relations"
+                    "(evidence_id, related_evidence_id, relation_type) "
+                    "VALUES (?, ?, ?)",
+                    (
+                        (card.evidence_id, other.evidence_id, relation.value),
+                        (other.evidence_id, card.evidence_id, relation.value),
+                    ),
+                )
+
+    def _with_relationships(self, card: EvidenceCard) -> EvidenceCard:
+        rows = self._connection.execute(
+            "SELECT related_evidence_id, relation_type "
+            "FROM research_evidence_relations WHERE evidence_id = ?",
+            (card.evidence_id,),
+        ).fetchall()
+        supporting = {
+            related
+            for related, relation in rows
+            if relation == EvidenceRelationType.SUPPORTS.value
+        }
+        conflicting = {
+            related
+            for related, relation in rows
+            if relation == EvidenceRelationType.CONFLICTS.value
+        }
+        return EvidenceCard.model_validate(
+            {
+                **card.model_dump(mode="python"),
+                "supporting_evidence_ids": tuple(sorted(supporting)),
+                "conflicting_evidence_ids": tuple(sorted(conflicting)),
+            }
+        )
+
     def get_source(
         self, source_id: str, source_version_id: str | None = None
     ) -> SourceRecord | None:
@@ -287,24 +424,43 @@ class SQLiteEvidenceStore:
             ).fetchone()
         else:
             row = self._connection.execute(
-                "SELECT payload FROM research_sources WHERE source_id = ? "
-                "ORDER BY retrieved_at DESC, source_version_id DESC LIMIT 1",
+                "SELECT sources.payload FROM research_sources sources "
+                "LEFT JOIN research_source_retrievals retrievals "
+                "ON retrievals.source_version_id = sources.source_version_id "
+                "WHERE sources.source_id = ? "
+                "ORDER BY retrievals.retrieved_at DESC, "
+                "sources.source_version_id DESC LIMIT 1",
                 (source_id,),
             ).fetchone()
         return SourceRecord.model_validate_json(row[0]) if row else None
+
+    def source_retrievals(
+        self, source_version_id: str
+    ) -> tuple[SourceRetrievalRecord, ...]:
+        rows = self._connection.execute(
+            "SELECT payload FROM research_source_retrievals "
+            "WHERE source_version_id = ? ORDER BY retrieved_at, retrieval_id",
+            (source_version_id,),
+        ).fetchall()
+        return tuple(SourceRetrievalRecord.model_validate_json(row[0]) for row in rows)
 
     def get_evidence(self, evidence_id: str) -> EvidenceCard | None:
         row = self._connection.execute(
             "SELECT payload FROM research_evidence_cards WHERE evidence_id = ?",
             (evidence_id,),
         ).fetchone()
-        return EvidenceCard.model_validate_json(row[0]) if row else None
+        if row is None:
+            return None
+        return self._with_relationships(EvidenceCard.model_validate_json(row[0]))
 
     def query_evidence(self, query: EvidenceQuery) -> tuple[EvidenceCard, ...]:
         rows = self._connection.execute(
             "SELECT payload FROM research_evidence_cards"
         ).fetchall()
-        cards = tuple(EvidenceCard.model_validate_json(row[0]) for row in rows)
+        cards = tuple(
+            self._with_relationships(EvidenceCard.model_validate_json(row[0]))
+            for row in rows
+        )
         return tuple(
             sorted(
                 (card for card in cards if _query_matches(card, query)),
@@ -346,7 +502,10 @@ class SQLiteEvidenceStore:
         ).fetchall()
         return tuple(
             sorted(
-                (EvidenceCard.model_validate_json(row[0]) for row in rows),
+                (
+                    self._with_relationships(EvidenceCard.model_validate_json(row[0]))
+                    for row in rows
+                ),
                 key=lambda card: (-card.ranking.combined_score, card.evidence_id),
             )
         )
@@ -369,6 +528,17 @@ class SQLiteEvidenceStore:
     def latest_refresh(self) -> ResearchIntelligenceRefreshRecord | None:
         row = self._connection.execute(
             "SELECT payload FROM research_refreshes ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        return (
+            ResearchIntelligenceRefreshRecord.model_validate_json(row[0])
+            if row
+            else None
+        )
+
+    def get_refresh(self, refresh_id: str) -> ResearchIntelligenceRefreshRecord | None:
+        row = self._connection.execute(
+            "SELECT payload FROM research_refreshes WHERE refresh_id = ?",
+            (refresh_id,),
         ).fetchone()
         return (
             ResearchIntelligenceRefreshRecord.model_validate_json(row[0])

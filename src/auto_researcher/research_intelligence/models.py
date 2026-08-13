@@ -19,6 +19,7 @@ from pydantic import (
 from auto_researcher.knowledge.identity import content_hash, stable_identifier
 
 SOURCE_RECORD_VERSION = "research-intelligence-source-v1"
+SOURCE_RETRIEVAL_VERSION = "research-intelligence-source-retrieval-v1"
 EVIDENCE_CARD_VERSION = "research-intelligence-evidence-card-v1"
 SYNTHESIS_VERSION = "deterministic-evidence-synthesis-v1"
 BRIEF_VERSION = "research-intelligence-brief-v1"
@@ -95,15 +96,14 @@ class BriefSection(StrEnum):
     EXPERIMENT_DESIGN_IMPLICATIONS = "EXPERIMENT_DESIGN_IMPLICATIONS"
 
 
-class SourceCandidate(ResearchIntelligenceModel):
-    """Already-retrieved bibliographic and provenance material."""
+class SourceContent(ResearchIntelligenceModel):
+    """Immutable bibliographic content for one externally assigned version."""
 
     title: str = Field(min_length=1, max_length=500)
     authors: tuple[str, ...] = ()
     organisation: str | None = Field(default=None, min_length=1, max_length=300)
     source_type: SourceType
     publication_or_update_date: date | None = None
-    retrieved_at: AwareDatetime
     reference_identity: str = Field(min_length=1, max_length=1_000)
     uri: str | None = Field(default=None, min_length=1, max_length=2_000)
     source_version: str = Field(min_length=1, max_length=200)
@@ -114,8 +114,7 @@ class SourceCandidate(ResearchIntelligenceModel):
     data_availability: Availability = Availability.UNKNOWN
     trust_classification: TrustClassification
     quality_score: float = Field(ge=0, le=1)
-    ingestion_method: Literal["ALREADY_RETRIEVED"] = "ALREADY_RETRIEVED"
-    provenance_version: str = Field(default="offline-scout-v1", min_length=1)
+    quality_assessment_basis: str = Field(min_length=1, max_length=1_000)
 
     @field_validator(
         "authors",
@@ -134,6 +133,26 @@ class SourceCandidate(ResearchIntelligenceModel):
         return values
 
     @model_validator(mode="after")
+    def quality_is_trust_capped(self) -> "SourceContent":
+        caps = {
+            TrustClassification.HIGH: 1.0,
+            TrustClassification.MODERATE: 0.85,
+            TrustClassification.LOW: 0.55,
+            TrustClassification.UNVERIFIED: 0.25,
+        }
+        if self.quality_score > caps[self.trust_classification]:
+            raise ValueError("source quality exceeds its trust-classification cap")
+        return self
+
+
+class SourceCandidate(SourceContent):
+    """Already-retrieved source content plus one observation event."""
+
+    retrieved_at: AwareDatetime
+    ingestion_method: Literal["ALREADY_RETRIEVED"] = "ALREADY_RETRIEVED"
+    provenance_version: str = Field(default="offline-scout-v1", min_length=1)
+
+    @model_validator(mode="after")
     def dates_are_causal(self) -> "SourceCandidate":
         if (
             self.publication_or_update_date is not None
@@ -143,7 +162,7 @@ class SourceCandidate(ResearchIntelligenceModel):
         return self
 
 
-class SourceRecord(SourceCandidate):
+class SourceRecord(SourceContent):
     record_version: Literal["research-intelligence-source-v1"] = SOURCE_RECORD_VERSION
     evidence_boundary: Literal["EXTERNAL_RESEARCH_INTELLIGENCE"] = (
         EXTERNAL_EVIDENCE_BOUNDARY
@@ -154,7 +173,7 @@ class SourceRecord(SourceCandidate):
 
     @model_validator(mode="after")
     def identity_is_canonical(self) -> "SourceRecord":
-        candidate = SourceCandidate.model_validate(
+        source_content = SourceContent.model_validate(
             self.model_dump(
                 mode="python",
                 exclude={
@@ -166,10 +185,10 @@ class SourceRecord(SourceCandidate):
                 },
             )
         )
-        expected_hash = source_candidate_content_hash(candidate)
-        expected_source = source_identity(candidate)
+        expected_hash = source_content_hash(source_content)
+        expected_source = source_identity(source_content)
         expected_version = source_version_identity(
-            expected_source, candidate, expected_hash
+            expected_source, source_content, expected_hash
         )
         if (
             self.source_content_hash != expected_hash
@@ -177,6 +196,35 @@ class SourceRecord(SourceCandidate):
             or self.source_version_id != expected_version
         ):
             raise ValueError("research_intelligence_source_identity_mismatch")
+        return self
+
+
+class SourceRetrievalRecord(ResearchIntelligenceModel):
+    retrieval_id: str = Field(pattern=r"^source-retrieval-[0-9a-f]{24}$")
+    retrieval_version: Literal["research-intelligence-source-retrieval-v1"] = (
+        SOURCE_RETRIEVAL_VERSION
+    )
+    source_id: str = Field(pattern=r"^source-[0-9a-f]{24}$")
+    source_version_id: str = Field(pattern=r"^source-version-[0-9a-f]{24}$")
+    retrieved_at: AwareDatetime
+    ingestion_method: Literal["ALREADY_RETRIEVED"] = "ALREADY_RETRIEVED"
+    provenance_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def identity_is_canonical(self) -> "SourceRetrievalRecord":
+        expected = stable_identifier(
+            "source-retrieval",
+            self.source_version_id,
+            content_hash(
+                {
+                    "retrieved_at": self.retrieved_at,
+                    "ingestion_method": self.ingestion_method,
+                    "provenance_version": self.provenance_version,
+                }
+            ),
+        )
+        if self.retrieval_id != expected:
+            raise ValueError("research_intelligence_retrieval_identity_mismatch")
         return self
 
 
@@ -256,8 +304,8 @@ class EvidenceRanking(ResearchIntelligenceModel):
     relevance_score: float = Field(ge=0, le=1)
     freshness_score: float = Field(ge=0, le=1)
     combined_score: float = Field(ge=0, le=1)
-    ranking_version: Literal["quality-relevance-freshness-v1"] = (
-        "quality-relevance-freshness-v1"
+    ranking_version: Literal["trust-capped-quality-relevance-freshness-v2"] = (
+        "trust-capped-quality-relevance-freshness-v2"
     )
 
 
@@ -346,6 +394,7 @@ class SynthesisResult(ResearchIntelligenceModel):
     )
     programme_context: ResearchProgrammeContext
     source_records: tuple[SourceRecord, ...]
+    source_retrievals: tuple[SourceRetrievalRecord, ...]
     evidence_cards: tuple[EvidenceCard, ...]
     duplicate_sources_ignored: int = Field(ge=0)
     duplicate_findings_ignored: int = Field(ge=0)
@@ -354,12 +403,17 @@ class SynthesisResult(ResearchIntelligenceModel):
 
 class ResearchIntelligenceRefreshRecord(ResearchIntelligenceModel):
     refresh_id: str = Field(pattern=r"^research-refresh-[0-9a-f]{24}$")
-    refresh_version: Literal["research-intelligence-refresh-v1"] = (
-        "research-intelligence-refresh-v1"
+    refresh_version: Literal["research-intelligence-refresh-v2"] = (
+        "research-intelligence-refresh-v2"
     )
     programme_context: ResearchProgrammeContext
+    evidence_snapshot_id: str = Field(pattern=r"^evidence-snapshot-[0-9a-f]{24}$")
     source_version_ids: tuple[str, ...]
+    source_retrieval_ids: tuple[str, ...]
     evidence_card_ids: tuple[str, ...]
+    snapshot_evidence_card_ids: tuple[str, ...]
+    new_source_version_ids: tuple[str, ...]
+    new_evidence_card_ids: tuple[str, ...]
     source_count: int = Field(ge=0)
     evidence_count: int = Field(ge=0)
     completed_at: AwareDatetime
@@ -373,17 +427,31 @@ class ResearchIntelligenceRefreshRecord(ResearchIntelligenceModel):
             self.source_count != len(self.source_version_ids)
             or self.evidence_count != len(self.evidence_card_ids)
             or len(set(self.source_version_ids)) != len(self.source_version_ids)
+            or len(set(self.source_retrieval_ids)) != len(self.source_retrieval_ids)
             or len(set(self.evidence_card_ids)) != len(self.evidence_card_ids)
+            or len(set(self.snapshot_evidence_card_ids))
+            != len(self.snapshot_evidence_card_ids)
+            or not set(self.new_source_version_ids) <= set(self.source_version_ids)
+            or not set(self.new_evidence_card_ids) <= set(self.evidence_card_ids)
+            or not set(self.evidence_card_ids) <= set(self.snapshot_evidence_card_ids)
         ):
             raise ValueError("research intelligence refresh counts are invalid")
         expected = stable_identifier(
             "research-refresh",
             content_hash(self.programme_context),
-            *self.source_version_ids,
-            *self.evidence_card_ids,
+            self.evidence_snapshot_id,
+            content_hash(self.completed_at),
+            *self.source_retrieval_ids,
         )
         if self.refresh_id != expected:
             raise ValueError("research_intelligence_refresh_identity_mismatch")
+        expected_snapshot = stable_identifier(
+            "evidence-snapshot",
+            content_hash(self.programme_context),
+            *self.snapshot_evidence_card_ids,
+        )
+        if self.evidence_snapshot_id != expected_snapshot:
+            raise ValueError("research_intelligence_snapshot_identity_mismatch")
         return self
 
 
@@ -446,7 +514,7 @@ class ResearchIntelligenceBrief(ResearchIntelligenceModel):
         return self
 
 
-def source_identity(candidate: SourceCandidate) -> str:
+def source_identity(candidate: SourceContent) -> str:
     return stable_identifier(
         "source",
         candidate.source_type.value,
@@ -454,8 +522,8 @@ def source_identity(candidate: SourceCandidate) -> str:
     )
 
 
-def source_candidate_content_hash(candidate: SourceCandidate) -> str:
-    payload = candidate.model_dump(mode="python", exclude={"retrieved_at"})
+def source_content_hash(candidate: SourceContent) -> str:
+    payload = candidate.model_dump(mode="python")
     return content_hash(
         {
             "domain": "research-intelligence-source-content",
@@ -466,7 +534,7 @@ def source_candidate_content_hash(candidate: SourceCandidate) -> str:
 
 
 def source_version_identity(
-    source_id: str, candidate: SourceCandidate, candidate_hash: str
+    source_id: str, candidate: SourceContent, candidate_hash: str
 ) -> str:
     return stable_identifier(
         "source-version", source_id, candidate.source_version, candidate_hash
@@ -474,13 +542,39 @@ def source_version_identity(
 
 
 def materialise_source(candidate: SourceCandidate) -> SourceRecord:
-    candidate_hash = source_candidate_content_hash(candidate)
-    source_id = source_identity(candidate)
+    source_content = SourceContent.model_validate(
+        candidate.model_dump(
+            mode="python",
+            exclude={"retrieved_at", "ingestion_method", "provenance_version"},
+        )
+    )
+    candidate_hash = source_content_hash(source_content)
+    source_id = source_identity(source_content)
     return SourceRecord(
-        **candidate.model_dump(mode="python"),
+        **source_content.model_dump(mode="python"),
         source_id=source_id,
-        source_version_id=source_version_identity(source_id, candidate, candidate_hash),
+        source_version_id=source_version_identity(
+            source_id, source_content, candidate_hash
+        ),
         source_content_hash=candidate_hash,
+    )
+
+
+def materialise_source_retrieval(
+    candidate: SourceCandidate, source: SourceRecord
+) -> SourceRetrievalRecord:
+    payload = {
+        "retrieved_at": candidate.retrieved_at,
+        "ingestion_method": candidate.ingestion_method,
+        "provenance_version": candidate.provenance_version,
+    }
+    return SourceRetrievalRecord(
+        retrieval_id=stable_identifier(
+            "source-retrieval", source.source_version_id, content_hash(payload)
+        ),
+        source_id=source.source_id,
+        source_version_id=source.source_version_id,
+        **payload,
     )
 
 

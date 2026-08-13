@@ -21,6 +21,7 @@ from auto_researcher.research_intelligence.models import (
     SynthesisResult,
     materialise_evidence_card,
     materialise_source,
+    materialise_source_retrieval,
     source_identity,
 )
 from auto_researcher.research_intelligence.protocols import ResearchScout
@@ -122,9 +123,11 @@ class DeterministicEvidenceSynthesiser:
     ) -> SynthesisResult:
         timestamp = synthesised_at.astimezone(UTC)
         selected: dict[str, RetrievedSourceMaterial] = {}
+        observed: list[RetrievedSourceMaterial] = []
         duplicate_sources = 0
         duplicate_findings = 0
         for material in scout.collect():
+            observed.append(material)
             identity = source_identity(material.source)
             current = selected.get(identity)
             if current is None:
@@ -132,9 +135,15 @@ class DeterministicEvidenceSynthesiser:
                 continue
             duplicate_sources += 1
             if content_hash(
-                current.source.model_dump(mode="python", exclude={"retrieved_at"})
+                current.source.model_dump(
+                    mode="python",
+                    exclude={"retrieved_at", "ingestion_method", "provenance_version"},
+                )
             ) != content_hash(
-                material.source.model_dump(mode="python", exclude={"retrieved_at"})
+                material.source.model_dump(
+                    mode="python",
+                    exclude={"retrieved_at", "ingestion_method", "provenance_version"},
+                )
             ):
                 raise ValueError("research_intelligence_source_version_conflict")
             findings = {
@@ -156,6 +165,15 @@ class DeterministicEvidenceSynthesiser:
         records = {
             identity: materialise_source(material.source)
             for identity, material in selected.items()
+        }
+        retrievals = {
+            retrieval.retrieval_id: retrieval
+            for material in observed
+            for retrieval in (
+                materialise_source_retrieval(
+                    material.source, records[source_identity(material.source)]
+                ),
+            )
         }
         grouped: dict[str, list[tuple[SourceRecord, FindingCandidate]]] = defaultdict(
             list
@@ -253,6 +271,9 @@ class DeterministicEvidenceSynthesiser:
             programme_context=programme_context,
             source_records=tuple(
                 sorted(records.values(), key=lambda item: item.source_version_id)
+            ),
+            source_retrievals=tuple(
+                sorted(retrievals.values(), key=lambda item: item.retrieval_id)
             ),
             evidence_cards=tuple(
                 sorted(

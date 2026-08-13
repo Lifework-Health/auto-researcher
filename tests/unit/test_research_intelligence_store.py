@@ -52,6 +52,53 @@ def test_source_evidence_and_relationships_survive_restart(tmp_path):
     reopened.close()
 
 
+def test_unchanged_source_retrievals_and_no_change_scans_are_distinct_after_restart(
+    tmp_path,
+):
+    path = tmp_path / "research.sqlite3"
+    material = feta_nnunet_corpus()[0]
+    t1 = NOW
+    t2 = NOW + timedelta(hours=1)
+    source_t1 = material.source.model_copy(update={"retrieved_at": t1})
+    source_t2 = material.source.model_copy(update={"retrieved_at": t2})
+    synthesiser = DeterministicEvidenceSynthesiser()
+    first = synthesiser.synthesise(
+        OfflineResearchScout((material.model_copy(update={"source": source_t1}),)),
+        CONTEXT,
+        synthesised_at=t1,
+    )
+    second = synthesiser.synthesise(
+        OfflineResearchScout((material.model_copy(update={"source": source_t2}),)),
+        CONTEXT,
+        synthesised_at=t2,
+    )
+    assert first.source_records == second.source_records
+    assert tuple(card.evidence_id for card in first.evidence_cards) == tuple(
+        card.evidence_id for card in second.evidence_cards
+    )
+
+    store = SQLiteEvidenceStore(path)
+    refresh_t1 = store.store_synthesis(first)
+    refresh_t2 = store.store_synthesis(second)
+    store.close()
+
+    reopened = SQLiteEvidenceStore(path)
+    observations = reopened.source_retrievals(first.source_records[0].source_version_id)
+    assert tuple(item.retrieved_at for item in observations) == (t1, t2)
+    assert refresh_t1.refresh_id != refresh_t2.refresh_id
+    assert refresh_t1.evidence_snapshot_id == refresh_t2.evidence_snapshot_id
+    assert refresh_t2.new_source_version_ids == ()
+    assert refresh_t2.new_evidence_card_ids == ()
+    assert reopened.get_refresh(refresh_t1.refresh_id) == refresh_t1
+    assert reopened.get_refresh(refresh_t2.refresh_id) == refresh_t2
+    assert reopened.latest_refresh() == refresh_t2
+    assert (
+        reopened.get_source(first.source_records[0].source_id)
+        == first.source_records[0]
+    )
+    reopened.close()
+
+
 def test_new_source_version_creates_refresh_without_overwriting_history(tmp_path):
     path = tmp_path / "research.sqlite3"
     store = SQLiteEvidenceStore(path)
@@ -112,14 +159,27 @@ def test_incremental_refresh_updates_derived_conflict_links_without_changing_ide
     tmp_path,
 ):
     corpus = feta_nnunet_corpus()
-    without_preprint = tuple(
+    supporting_source = next(
         item
         for item in corpus
-        if item.source.reference_identity != "fixture:feta-preprint"
+        if item.source.reference_identity == "fixture:feta-challenge"
+    )
+    supporting_finding = next(
+        item
+        for item in supporting_source.findings
+        if item.claim_key == "spacing.fixed_target"
+    )
+    supporting_only = supporting_source.model_copy(
+        update={"findings": (supporting_finding,)}
+    )
+    contradicting_source = next(
+        item
+        for item in corpus
+        if item.source.reference_identity == "fixture:feta-preprint"
     )
     store = SQLiteEvidenceStore(tmp_path / "research.sqlite3")
     initial = DeterministicEvidenceSynthesiser().synthesise(
-        OfflineResearchScout(without_preprint), CONTEXT, synthesised_at=NOW
+        OfflineResearchScout((supporting_only,)), CONTEXT, synthesised_at=NOW
     )
     store.store_synthesis(initial)
     initial_spacing = next(
@@ -129,12 +189,25 @@ def test_incremental_refresh_updates_derived_conflict_links_without_changing_ide
     )
     assert initial_spacing.conflicting_evidence_ids == ()
 
-    refreshed = _result()
-    store.store_synthesis(refreshed)
-    persisted = store.get_evidence(initial_spacing.evidence_id)
-    assert persisted is not None
-    assert persisted.evidence_id == initial_spacing.evidence_id
-    assert len(persisted.conflicting_evidence_ids) == 1
+    incremental = DeterministicEvidenceSynthesiser().synthesise(
+        OfflineResearchScout((contradicting_source,)),
+        CONTEXT,
+        synthesised_at=NOW + timedelta(hours=1),
+    )
+    store.store_synthesis(incremental)
+    conflicts = store.conflicting_evidence(EvidenceQuery(task_id=CONTEXT.task_id))
+    assert {card.evidence_id for card in conflicts} == {
+        initial_spacing.evidence_id,
+        incremental.evidence_cards[0].evidence_id,
+    }
+    assert all(len(card.conflicting_evidence_ids) == 1 for card in conflicts)
+    brief = DeterministicBriefBuilder().build(
+        store, CONTEXT, generated_at=NOW + timedelta(hours=1)
+    )
+    assert len(brief.unresolved_uncertainties) == 1
+    assert set(brief.unresolved_uncertainties[0].evidence_card_ids) == {
+        card.evidence_id for card in conflicts
+    }
     store.close()
 
 

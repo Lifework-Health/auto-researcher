@@ -11,6 +11,7 @@ from auto_researcher.research_intelligence.models import (
     ResearchIntelligenceRefreshRecord,
     RetrievedSourceMaterial,
     SourceRecord,
+    SourceRetrievalRecord,
     SynthesisResult,
 )
 
@@ -37,6 +38,10 @@ class EvidenceStore(Protocol):
 
     def get_evidence(self, evidence_id: str) -> EvidenceCard | None: ...
 
+    def source_retrievals(
+        self, source_version_id: str
+    ) -> tuple[SourceRetrievalRecord, ...]: ...
+
     def query_evidence(self, query: EvidenceQuery) -> tuple[EvidenceCard, ...]: ...
 
     def strongest_known_baselines(
@@ -56,3 +61,7 @@ class EvidenceStore(Protocol):
     def sources_supporting_claim(self, claim_key: str) -> tuple[SourceRecord, ...]: ...
 
     def latest_refresh(self) -> ResearchIntelligenceRefreshRecord | None: ...
+
+    def get_refresh(
+        self, refresh_id: str
+    ) -> ResearchIntelligenceRefreshRecord | None: ...

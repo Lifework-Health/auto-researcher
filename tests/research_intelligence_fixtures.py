@@ -47,8 +47,14 @@ def _source(
         domains=domains,
         code_availability=Availability.AVAILABLE,
         data_availability=Availability.PARTIAL,
-        trust_classification=TrustClassification.MODERATE,
+        trust_classification=(
+            TrustClassification.HIGH if quality > 0.85 else TrustClassification.MODERATE
+        ),
         quality_score=quality,
+        quality_assessment_basis=(
+            "Fixture-normalised source assessment of trust, source type, and authority; "
+            "source type alone is not an authority ranking."
+        ),
         provenance_version="synthetic-offline-corpus-v1",
     )
 
