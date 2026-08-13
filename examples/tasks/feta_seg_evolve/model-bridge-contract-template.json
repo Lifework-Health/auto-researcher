@@ -1,0 +1,38 @@
+{
+  "accounting_policy": "model-call-accounting-v1",
+  "approval_policy_version": "live-mutation-approval-v2-metadata-only",
+  "bridge_id": "auto-researcher-openevolve-model-bridge",
+  "bridge_version": "1",
+  "maximum_input_bytes": 20000,
+  "model_config": {
+    "maximum_attempts": 1,
+    "maximum_cost_per_call": 0.05,
+    "maximum_output_tokens": 1000,
+    "model_id": "replace-with-explicit-versioned-model-id",
+    "pricing": {
+      "cache_read_cost_per_million_tokens": null,
+      "cache_write_cost_per_million_tokens": null,
+      "currency": "USD",
+      "input_cost_per_million_tokens": 1.0,
+      "output_cost_per_million_tokens": 1.0,
+      "version": "replace-with-reviewed-pricing-version"
+    },
+    "prompt_version": "openevolve-mutation-prompt-v2",
+    "provider": "anthropic",
+    "structured_output_strategy": "pydantic",
+    "temperature": 0.0,
+    "timeout_seconds": 60.0
+  },
+  "model_store_protocol_version": "agent-call-store-v2",
+  "mutation_operator_id": "pinned-upstream-openevolve",
+  "mutation_operator_version": "upstream-openevolve-adapter-v1",
+  "prompt_id": "openevolve-mutation",
+  "prompt_version": "openevolve-mutation-prompt-v2",
+  "protocol_version": "openevolve-model-bridge-v1",
+  "provider_mode": "auto_researcher_owned",
+  "reservation_policy": "durable-before-dispatch-v1",
+  "response_schema_version": "upstream-mutation-envelope-v1",
+  "supported_adapter_version": "1",
+  "supported_search_contract_version": "openevolve-search-v1",
+  "uncertain_outcome_policy": "no-automatic-redispatch-v1"
+}

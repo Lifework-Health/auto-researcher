@@ -51,6 +51,10 @@ from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.checkpoints import memory_checkpointer, sqlite_checkpointer
 from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
+from auto_researcher.search.openevolve.live_runtime import (
+    MetadataOnlyLiveOpenEvolveRuntime,
+    assemble_metadata_only_live_openevolve,
+)
 from auto_researcher.search.openevolve.protocols import MutationOperator
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
 from auto_researcher.search.openevolve.sandbox import LocalSandboxRunner
@@ -168,6 +172,7 @@ def _assemble_task_dependencies(
     optuna_storage_handle: OptunaStorageHandle | None = None,
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
+    openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
 ) -> RuntimeDependencies:
     task.validate_contract(contract)
     context = _context_for_contract(runtime_context, contract, clock())
@@ -234,6 +239,7 @@ def _assemble_task_dependencies(
     openevolve_capable = isinstance(task, OpenEvolveCapableTask)
     openevolve_permitted = SearchType.OPENEVOLVE in contract.allowed_search_types
     openevolve_backend: OpenEvolveBackend | None = None
+    call_store = agent_call_store or InMemoryAgentCallStore()
     if openevolve_capable and openevolve_permitted:
         component = task.create_evolvable_component(contract, context)
         verifier_identity = f"{selected_verifier.version}@{policy.policy_id}"
@@ -242,6 +248,35 @@ def _assemble_task_dependencies(
             if context.workspace_dir is not None
             else None
         )
+        if openevolve_live_runtime is not None:
+            if search_type != SearchType.OPENEVOLVE:
+                raise ValueError("live_mutation_requires_openevolve_search")
+            if (
+                openevolve_mutation_operator is not None
+                or openevolve_sandbox_runner is not None
+            ):
+                raise ValueError("live_mutation_runtime_injection_conflict")
+            if context.workspace_dir is None:
+                raise ValueError("live_mutation_workspace_required")
+            if context.run_id is None:
+                raise ValueError("live_mutation_runtime_run_required")
+            (
+                openevolve_mutation_operator,
+                openevolve_sandbox_runner,
+            ) = assemble_metadata_only_live_openevolve(
+                runtime=openevolve_live_runtime,
+                task=task,
+                component=component,
+                research_contract=contract,
+                run_id=context.run_id,
+                experiment_configuration=experiment_configuration,
+                call_store=call_store,
+                workspace_root=(
+                    context.workspace_dir.expanduser().resolve()
+                    / "openevolve-sandboxes"
+                ),
+                now=clock,
+            )
         openevolve_backend = OpenEvolveBackend(
             component,
             metadata,
@@ -307,7 +342,6 @@ def _assemble_task_dependencies(
         openevolve_backend,
     )
     capabilities = registry.capabilities()
-    call_store = agent_call_store or InMemoryAgentCallStore()
     retrieval_store = knowledge_retrieval_store or InMemoryKnowledgeRetrievalStore()
     template_registry = knowledge_template_registry or default_template_registry()
     provider_registry = KnowledgeProviderRegistry()
@@ -490,7 +524,10 @@ def task_memory_dependencies(
     search_type: SearchType = SearchType.DIRECT,
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
+    openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
 ) -> RuntimeDependencies:
+    if openevolve_live_runtime is not None:
+        raise ValueError("live_mutation_durable_runtime_required")
     return _assemble_task_dependencies(
         task=task,
         runtime_context=runtime_context,
@@ -517,6 +554,7 @@ def task_memory_dependencies(
         search_type=search_type,
         openevolve_mutation_operator=openevolve_mutation_operator,
         openevolve_sandbox_runner=openevolve_sandbox_runner,
+        openevolve_live_runtime=openevolve_live_runtime,
     )
 
 
@@ -549,6 +587,7 @@ def task_sqlite_dependencies(
     search_type: SearchType = SearchType.DIRECT,
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
+    openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
 ) -> Iterator[RuntimeDependencies]:
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     provenance = Path(provenance_path).expanduser().resolve()
@@ -632,6 +671,7 @@ def task_sqlite_dependencies(
             optuna_storage_handle=optuna_handle,
             openevolve_mutation_operator=openevolve_mutation_operator,
             openevolve_sandbox_runner=openevolve_sandbox_runner,
+            openevolve_live_runtime=openevolve_live_runtime,
         )
     finally:
         if optuna_handle is not None:

@@ -45,6 +45,10 @@ from auto_researcher.search.openevolve.live_models import (
     MetadataOnlyLiveMutationApproval,
     parse_live_mutation_approval,
 )
+from auto_researcher.search.openevolve.live_runtime import (
+    MetadataOnlyLiveOpenEvolveConfiguration,
+    MetadataOnlyLiveOpenEvolveRuntime,
+)
 from auto_researcher.runtime.dependencies import (
     task_sqlite_dependencies,
     utc_now,
@@ -250,6 +254,35 @@ def _configured_search_type(path: Path | None) -> SearchType:
         return SearchType(search.get("type"))
     except ValueError as exc:
         raise ValueError("task config has an unsupported search type") from exc
+
+
+def _load_live_openevolve_runtime(
+    payload: dict[str, Any],
+    *,
+    thread_id: str,
+) -> MetadataOnlyLiveOpenEvolveRuntime | None:
+    configured = payload.get("openevolve_live_mutation")
+    if configured is None:
+        return None
+    if not isinstance(configured, dict):
+        raise ValueError("openevolve_live_mutation section must be a mapping")
+    prohibited = {
+        "api_key",
+        "credential",
+        "credentials",
+        "secret",
+        "token",
+        "provider_client",
+        "provider_url",
+    }
+    if prohibited & _nested_keys(configured):
+        raise ValueError("live mutation credentials must come from the environment")
+    return MetadataOnlyLiveOpenEvolveRuntime(
+        configuration=MetadataOnlyLiveOpenEvolveConfiguration.model_validate(
+            configured
+        ),
+        thread_id=thread_id,
+    )
 
 
 def _load_live_agents(payload: dict[str, Any]):
@@ -612,6 +645,10 @@ def run(
             environment=runtime.get("environment", {}),
             task_options=runtime_options,
         )
+        openevolve_live_runtime = _load_live_openevolve_runtime(
+            raw_config,
+            thread_id=thread_id,
+        )
         with task_sqlite_dependencies(
             task,
             runtime_context,
@@ -630,6 +667,8 @@ def run(
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
             search_type=search_type,
+            openevolve_live_runtime=openevolve_live_runtime,
+            clock=utc_now,
         ) as dependencies:
             graph = build_graph(dependencies)
             final = start_run(
@@ -653,6 +692,10 @@ def run(
     typer.echo(f"Search type: {search_type.value}")
     typer.echo(f"Agent mode: {agent_mode}")
     typer.echo(f"Grounding mode: {contract.grounding.mode.value}")
+    typer.echo(
+        "OpenEvolve mutation mode: "
+        f"{'metadata_only_live' if openevolve_live_runtime else 'default'}"
+    )
     typer.echo(
         "Knowledge provider: "
         f"{knowledge_configuration.provider_id if knowledge_configuration else 'none'}"
@@ -883,6 +926,10 @@ def resume_cli(
             environment=runtime.get("environment", {}),
             task_options=runtime_options,
         )
+        openevolve_live_runtime = _load_live_openevolve_runtime(
+            raw_config,
+            thread_id=thread_id,
+        )
         with task_sqlite_dependencies(
             task,
             runtime_context,
@@ -901,6 +948,8 @@ def resume_cli(
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
             search_type=search_type,
+            openevolve_live_runtime=openevolve_live_runtime,
+            clock=utc_now,
         ) as dependencies:
             final = resume_run(
                 build_graph(dependencies),

@@ -158,7 +158,6 @@ class UpstreamOpenEvolveAdapter:
     operator_id = "pinned-upstream-openevolve"
     operator_version = "upstream-openevolve-adapter-v1"
     model_calls_per_mutation = 1
-    provenance = "FAKE_MODEL"
 
     def __init__(
         self,
@@ -168,6 +167,9 @@ class UpstreamOpenEvolveAdapter:
         validate_upstream_dependency(contract)
         self.contract = contract
         self.bridge = bridge
+        self.provenance = getattr(bridge, "creation_provenance", "FAKE_MODEL")
+        if self.provenance not in {"FAKE_MODEL", "LIVE_MODEL"}:
+            raise ValueError("upstream_mutation_provenance_invalid")
         self.state = UpstreamOpenEvolveAdapterState(
             adapter_identity_hash=payload_hash(contract)
         )
@@ -210,6 +212,9 @@ class UpstreamOpenEvolveAdapter:
                 "protocol": "upstream-adapter-mutation-request-v2",
                 "mutation_constraints": constraints.model_dump(mode="json"),
             }
+        bind_search_request = getattr(self.bridge, "bind_search_request", None)
+        if bind_search_request is not None:
+            bind_search_request(reservation.search_request_id)
         response, call = self.bridge.complete(request, reservation.reservation_id)
         try:
             envelope = UpstreamMutationEnvelope.model_validate(response)

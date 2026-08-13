@@ -2,6 +2,25 @@
 
 Use this path only for a trusted task that implements `MetadataOnlyLiveMutationCapableTask`. The task's underlying evaluator class remains truthful; FeTA is `mri`. The only supported provider exposure is `metadata_only`.
 
+## Standard v2.2 runtime path
+
+Use `examples/tasks/feta_seg_evolve/openevolve-live-metadata-only-template.yaml` with the standard CLI. Replace every absolute artifact placeholder with the exact reviewed file for the run. The bridge contract template is only a starting point: its explicit provider/model, pricing and finite limits must match the approval.
+
+```bash
+auto-researcher run start \
+  --task feta_seg_evolve \
+  --contract examples/tasks/feta_seg_evolve/contract.yaml \
+  --task-config /protected/config/openevolve-live-metadata-only.yaml \
+  --run-id approved-run-id \
+  --thread-id approved-thread-id \
+  --checkpoint-db /protected/state/checkpoints.sqlite \
+  --provenance-db /protected/state/provenance.sqlite \
+  --agent-calls-db /protected/state/agent-calls.sqlite \
+  --knowledge-retrievals-db /protected/state/knowledge.sqlite
+```
+
+Resume uses the same configuration and store paths. The runtime rejects relative/missing artifacts, embedded credentials, non-metadata-only approval, identity drift, expired approval, a non-durable model-call store, zero live-call budget, local sandbox policy or executor/image mismatch before provider dispatch. Anthropic credentials are read from `ANTHROPIC_API_KEY` only after durable reservation; provider construction has no retries. Fake production is available only through dependency injection in offline tests, never as a CLI fallback.
+
 ## Required identities
 
 Create the approval outside the repository after constructing the exact research contract, component specification, pinned adapter and hardened executor policy. Bind:

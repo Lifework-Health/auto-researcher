@@ -485,6 +485,24 @@ def test_examples_parse_and_build_real_search_contracts():
         )
 
 
+def test_live_metadata_only_example_preserves_science_and_selects_hardened_runtime():
+    root = Path(__file__).parents[2] / "examples" / "tasks" / "feta_seg_evolve"
+    search, runtime = _load_task_configuration(
+        root / "openevolve-live-metadata-only-template.yaml",
+        "feta_seg_evolve",
+        "1.0",
+    )
+    assert search["openevolve"]["maximum_model_calls"] == 2
+    assert search["openevolve"]["sandbox_policy_id"] == (
+        "openevolve-hardened-executor-v2"
+    )
+    assert search["openevolve"]["random_seed"] == 20260810
+    assert runtime["options"]["gpu_scheduler"]["allowed_fidelities"] == [25, 50, 100]
+    assert FeTASegEvolveTask().live_mutation_boundary().underlying_dataset_class == (
+        "mri"
+    )
+
+
 def test_active_feta_search_scientific_and_continuation_identity_is_unchanged():
     assert CONFIGURATION_SCHEMA_VERSION == "feta-segresnet-search-configuration-v1"
     assert SEARCH_RUNNER_VERSION == "feta-fold0-search-runner-v2"
