@@ -16,6 +16,7 @@ from auto_researcher.research_state import (
     CandidateNextAction,
     ConfidenceAssessment,
     ConfidenceLevel,
+    DecisionBasisKind,
     DiagnosticObservation,
     EvidenceReferences,
     ExperimentIntent,
@@ -30,6 +31,7 @@ from auto_researcher.research_state import (
     ObservationRole,
     PlannerDecision,
     PlannerInference,
+    ProgrammeDecisionBasis,
     ProgrammeContext,
     RecordType,
     ResearchExperiment,
@@ -112,7 +114,7 @@ def _external(programme, card, *, offset: int = 0):
     return external_evidence_reference(
         programme.programme_id,
         card,
-        evidence_store_reference="sqlite:///research-intelligence.sqlite3",
+        evidence_store_reference="research-intelligence-store:fixture-v1",
         recorded_at=NOW + timedelta(minutes=offset),
     )
 
@@ -323,7 +325,7 @@ def test_brief_is_resolved_to_cards_instead_of_persisting_brief_prose(tmp_path):
         programme.programme_id,
         brief,
         evidence_store,
-        evidence_store_reference="sqlite:///evidence.sqlite3",
+        evidence_store_reference="research-intelligence-store:fixture-v1",
         recorded_at=NOW,
     )
     brief_ids = {
@@ -443,11 +445,12 @@ def test_diagnostic_observation_has_its_own_boundary_and_summary_channel(tmp_pat
         diagnostic_observation_id="diagnostic-class-collapse",
         diagnostic_run_id="diagnostic-run-1",
         diagnostic_kind="class_specific_failure",
+        diagnostic_scope_references=("validation-folds:v2", "candidate-bias-field"),
         subject_references=("candidate-bias-field",),
         result_reference=StructuredResultReference(
             reference_id="diagnostic-result-1",
             schema_version="1",
-            location="artefact://diagnostics/class-collapse.json",
+            artefact_reference="runs/fixture/diagnostics/class-collapse.json",
         ),
         finding="The smallest class accounts for most validation failures.",
         diagnostic_system_reference="diagnostic-intelligence",
@@ -468,15 +471,84 @@ def test_diagnostic_observation_has_its_own_boundary_and_summary_channel(tmp_pat
     store.close()
 
 
-def test_planner_decision_requires_typed_support_and_resource_implication():
+def test_non_imaging_diagnostic_uses_generic_scope_without_subjects(tmp_path):
+    programme = _programme(tabular=True)
+    diagnostic = DiagnosticObservation(
+        programme_id=programme.programme_id,
+        diagnostic_observation_id="diagnostic-minority-recall",
+        diagnostic_run_id="diagnostic-tabular-1",
+        diagnostic_kind="cohort_error_analysis",
+        diagnostic_scope_references=(
+            "credit-validation-cohort:v1",
+            "model:xgboost-candidate-7",
+        ),
+        data_slice_references=("class:default-positive",),
+        result_reference=StructuredResultReference(
+            reference_id="diagnostic-tabular-result-1",
+            schema_version="1",
+            artefact_reference="runs/fixture/diagnostics/minority-recall.json",
+        ),
+        finding="Minority-class recall degrades in the high-utilisation slice.",
+        diagnostic_system_reference="diagnostic-intelligence",
+        diagnostic_system_version="future-v1-contract",
+        observed_at=NOW,
+        provenance_reference="provenance:diagnostic-tabular-1",
+        recorded_at=NOW,
+    )
+    store = SQLiteResearchStateStore(tmp_path / "tabular-state.sqlite3")
+    store.create_programme(programme)
+    store.append(diagnostic)
+    reconstructed = store.load_state(programme.programme_id).diagnostic_observations[0]
+    assert reconstructed.subject_references == ()
+    assert reconstructed.diagnostic_scope_references == (
+        "credit-validation-cohort:v1",
+        "model:xgboost-candidate-7",
+    )
+    store.close()
+
+
+def test_opaque_references_reject_paths_uris_and_credentials():
+    programme = _programme()
+    card = _cards()[0]
+    for unsafe in (
+        "/patient-data/result.json",
+        "../secret/result.json",
+        "sqlite:///tmp/evidence.sqlite3",
+        "store:token=secret-value",
+    ):
+        with pytest.raises(ValidationError, match="filesystem location|credential"):
+            external_evidence_reference(
+                programme.programme_id,
+                card,
+                evidence_store_reference=unsafe,
+                recorded_at=NOW,
+            )
+    with pytest.raises(ValidationError, match="filesystem location|credential"):
+        StructuredResultReference(
+            reference_id="unsafe-result",
+            schema_version="1",
+            artefact_reference="https://user:password@example.test/result",
+        )
+
+
+def test_planner_decision_requires_a_traceable_basis_but_not_dummy_resources():
     programme = _programme()
     card_id = _cards()[0].evidence_id
-    with pytest.raises(ValidationError, match="typed supporting evidence"):
-        _decision(programme, card_id).model_copy(
-            update={"supporting_evidence": EvidenceReferences()}
-        ).__class__.model_validate(
+    direct = PlannerDecision.model_validate(
+        {
+            **_decision(programme, card_id).model_dump(),
+            "inference_ids": (),
+            "hypothesis_ids": (),
+            "experiment_ids": (),
+            "resource_implications": (),
+        }
+    )
+    assert not direct.supporting_evidence.is_empty
+    assert direct.resource_implications == ()
+    with pytest.raises(ValidationError, match="traceable decision basis"):
+        PlannerDecision.model_validate(
             {
-                **_decision(programme, card_id).model_dump(),
+                **direct.model_dump(),
                 "supporting_evidence": EvidenceReferences().model_dump(),
             }
         )
@@ -484,6 +556,64 @@ def test_planner_decision_requires_typed_support_and_resource_implication():
         PlannerDecision.model_validate(
             {**_decision(programme, card_id).model_dump(), "rationale": ""}
         )
+
+
+def test_inference_and_budget_decisions_have_typed_bases(tmp_path):
+    programme = _programme()
+    card = _cards()[0]
+    external = _external(programme, card)
+    inference = PlannerInference(
+        programme_id=programme.programme_id,
+        inference_id="inference-decision-basis",
+        interpretation="The external failure mode warrants a robustness check.",
+        derived_from_evidence=EvidenceReferences(
+            external_evidence_card_ids=(card.evidence_id,)
+        ),
+        inference_version="1",
+        recorded_at=NOW,
+    )
+    inference_decision = PlannerDecision(
+        programme_id=programme.programme_id,
+        decision_id="decision-from-inference",
+        action="Run a bounded robustness check.",
+        rationale="The cited inference identifies a relevant failure mode.",
+        inference_ids=(inference.inference_id,),
+        decision_version="1",
+        decided_at=NOW,
+        recorded_at=NOW,
+    )
+    budget_decision = PlannerDecision(
+        programme_id=programme.programme_id,
+        decision_id="decision-budget-stop",
+        action="Stop additional full-fidelity replications.",
+        rationale="The programme has reached its approved compute ceiling.",
+        programme_bases=(
+            ProgrammeDecisionBasis(
+                basis_kind=DecisionBasisKind.BUDGET,
+                reference_id="programme-budget:approved-v1",
+                rationale="The approved GPU-hour ceiling is exhausted.",
+            ),
+        ),
+        resource_implications=(
+            ResourceImplication(
+                resource="GPU time",
+                implication="No additional allocation is consumed.",
+                amount=0,
+                unit="GPU-hours",
+            ),
+        ),
+        decision_version="1",
+        decided_at=NOW,
+        recorded_at=NOW,
+    )
+    store = SQLiteResearchStateStore(tmp_path / "state.sqlite3")
+    store.create_programme(programme)
+    store.append_many((external, inference, inference_decision, budget_decision))
+    decisions = store.load_state(programme.programme_id).planner_decisions
+    assert decisions == (budget_decision, inference_decision)
+    assert inference_decision.supporting_evidence.is_empty
+    assert budget_decision.programme_bases[0].basis_kind == DecisionBasisKind.BUDGET
+    store.close()
 
 
 def test_competing_hypotheses_append_supporting_and_refuting_revisions(tmp_path):
@@ -507,6 +637,165 @@ def test_competing_hypotheses_append_supporting_and_refuting_revisions(tmp_path)
         )
         == 2
     )
+    store.close()
+
+
+def test_revision_boundary_rejects_rewritten_research_intent(tmp_path):
+    programme = _programme()
+    card = _cards()[0]
+    external = _external(programme, card)
+    observation = _observation(programme)
+    left, right, supported, _ = _hypotheses(programme, card.evidence_id)
+    uncertainty = ResearchUncertainty(
+        programme_id=programme.programme_id,
+        uncertainty_id="uncertainty-cause",
+        question="Is the gain caused by augmentation?",
+        status=UncertaintyStatus.OPEN,
+        recorded_at=NOW,
+    )
+    experiment = _experiment(programme, card.evidence_id)
+    store = SQLiteResearchStateStore(tmp_path / "state.sqlite3")
+    store.create_programme(programme)
+    store.append_many(
+        (external, observation, left, right, supported, uncertainty, experiment)
+    )
+
+    rewritten_hypothesis = supported.model_copy(
+        update={
+            "revision": 3,
+            "proposition": "A materially different proposition.",
+            "recorded_at": NOW + timedelta(hours=3),
+        }
+    )
+    with pytest.raises(ValueError, match="revision_invariant_violation:proposition"):
+        store.append(rewritten_hypothesis)
+
+    rewritten_uncertainty = uncertainty.model_copy(
+        update={
+            "revision": 2,
+            "question": "Is an unrelated effect present?",
+            "recorded_at": NOW + timedelta(hours=1),
+        }
+    )
+    with pytest.raises(ValueError, match="revision_invariant_violation:question"):
+        store.append(rewritten_uncertainty)
+
+    active = _experiment(
+        programme,
+        card.evidence_id,
+        revision=2,
+        status=ExperimentStatus.ACTIVE,
+    )
+    rewritten_experiment = active.model_copy(
+        update={
+            "intent": active.intent.model_copy(
+                update={"expected_learning": "A hindsight-rewritten learning goal."}
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="revision_invariant_violation:intent"):
+        store.append(rewritten_experiment)
+
+    assert (
+        store.get_record(
+            programme.programme_id, RecordType.HYPOTHESIS, left.hypothesis_id
+        )
+        == supported
+    )
+    store.close()
+
+
+def test_legitimate_status_and_evidence_revisions_remain_allowed(tmp_path):
+    programme = _programme()
+    card = _cards()[0]
+    external = _external(programme, card)
+    observation = _observation(programme)
+    left, right, supported, refuted = _hypotheses(programme, card.evidence_id)
+    uncertainty = ResearchUncertainty(
+        programme_id=programme.programme_id,
+        uncertainty_id="uncertainty-replication",
+        question="Does the result replicate?",
+        status=UncertaintyStatus.OPEN,
+        recorded_at=NOW,
+    )
+    reduced = uncertainty.model_copy(
+        update={
+            "revision": 2,
+            "status": UncertaintyStatus.REDUCED,
+            "affects_hypothesis_ids": (left.hypothesis_id,),
+            "recorded_at": NOW + timedelta(hours=1),
+        }
+    )
+    store = SQLiteResearchStateStore(tmp_path / "state.sqlite3")
+    store.create_programme(programme)
+    store.append_many(
+        (external, observation, left, right, supported, refuted, uncertainty, reduced)
+    )
+    state = store.load_state(programme.programme_id)
+    assert {item.status for item in state.hypotheses} == {
+        HypothesisStatus.SUPPORTED,
+        HypothesisStatus.REFUTED,
+    }
+    assert state.uncertainties == (reduced,)
+    store.close()
+
+
+def test_planner_inference_hypothesis_origin_requires_persisted_inference(tmp_path):
+    programme = _programme()
+    card = _cards()[0]
+    external = _external(programme, card)
+    inference = PlannerInference(
+        programme_id=programme.programme_id,
+        inference_id="inference-origin",
+        interpretation="External evidence motivates a transfer hypothesis.",
+        derived_from_evidence=EvidenceReferences(
+            external_evidence_card_ids=(card.evidence_id,)
+        ),
+        inference_version="1",
+        recorded_at=NOW,
+    )
+    with pytest.raises(ValidationError, match="requires inference references"):
+        ResearchHypothesis(
+            programme_id=programme.programme_id,
+            hypothesis_id="hyp-invalid-origin",
+            proposition="An inference-origin proposition.",
+            status=HypothesisStatus.UNRESOLVED,
+            origin=HypothesisOrigin.PLANNER_INFERENCE,
+            motivation="A planner interpretation motivated it.",
+            confidence=ConfidenceAssessment(
+                level=ConfidenceLevel.LOW,
+                rationale="Not yet tested.",
+            ),
+            recorded_at=NOW,
+        )
+    missing = ResearchHypothesis(
+        programme_id=programme.programme_id,
+        hypothesis_id="hyp-missing-inference",
+        proposition="A missing inference appears to motivate this.",
+        status=HypothesisStatus.UNRESOLVED,
+        origin=HypothesisOrigin.PLANNER_INFERENCE,
+        motivation="The claimed inference is unavailable.",
+        origin_inference_ids=("inference-does-not-exist",),
+        confidence=ConfidenceAssessment(
+            level=ConfidenceLevel.LOW,
+            rationale="Not yet tested.",
+        ),
+        recorded_at=NOW,
+    )
+    valid = missing.model_copy(
+        update={
+            "hypothesis_id": "hyp-inference-origin",
+            "motivation": "A persisted inference motivated it.",
+            "origin_inference_ids": (inference.inference_id,),
+        }
+    )
+    store = SQLiteResearchStateStore(tmp_path / "state.sqlite3")
+    store.create_programme(programme)
+    store.append(external)
+    with pytest.raises(ValueError, match="origin_inference_reference_missing"):
+        store.append(missing)
+    store.append_many((inference, valid))
+    assert store.load_state(programme.programme_id).hypotheses == (valid,)
     store.close()
 
 
@@ -602,6 +891,7 @@ def test_learning_experiment_rationale_decision_and_exact_lineage_queries(tmp_pa
         rationale="This directly discriminates the alternatives.",
         status=WorkStatus.CANDIDATE,
         hypothesis_ids=("hyp-augmentation", "hyp-schedule"),
+        competing_hypothesis_ids=("hyp-augmentation", "hyp-schedule"),
         motivated_by_evidence=EvidenceReferences(
             internal_observation_ids=(observation.observation_id,)
         ),
@@ -631,6 +921,11 @@ def test_learning_experiment_rationale_decision_and_exact_lineage_queries(tmp_pa
     rationale = queries.why_was_experiment_run(experiment.experiment_id)
     assert rationale.hypothesis_ids == ("hyp-augmentation",)
     assert rationale.informed_decision_ids == (decision.decision_id,)
+    assert rationale.evidence.external_evidence_card_ids == (card.evidence_id,)
+    assert rationale.evidence.internal_observation_ids == ()
+    assert rationale.hypothesis_motivating_evidence.external_evidence_card_ids == (
+        card.evidence_id,
+    )
     assert queries.decision_informed_by_experiment(experiment.experiment_id) == (
         decision,
     )
@@ -639,14 +934,113 @@ def test_learning_experiment_rationale_decision_and_exact_lineage_queries(tmp_pa
     )
     assert lineage.inference_ids == (inference.inference_id,)
     assert lineage.hypothesis_ids == ("hyp-augmentation", "hyp-schedule")
-    assert lineage.evidence.external_evidence_card_ids == (card.evidence_id,)
-    assert lineage.evidence.internal_observation_ids == (observation.observation_id,)
+    assert lineage.motivating_evidence.external_evidence_card_ids == (card.evidence_id,)
+    assert lineage.direct_supporting_evidence.internal_observation_ids == (
+        observation.observation_id,
+    )
+    assert lineage.derived_evidence.internal_observation_ids == (
+        observation.observation_id,
+    )
     discriminators = queries.most_direct_discriminating_actions()
     assert {item.source_id for item in discriminators} == {
         "hyp-augmentation",
         "hyp-schedule",
         "next-ablation",
     }
+    store.close()
+
+
+def test_experiment_rationale_excludes_later_hypothesis_results(tmp_path):
+    programme = _programme()
+    card = _cards()[0]
+    external = _external(programme, card)
+    observation = _observation(programme)
+    left, right, supported, _ = _hypotheses(programme, card.evidence_id)
+    experiment = _experiment(programme, card.evidence_id)
+    store = SQLiteResearchStateStore(tmp_path / "state.sqlite3")
+    store.create_programme(programme)
+    store.append_many((external, observation, left, right, experiment, supported))
+
+    rationale = ResearchStateQueries(
+        store.load_state(programme.programme_id)
+    ).why_was_experiment_run(experiment.experiment_id)
+    assert rationale.direct_motivating_evidence.external_evidence_card_ids == (
+        card.evidence_id,
+    )
+    assert rationale.hypothesis_motivating_evidence.external_evidence_card_ids == (
+        card.evidence_id,
+    )
+    assert rationale.evidence.internal_observation_ids == ()
+    hypothesis_lineage = ResearchStateQueries(
+        store.load_state(programme.programme_id)
+    ).what_evidence_supports_conclusion(RecordType.HYPOTHESIS, supported.hypothesis_id)
+    assert hypothesis_lineage.motivating_evidence.external_evidence_card_ids == (
+        card.evidence_id,
+    )
+    assert hypothesis_lineage.direct_supporting_evidence.internal_observation_ids == (
+        observation.observation_id,
+    )
+    store.close()
+
+
+def test_only_explicitly_discriminating_candidate_actions_are_returned(tmp_path):
+    programme = _programme()
+    card = _cards()[0]
+    external = _external(programme, card)
+    left, right, *_ = _hypotheses(programme, card.evidence_id)
+    uncertainty = ResearchUncertainty(
+        programme_id=programme.programme_id,
+        uncertainty_id="uncertainty-transfer",
+        question="Does external evidence transfer to this task?",
+        status=UncertaintyStatus.OPEN,
+        recorded_at=NOW,
+    )
+    exploratory = CandidateNextAction(
+        programme_id=programme.programme_id,
+        next_action_id="next-exploratory",
+        action="Explore a wider augmentation family.",
+        rationale="Map the broader response surface.",
+        hypothesis_ids=(left.hypothesis_id,),
+        expected_information_value=InformationValueClass.EXPLORATORY,
+        recorded_at=NOW,
+    )
+    competing = CandidateNextAction(
+        programme_id=programme.programme_id,
+        next_action_id="next-competing",
+        action="Hold schedule fixed and ablate augmentation.",
+        rationale="Separate the two competing causal explanations.",
+        hypothesis_ids=(left.hypothesis_id, right.hypothesis_id),
+        competing_hypothesis_ids=(left.hypothesis_id, right.hypothesis_id),
+        expected_information_value=InformationValueClass.DISCRIMINATING,
+        recorded_at=NOW,
+    )
+    uncertainty_action = CandidateNextAction(
+        programme_id=programme.programme_id,
+        next_action_id="next-transfer-check",
+        action="Run the external baseline on the current validation split.",
+        rationale="Directly reduce the transfer uncertainty.",
+        uncertainty_ids=(uncertainty.uncertainty_id,),
+        expected_information_value=InformationValueClass.DISCRIMINATING,
+        recorded_at=NOW,
+    )
+    store = SQLiteResearchStateStore(tmp_path / "state.sqlite3")
+    store.create_programme(programme)
+    store.append_many(
+        (external, left, right, uncertainty, exploratory, competing, uncertainty_action)
+    )
+    actions = ResearchStateQueries(
+        store.load_state(programme.programme_id)
+    ).most_direct_discriminating_actions()
+    by_id = {item.source_id: item for item in actions}
+    assert exploratory.next_action_id not in by_id
+    assert by_id[competing.next_action_id].competing_hypothesis_ids == (
+        left.hypothesis_id,
+        right.hypothesis_id,
+    )
+    assert by_id[uncertainty_action.next_action_id].competing_hypothesis_ids == ()
+    assert by_id[uncertainty_action.next_action_id].uncertainty_ids == (
+        uncertainty.uncertainty_id,
+    )
     store.close()
 
 

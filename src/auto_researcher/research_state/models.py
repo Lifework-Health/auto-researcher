@@ -6,7 +6,14 @@ import math
 from enum import StrEnum
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 from auto_researcher.knowledge.identity import content_hash, stable_identifier
 from auto_researcher.research_intelligence.models import (
@@ -105,6 +112,12 @@ class HypothesisOrigin(StrEnum):
     MIXED = "MIXED"
 
 
+class DecisionBasisKind(StrEnum):
+    PROGRAMME_CONSTRAINT = "PROGRAMME_CONSTRAINT"
+    BUDGET = "BUDGET"
+    OPERATOR_POLICY = "OPERATOR_POLICY"
+
+
 class RecordType(StrEnum):
     EXTERNAL_EVIDENCE = "EXTERNAL_EVIDENCE"
     INTERNAL_OBSERVATION = "INTERNAL_OBSERVATION"
@@ -116,6 +129,40 @@ class RecordType(StrEnum):
     EXPERIMENT = "EXPERIMENT"
     WORK_ITEM = "WORK_ITEM"
     NEXT_ACTION = "NEXT_ACTION"
+
+
+def _validate_opaque_reference(value: str) -> str:
+    """Accept an opaque identifier, never a filesystem path or credential-bearing URI."""
+
+    if value != value.strip() or any(character in value for character in "\r\n\0\\"):
+        raise ValueError("reference must be an opaque single-line identifier")
+    lowered = value.casefold()
+    forbidden_markers = (
+        "://",
+        "token=",
+        "password=",
+        "secret=",
+        "api_key=",
+        "apikey=",
+        "access_key=",
+    )
+    if (
+        value.startswith(("/", "~", "./", "../"))
+        or ".." in value.split("/")
+        or "@" in value
+        or any(marker in lowered for marker in forbidden_markers)
+    ):
+        raise ValueError(
+            "reference must not contain a filesystem location, URI, or credential"
+        )
+    return value
+
+
+OpaqueReference: TypeAlias = Annotated[
+    str,
+    Field(min_length=1, max_length=2_000),
+    AfterValidator(_validate_opaque_reference),
+]
 
 
 class ResearchObjective(ResearchStateModel):
@@ -216,7 +263,7 @@ class ExternalEvidenceReference(VersionedRecord):
         EVIDENCE_CARD_VERSION
     )
     evidence_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    evidence_store_reference: str = Field(min_length=1, max_length=2_000)
+    evidence_store_reference: OpaqueReference
 
 
 class Fidelity(ResearchStateModel):
@@ -227,9 +274,11 @@ class Fidelity(ResearchStateModel):
 
 
 class StructuredResultReference(ResearchStateModel):
+    """Opaque pointer to a canonical artefact; never raw data, paths, or credentials."""
+
     reference_id: str = Field(min_length=1)
     schema_version: str = Field(min_length=1)
-    location: str = Field(min_length=1, max_length=2_000)
+    artefact_reference: OpaqueReference
 
 
 class InternalExperimentalObservation(VersionedRecord):
@@ -277,13 +326,29 @@ class DiagnosticObservation(VersionedRecord):
     diagnostic_observation_id: str = Field(min_length=1, max_length=300)
     diagnostic_run_id: str = Field(min_length=1)
     diagnostic_kind: str = Field(min_length=1)
-    subject_references: tuple[str, ...] = Field(min_length=1)
+    diagnostic_scope_references: tuple[str, ...] = Field(min_length=1)
+    data_slice_references: tuple[str, ...] = ()
+    subject_references: tuple[str, ...] = ()
     result_reference: StructuredResultReference
     finding: str = Field(min_length=1, max_length=2_000)
     diagnostic_system_reference: str = Field(min_length=1)
     diagnostic_system_version: str = Field(min_length=1)
     observed_at: AwareDatetime
     provenance_reference: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def diagnostic_scope_is_explicit(self) -> "DiagnosticObservation":
+        groups = (
+            self.diagnostic_scope_references,
+            self.data_slice_references,
+            self.subject_references,
+        )
+        if any(
+            any(not item.strip() for item in group) or len(group) != len(set(group))
+            for group in groups
+        ):
+            raise ValueError("diagnostic scope references must be non-empty and unique")
+        return self
 
 
 class ConfidenceAssessment(ResearchStateModel):
@@ -302,6 +367,8 @@ class ResearchHypothesis(VersionedRecord):
     origin: HypothesisOrigin
     motivation: str = Field(min_length=1, max_length=2_000)
     motivating_evidence: EvidenceReferences = Field(default_factory=EvidenceReferences)
+    origin_inference_ids: tuple[str, ...] = ()
+    mixed_origins: tuple[HypothesisOrigin, ...] = ()
     competing_hypothesis_ids: tuple[str, ...] = ()
     supporting_evidence: EvidenceReferences = Field(default_factory=EvidenceReferences)
     refuting_evidence: EvidenceReferences = Field(default_factory=EvidenceReferences)
@@ -324,6 +391,49 @@ class ResearchHypothesis(VersionedRecord):
             raise ValueError("supported hypothesis requires supporting evidence")
         if self.status == HypothesisStatus.REFUTED and self.refuting_evidence.is_empty:
             raise ValueError("refuted hypothesis requires refuting evidence")
+        origins = (
+            self.mixed_origins
+            if self.origin == HypothesisOrigin.MIXED
+            else (self.origin,)
+        )
+        if self.origin == HypothesisOrigin.MIXED:
+            if (
+                len(set(origins)) < 2
+                or HypothesisOrigin.MIXED in origins
+                or len(origins) != len(set(origins))
+            ):
+                raise ValueError(
+                    "mixed hypothesis origin requires distinct linked origins"
+                )
+        elif self.mixed_origins:
+            raise ValueError("mixed_origins is only valid for MIXED hypotheses")
+        if (
+            HypothesisOrigin.EXTERNAL_EVIDENCE in origins
+            and not self.motivating_evidence.external_evidence_card_ids
+        ):
+            raise ValueError("external-evidence origin requires external evidence")
+        if (
+            HypothesisOrigin.INTERNAL_OBSERVATION in origins
+            and not self.motivating_evidence.internal_observation_ids
+        ):
+            raise ValueError("internal-observation origin requires internal evidence")
+        if (
+            HypothesisOrigin.DIAGNOSTIC_OBSERVATION in origins
+            and not self.motivating_evidence.diagnostic_observation_ids
+        ):
+            raise ValueError("diagnostic origin requires diagnostic evidence")
+        if (
+            HypothesisOrigin.PLANNER_INFERENCE in origins
+            and not self.origin_inference_ids
+        ):
+            raise ValueError("planner-inference origin requires inference references")
+        if (
+            HypothesisOrigin.PLANNER_INFERENCE not in origins
+            and self.origin_inference_ids
+        ):
+            raise ValueError(
+                "origin inference references require planner-inference origin"
+            )
         return self
 
 
@@ -389,21 +499,35 @@ class PlannerDecision(VersionedRecord):
     decision_id: str = Field(min_length=1, max_length=300)
     action: str = Field(min_length=1, max_length=2_000)
     rationale: str = Field(min_length=1, max_length=3_000)
-    supporting_evidence: EvidenceReferences
+    supporting_evidence: EvidenceReferences = Field(default_factory=EvidenceReferences)
     inference_ids: tuple[str, ...] = ()
     hypothesis_ids: tuple[str, ...] = ()
     uncertainty_ids: tuple[str, ...] = ()
     experiment_ids: tuple[str, ...] = ()
     alternatives_considered: tuple[str, ...] = ()
-    resource_implications: tuple[ResourceImplication, ...] = Field(min_length=1)
+    programme_bases: tuple["ProgrammeDecisionBasis", ...] = ()
+    resource_implications: tuple[ResourceImplication, ...] = ()
     decision_version: str = Field(min_length=1)
     decided_at: AwareDatetime
 
     @model_validator(mode="after")
     def decision_is_supported(self) -> "PlannerDecision":
-        if self.supporting_evidence.is_empty:
-            raise ValueError("planner decision requires typed supporting evidence")
+        if (
+            self.supporting_evidence.is_empty
+            and not self.inference_ids
+            and not self.hypothesis_ids
+            and not self.uncertainty_ids
+            and not self.experiment_ids
+            and not self.programme_bases
+        ):
+            raise ValueError("planner decision requires a traceable decision basis")
         return self
+
+
+class ProgrammeDecisionBasis(ResearchStateModel):
+    basis_kind: DecisionBasisKind
+    reference_id: OpaqueReference
+    rationale: str = Field(min_length=1, max_length=1_000)
 
 
 class ExperimentIntent(ResearchStateModel):
@@ -469,11 +593,27 @@ class CandidateNextAction(VersionedRecord):
     rationale: str = Field(min_length=1, max_length=2_000)
     status: WorkStatus = WorkStatus.CANDIDATE
     hypothesis_ids: tuple[str, ...] = ()
+    competing_hypothesis_ids: tuple[str, ...] = ()
     uncertainty_ids: tuple[str, ...] = ()
     motivated_by_evidence: EvidenceReferences = Field(
         default_factory=EvidenceReferences
     )
     expected_information_value: InformationValueClass
+
+    @model_validator(mode="after")
+    def discriminating_scope_is_explicit(self) -> "CandidateNextAction":
+        if not set(self.competing_hypothesis_ids) <= set(self.hypothesis_ids):
+            raise ValueError("competing hypotheses must be associated with the action")
+        if self.expected_information_value == InformationValueClass.DISCRIMINATING:
+            if not self.competing_hypothesis_ids and not self.uncertainty_ids:
+                raise ValueError(
+                    "discriminating action requires competing hypotheses or uncertainty"
+                )
+        elif self.competing_hypothesis_ids:
+            raise ValueError(
+                "competing hypotheses require DISCRIMINATING information value"
+            )
+        return self
 
 
 ResearchStateRecord: TypeAlias = Annotated[

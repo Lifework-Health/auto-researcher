@@ -22,6 +22,7 @@ from auto_researcher.research_state.models import (
     ResearchState,
     ResearchStateRecord,
     ResearchUncertainty,
+    ResearchWorkItem,
     StateRevision,
     WorkStatus,
     record_content_hash,
@@ -130,7 +131,10 @@ class SQLiteResearchStateStore:
     def append_many(
         self, records: tuple[ResearchStateRecord, ...] | list[ResearchStateRecord]
     ) -> tuple[StateRevision, ...]:
-        records = tuple(records)
+        records = tuple(
+            _RECORD_ADAPTER.validate_python(record.model_dump(mode="python"))
+            for record in records
+        )
         if not records:
             return ()
         programme_ids = {record.programme_id for record in records}
@@ -183,6 +187,7 @@ class SQLiteResearchStateStore:
                     )
                 if record.revision != latest + 1:
                     raise ValueError("research_state_record_revision_gap")
+                self._validate_revision_invariants(record)
 
                 state_revision += 1
                 revision = state_revision_for(programme_id, state_revision, record)
@@ -397,6 +402,11 @@ class SQLiteResearchStateStore:
                 require_evidence(record.supporting_evidence)
                 require_evidence(record.refuting_evidence)
                 require(
+                    record.origin_inference_ids,
+                    RecordType.PLANNER_INFERENCE,
+                    "hypothesis_origin_inference_reference_missing",
+                )
+                require(
                     record.competing_hypothesis_ids,
                     RecordType.HYPOTHESIS,
                     "competing_hypothesis_reference_missing",
@@ -474,10 +484,78 @@ class SQLiteResearchStateStore:
                     "next_action_hypothesis_reference_missing",
                 )
                 require(
+                    record.competing_hypothesis_ids,
+                    RecordType.HYPOTHESIS,
+                    "next_action_competing_hypothesis_reference_missing",
+                )
+                require(
                     record.uncertainty_ids,
                     RecordType.UNCERTAINTY,
                     "next_action_uncertainty_reference_missing",
                 )
+
+    def _validate_revision_invariants(self, record: ResearchStateRecord) -> None:
+        """Prevent a later revision from rewriting the original research intent."""
+
+        if record.revision == 1:
+            return
+        record_type = RecordType(record.record_type)
+        original = self.get_record(
+            record.programme_id,
+            record_type,
+            record_identity(record),
+            revision=1,
+        )
+        if original is None:
+            raise ValueError("research_state_original_revision_missing")
+        invariant_fields: tuple[str, ...]
+        if isinstance(record, ResearchHypothesis):
+            invariant_fields = (
+                "hypothesis_id",
+                "proposition",
+                "origin",
+                "motivation",
+                "motivating_evidence",
+                "origin_inference_ids",
+                "mixed_origins",
+            )
+        elif isinstance(record, ResearchUncertainty):
+            invariant_fields = ("uncertainty_id", "question")
+        elif isinstance(record, ResearchExperiment):
+            invariant_fields = (
+                "experiment_id",
+                "experiment_spec_reference",
+                "intent",
+            )
+        elif isinstance(record, ResearchWorkItem):
+            invariant_fields = (
+                "work_item_id",
+                "description",
+                "reference_type",
+                "reference_id",
+            )
+        elif isinstance(record, CandidateNextAction):
+            invariant_fields = (
+                "next_action_id",
+                "action",
+                "rationale",
+                "hypothesis_ids",
+                "competing_hypothesis_ids",
+                "uncertainty_ids",
+                "motivated_by_evidence",
+                "expected_information_value",
+            )
+        else:
+            return
+        changed = tuple(
+            field
+            for field in invariant_fields
+            if getattr(record, field) != getattr(original, field)
+        )
+        if changed:
+            raise ValueError(
+                "research_state_revision_invariant_violation:" + ",".join(changed)
+            )
 
     def close(self) -> None:
         self._connection.close()

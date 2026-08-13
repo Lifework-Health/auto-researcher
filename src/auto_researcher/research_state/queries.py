@@ -10,8 +10,10 @@ from auto_researcher.research_state.models import (
     EvidenceReferences,
     ExperimentIntent,
     HypothesisStatus,
+    InformationValueClass,
     InternalExperimentalObservation,
     PlannerInference,
+    ProgrammeDecisionBasis,
     RecordType,
     ResearchHypothesis,
     ResearchState,
@@ -37,17 +39,52 @@ class UncertaintySummary(ResearchStateModel):
 class EvidenceLineage(ResearchStateModel):
     conclusion_type: RecordType
     conclusion_id: str = Field(min_length=1)
-    evidence: EvidenceReferences
+    motivating_evidence: EvidenceReferences = Field(default_factory=EvidenceReferences)
+    direct_supporting_evidence: EvidenceReferences = Field(
+        default_factory=EvidenceReferences
+    )
+    hypothesis_supporting_evidence: EvidenceReferences = Field(
+        default_factory=EvidenceReferences
+    )
+    refuting_evidence: EvidenceReferences = Field(default_factory=EvidenceReferences)
+    derived_evidence: EvidenceReferences = Field(default_factory=EvidenceReferences)
     inference_ids: tuple[str, ...] = ()
     hypothesis_ids: tuple[str, ...] = ()
+    uncertainty_ids: tuple[str, ...] = ()
+    experiment_ids: tuple[str, ...] = ()
+    programme_bases: tuple[ProgrammeDecisionBasis, ...] = ()
+
+    @property
+    def all_related_evidence(self) -> EvidenceReferences:
+        return (
+            self.motivating_evidence.merged(self.direct_supporting_evidence)
+            .merged(self.hypothesis_supporting_evidence)
+            .merged(self.refuting_evidence)
+            .merged(self.derived_evidence)
+        )
+
+    @property
+    def evidence(self) -> EvidenceReferences:
+        """Compatibility aggregate; role-specific fields remain authoritative."""
+
+        return self.all_related_evidence
 
 
 class ExperimentRationale(ResearchStateModel):
     experiment_id: str
     intent: ExperimentIntent
-    evidence: EvidenceReferences
+    direct_motivating_evidence: EvidenceReferences
+    hypothesis_motivating_evidence: EvidenceReferences
+    inference_motivating_evidence: EvidenceReferences
     hypothesis_ids: tuple[str, ...]
+    motivating_inference_ids: tuple[str, ...]
     informed_decision_ids: tuple[str, ...]
+
+    @property
+    def evidence(self) -> EvidenceReferences:
+        return self.direct_motivating_evidence.merged(
+            self.hypothesis_motivating_evidence
+        ).merged(self.inference_motivating_evidence)
 
 
 class DiscriminatingAction(ResearchStateModel):
@@ -109,36 +146,54 @@ class ResearchStateQueries:
     def what_evidence_supports_conclusion(
         self, conclusion_type: RecordType, conclusion_id: str
     ) -> EvidenceLineage:
-        evidence = EvidenceReferences()
+        motivating_evidence = EvidenceReferences()
+        direct_supporting_evidence = EvidenceReferences()
+        hypothesis_supporting_evidence = EvidenceReferences()
+        refuting_evidence = EvidenceReferences()
+        derived_evidence = EvidenceReferences()
         inference_ids: set[str] = set()
         hypothesis_ids: set[str] = set()
+        uncertainty_ids: set[str] = set()
+        experiment_ids: set[str] = set()
+        programme_bases: tuple[ProgrammeDecisionBasis, ...] = ()
 
-        def add_hypothesis(hypothesis_id: str) -> None:
-            nonlocal evidence
+        def add_hypothesis(hypothesis_id: str, *, direct: bool = False) -> None:
+            nonlocal motivating_evidence, direct_supporting_evidence
+            nonlocal hypothesis_supporting_evidence, refuting_evidence
             hypothesis = self._hypotheses.get(hypothesis_id)
             if hypothesis is None or hypothesis_id in hypothesis_ids:
                 return
             hypothesis_ids.add(hypothesis_id)
-            evidence = evidence.merged(hypothesis.motivating_evidence)
-            if hypothesis.status == HypothesisStatus.REFUTED:
-                evidence = evidence.merged(hypothesis.refuting_evidence)
+            motivating_evidence = motivating_evidence.merged(
+                hypothesis.motivating_evidence
+            )
+            if direct:
+                direct_supporting_evidence = direct_supporting_evidence.merged(
+                    hypothesis.supporting_evidence
+                )
             else:
-                evidence = evidence.merged(hypothesis.supporting_evidence)
+                hypothesis_supporting_evidence = hypothesis_supporting_evidence.merged(
+                    hypothesis.supporting_evidence
+                )
+            refuting_evidence = refuting_evidence.merged(hypothesis.refuting_evidence)
+            for inference_id in hypothesis.origin_inference_ids:
+                add_inference(inference_id)
 
         def add_inference(inference_id: str) -> None:
-            nonlocal evidence
+            nonlocal derived_evidence
             inference = self._inferences.get(inference_id)
             if inference is None or inference_id in inference_ids:
                 return
             inference_ids.add(inference_id)
-            evidence = evidence.merged(inference.derived_from_evidence)
+            uncertainty_ids.update(inference.uncertainty_ids)
+            derived_evidence = derived_evidence.merged(inference.derived_from_evidence)
             for hypothesis_id in inference.hypothesis_ids:
                 add_hypothesis(hypothesis_id)
 
         if conclusion_type == RecordType.HYPOTHESIS:
             if conclusion_id not in self._hypotheses:
                 raise KeyError(conclusion_id)
-            add_hypothesis(conclusion_id)
+            add_hypothesis(conclusion_id, direct=True)
         elif conclusion_type == RecordType.PLANNER_INFERENCE:
             if conclusion_id not in self._inferences:
                 raise KeyError(conclusion_id)
@@ -147,7 +202,12 @@ class ResearchStateQueries:
             decision = self._decisions.get(conclusion_id)
             if decision is None:
                 raise KeyError(conclusion_id)
-            evidence = evidence.merged(decision.supporting_evidence)
+            direct_supporting_evidence = direct_supporting_evidence.merged(
+                decision.supporting_evidence
+            )
+            uncertainty_ids.update(decision.uncertainty_ids)
+            experiment_ids.update(decision.experiment_ids)
+            programme_bases = decision.programme_bases
             for inference_id in decision.inference_ids:
                 add_inference(inference_id)
             for hypothesis_id in decision.hypothesis_ids:
@@ -160,27 +220,46 @@ class ResearchStateQueries:
         return EvidenceLineage(
             conclusion_type=conclusion_type,
             conclusion_id=conclusion_id,
-            evidence=evidence,
+            motivating_evidence=motivating_evidence,
+            direct_supporting_evidence=direct_supporting_evidence,
+            hypothesis_supporting_evidence=hypothesis_supporting_evidence,
+            refuting_evidence=refuting_evidence,
+            derived_evidence=derived_evidence,
             inference_ids=tuple(sorted(inference_ids)),
             hypothesis_ids=tuple(sorted(hypothesis_ids)),
+            uncertainty_ids=tuple(sorted(uncertainty_ids)),
+            experiment_ids=tuple(sorted(experiment_ids)),
+            programme_bases=programme_bases,
         )
 
     def why_was_experiment_run(self, experiment_id: str) -> ExperimentRationale:
         experiment = self._experiments.get(experiment_id)
         if experiment is None:
             raise KeyError(experiment_id)
-        evidence = experiment.intent.motivated_by_evidence
+        hypothesis_evidence = EvidenceReferences()
+        inference_evidence = EvidenceReferences()
+        inference_ids: set[str] = set()
         for hypothesis_id in experiment.intent.hypothesis_ids:
             hypothesis = self._hypotheses.get(hypothesis_id)
             if hypothesis is not None:
-                evidence = evidence.merged(hypothesis.motivating_evidence)
-                evidence = evidence.merged(hypothesis.supporting_evidence)
-                evidence = evidence.merged(hypothesis.refuting_evidence)
+                hypothesis_evidence = hypothesis_evidence.merged(
+                    hypothesis.motivating_evidence
+                )
+                for inference_id in hypothesis.origin_inference_ids:
+                    inference = self._inferences.get(inference_id)
+                    if inference is not None:
+                        inference_ids.add(inference_id)
+                        inference_evidence = inference_evidence.merged(
+                            inference.derived_from_evidence
+                        )
         return ExperimentRationale(
             experiment_id=experiment_id,
             intent=experiment.intent,
-            evidence=evidence,
+            direct_motivating_evidence=experiment.intent.motivated_by_evidence,
+            hypothesis_motivating_evidence=hypothesis_evidence,
+            inference_motivating_evidence=inference_evidence,
             hypothesis_ids=experiment.intent.hypothesis_ids,
+            motivating_inference_ids=tuple(sorted(inference_ids)),
             informed_decision_ids=tuple(
                 sorted(
                     item.decision_id
@@ -222,7 +301,7 @@ class ResearchStateQueries:
         actions.extend(
             self._next_action_as_discriminator(item)
             for item in self.state.candidate_next_actions
-            if item.hypothesis_ids or item.uncertainty_ids
+            if item.expected_information_value == InformationValueClass.DISCRIMINATING
         )
         return tuple(sorted(actions, key=lambda item: (item.source_id, item.action)))
 
@@ -233,6 +312,6 @@ class ResearchStateQueries:
         return DiscriminatingAction(
             source_id=item.next_action_id,
             action=item.action,
-            competing_hypothesis_ids=item.hypothesis_ids,
+            competing_hypothesis_ids=item.competing_hypothesis_ids,
             uncertainty_ids=item.uncertainty_ids,
         )
