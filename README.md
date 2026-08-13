@@ -41,6 +41,7 @@ python -m venv .venv
 .venv/bin/pip install -e . --no-deps
 .venv/bin/pip install -e '.[hpo]' # only for OPTUNA
 .venv/bin/pip install -e '.[agents-anthropic]' # only for live Anthropic
+.venv/bin/pip install -e '.[secrets-gcp]' # only for Google Secret Manager
 .venv/bin/pip install -e '.[knowledge-neo4j]' # only for Neo4j grounding
 .venv/bin/auto-researcher tasks
 .venv/bin/auto-researcher run start \
@@ -86,6 +87,9 @@ are documented in
 [NEO4J_GROUNDING.md](docs/runbooks/NEO4J_GROUNDING.md).
 Safe checkpoint lifecycle operations are documented in
 [RUN_EXECUTION.md](docs/runbooks/RUN_EXECUTION.md).
+Environment fallback, Google Secret Manager, least-privilege worker identity,
+and secret-rotation safety are documented in
+[MANAGED_SECRETS.md](docs/runbooks/MANAGED_SECRETS.md).
 
 The real-data, non-patient Iris weighted k-NN benchmark runs fully offline in
 DIRECT, Optuna, and OpenEvolve modes. See

@@ -11,6 +11,9 @@ build/
 *.sqlite
 *.sqlite3
 .DS_Store
+# Local credential bootstrapping files must remain outside the repository.
+secrets.env
+*.secrets.env
 # FeTA/MONAI medical-image and training outputs
 *.nii
 *.nii.gz

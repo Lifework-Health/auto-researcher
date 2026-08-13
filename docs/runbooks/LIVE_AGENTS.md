@@ -20,13 +20,19 @@ import `langchain-anthropic` unless live Anthropic mode is requested.
 
 ## Credentials and configuration
 
-Export the key only in the process environment:
+By default, export the key only in the process environment:
 
 ```bash
 export ANTHROPIC_API_KEY='...'
 ```
 
-Never put the key in YAML, shell history, task options, provenance or
+Production Compute Engine workers can instead configure a non-sensitive
+`SecretReference` resolved through Google Secret Manager and the attached
+service-account identity. See [Managed secrets](MANAGED_SECRETS.md) for the
+configuration, least-privilege IAM boundary, rotation semantics, and protected
+local-file fallback.
+
+Never put the key value in YAML, shell history, task options, provenance or
 artefacts. Copy the `agents` section from
 `examples/agents/anthropic-live.yaml` into the selected task YAML, replace the
 explicit model ID if required, and replace every pricing placeholder with
@@ -95,7 +101,8 @@ crash requires inspecting and authorising the new indeterminate child.
 ## Troubleshooting
 
 - Missing optional package: install `.[agents-anthropic]` or the agent lock.
-- Missing key: export `ANTHROPIC_API_KEY`; do not add it to config.
+- Missing key: export `ANTHROPIC_API_KEY` or repair the configured managed-secret
+  access; do not add the value to config.
 - Missing/zero pricing: provide reviewed positive rates before any call.
 - Context too large: lower prior/context limits; do not remove privacy filters.
 - Authentication, invalid model and permanent provider errors are not retried.
