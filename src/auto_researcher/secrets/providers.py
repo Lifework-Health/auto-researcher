@@ -45,7 +45,13 @@ class EnvironmentSecretProvider:
                 SecretResolutionErrorCode.INVALID_REFERENCE,
             )
             return None
-        variable = reference.provider_identifier or reference.logical_name
+        variable = reference.provider_identifier
+        if variable is None:
+            _raise_if_required(
+                reference,
+                SecretResolutionErrorCode.INVALID_REFERENCE,
+            )
+            return None
         environment = (
             self.__environment if self.__environment is not None else os.environ
         )
@@ -120,31 +126,25 @@ class GoogleSecretManagerProvider:
         *,
         client: Any | None = None,
         client_factory: Callable[[], Any] | None = None,
-        project_id: str | None = None,
         timeout_seconds: float = 10.0,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("secret provider timeout must be positive")
         self.__client = client
         self.__client_factory = client_factory or _google_client_factory
-        self.__project_id = project_id
         self.__timeout_seconds = timeout_seconds
 
     def __repr__(self) -> str:
         return "GoogleSecretManagerProvider()"
 
     def _resource_name(self, reference: SecretReference) -> str:
-        identifier = reference.provider_identifier or reference.logical_name
-        if identifier.startswith("projects/"):
-            parent = identifier
-        elif self.__project_id:
-            parent = f"projects/{self.__project_id}/secrets/{identifier}"
-        else:
+        identifier = reference.provider_identifier
+        if identifier is None:
             raise SecretResolutionError(
                 SecretResolutionErrorCode.INVALID_REFERENCE,
                 reference,
             ) from None
-        return f"{parent}/versions/{reference.selected_version}"
+        return f"{identifier}/versions/{reference.selected_version}"
 
     def resolve(self, reference: SecretReference) -> ResolvedSecret | None:
         if reference.provider is not SecretProviderKind.GOOGLE_SECRET_MANAGER:
@@ -162,8 +162,6 @@ class GoogleSecretManagerProvider:
                 request={"name": name},
                 timeout=self.__timeout_seconds,
             )
-            data = response.payload.data
-            value = data.decode("utf-8") if isinstance(data, bytes) else str(data)
         except SecretResolutionError:
             raise
         except Exception as exc:
@@ -171,12 +169,27 @@ class GoogleSecretManagerProvider:
             if not reference.required and code is SecretResolutionErrorCode.NOT_FOUND:
                 return None
             failure = code
-            value = ""
         if failure is not None:
             raise SecretResolutionError(failure, reference) from None
+        invalid_payload = False
+        try:
+            data = response.payload.data
+            if not isinstance(data, bytes):
+                raise TypeError
+            value = data.decode("utf-8")
+        except (AttributeError, TypeError, UnicodeDecodeError):
+            invalid_payload = True
+            value = ""
+        if invalid_payload:
+            raise SecretResolutionError(
+                SecretResolutionErrorCode.INVALID_VALUE,
+                reference,
+            ) from None
         if not value:
-            _raise_if_required(reference, SecretResolutionErrorCode.INVALID_VALUE)
-            return None
+            raise SecretResolutionError(
+                SecretResolutionErrorCode.INVALID_VALUE,
+                reference,
+            ) from None
         return ResolvedSecret(value)
 
 

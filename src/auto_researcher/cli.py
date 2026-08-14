@@ -225,9 +225,7 @@ def _load_task_configuration(
         "service_account_json",
     }
     if prohibited_runtime_secrets & _nested_keys(runtime):
-        raise ValueError(
-            "runtime credentials must be resolved from a secret reference"
-        )
+        raise ValueError("runtime credentials must be resolved from a secret reference")
     selected = experiment if experiment is not None else search
     if not isinstance(selected, dict):
         raise ValueError("task config experiment/search section must be a mapping")
@@ -326,17 +324,20 @@ def _load_live_agents(payload: dict[str, Any]):
             raise ValueError("agents.credential must be a secret reference mapping")
         else:
             credential_reference = parse_secret_reference(credential_payload)
+        if not credential_reference.required:
+            raise ValueError("live Anthropic credentials must be required")
         resolver = provider_for_reference(credential_reference)
+        credential = resolver.resolve(credential_reference)
+        if credential is None:
+            raise RuntimeError("required live credential was not resolved") from None
 
         hypothesis_client = create_anthropic_client(
             hypothesis_config,
-            credential_reference=credential_reference,
-            secret_provider=resolver,
+            credential=credential,
         )
         planner_client = create_anthropic_client(
             planner_config,
-            credential_reference=credential_reference,
-            secret_provider=resolver,
+            credential=credential,
         )
     else:
         raise ValueError(

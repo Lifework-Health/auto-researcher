@@ -44,26 +44,31 @@ class SecretReference(BaseModel):
     @model_validator(mode="after")
     def provider_metadata_is_unambiguous(self) -> "SecretReference":
         if self.provider is SecretProviderKind.ENVIRONMENT:
+            if self.provider_identifier is None:
+                raise ValueError(
+                    "environment secret references require an explicit identifier"
+                )
             if self.version is not None:
                 raise ValueError(
                     "environment secret references do not support versions"
                 )
-            if self.provider_identifier is not None and not all(
-                character.isupper() or character.isdigit() or character == "_"
-                for character in self.provider_identifier
+            if not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*",
+                self.provider_identifier,
             ):
                 raise ValueError(
                     "environment secret identifiers must be environment variable names"
                 )
-        if (
-            self.provider is SecretProviderKind.GOOGLE_SECRET_MANAGER
-            and self.provider_identifier is not None
-        ):
+        if self.provider is SecretProviderKind.GOOGLE_SECRET_MANAGER:
+            if self.provider_identifier is None:
+                raise ValueError(
+                    "Google secret references require a fully-qualified identifier"
+                )
             if not re.fullmatch(
-                r"projects/[^/]+/secrets/[A-Za-z0-9_-]+|[A-Za-z0-9_-]+",
+                r"projects/[A-Za-z0-9][A-Za-z0-9._:-]*/secrets/[A-Za-z0-9_-]+",
                 self.provider_identifier,
             ):
-                raise ValueError("Google secret identifier is invalid")
+                raise ValueError("Google secret identifier must be fully qualified")
         if (
             self.provider is SecretProviderKind.GOOGLE_SECRET_MANAGER
             and self.version is not None

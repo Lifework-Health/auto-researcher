@@ -48,9 +48,15 @@ agents:
     required: true
 ```
 
+Google Secret Manager references in standard configuration must use the full
+`projects/<project>/secrets/<secret>` identifier. Bare secret names and implicit
+project selection are rejected. The provider appends `/versions/latest` when
+`version` is omitted, or the configured version when it is present.
+
 Missing secrets, authentication failure, permission denial, disabled API,
-not-found versions, timeouts, and provider unavailability fail closed with a
-bounded application error. Raw Google exceptions are not chained or printed.
+not-found versions, timeouts, provider unavailability, and malformed, empty, or
+non-UTF-8 payloads fail closed with a bounded application error. Raw Google
+exceptions are not chained or printed.
 Secret Manager and its Google authentication packages remain optional for core
 and offline installations.
 
@@ -59,6 +65,12 @@ an operational rotation. The value is never hashed into the research contract,
 initial graph input, experiment configuration, or scientific identity. A
 configured provider/name/version reference can be retained as non-sensitive
 operational audit metadata, but it is not scientific evidence.
+
+The credential is resolved once while assembling a live runtime and that same
+runtime-only value is supplied to both the hypothesis and planner clients. A
+new runtime assembly resolves again, so a restart or fresh assembly observes a
+rotated environment value or managed-secret version. The runtime does not poll
+or refresh a credential inside an existing assembly.
 
 ## Environment and local fallback
 
@@ -72,6 +84,9 @@ credential:
   provider_identifier: ANTHROPIC_API_KEY
   required: true
 ```
+
+Explicit environment references must always include `provider_identifier`;
+there is no fallback from `logical_name` to an environment variable name.
 
 For development or operator recovery, a protected file may bootstrap the shell
 environment. Auto Researcher intentionally does not parse shell files:

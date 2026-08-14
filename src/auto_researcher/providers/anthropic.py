@@ -9,7 +9,7 @@ from pydantic import SecretStr
 from auto_researcher.agents.models import ModelCallConfig
 from auto_researcher.providers.langchain_client import LangChainStructuredModelClient
 from auto_researcher.secrets import (
-    SecretProvider,
+    ResolvedSecret,
     SecretProviderKind,
     SecretReference,
     SecretResolutionError,
@@ -28,18 +28,18 @@ ANTHROPIC_ENVIRONMENT_SECRET = SecretReference(
 def create_anthropic_client(
     config: ModelCallConfig,
     *,
-    credential_reference: SecretReference = ANTHROPIC_ENVIRONMENT_SECRET,
-    secret_provider: SecretProvider | None = None,
+    credential: ResolvedSecret | None = None,
 ) -> LangChainStructuredModelClient:
     if config.provider.casefold() != "anthropic":
         raise ValueError("Anthropic factory requires provider='anthropic'")
-    resolver = secret_provider or provider_for_reference(credential_reference)
-    credential = resolver.resolve(credential_reference)
     if credential is None:
-        raise SecretResolutionError(
-            SecretResolutionErrorCode.MISSING,
-            credential_reference,
-        ) from None
+        resolver = provider_for_reference(ANTHROPIC_ENVIRONMENT_SECRET)
+        credential = resolver.resolve(ANTHROPIC_ENVIRONMENT_SECRET)
+        if credential is None:
+            raise SecretResolutionError(
+                SecretResolutionErrorCode.MISSING,
+                ANTHROPIC_ENVIRONMENT_SECRET,
+            ) from None
     try:
         ChatAnthropic = import_module("langchain_anthropic").ChatAnthropic
     except ImportError as exc:

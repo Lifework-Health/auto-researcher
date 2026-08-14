@@ -19,12 +19,29 @@ from auto_researcher.contracts.enums import (
     ProvenanceKind,
     SearchType,
 )
-from auto_researcher.contracts.models import ApprovalRequest, BudgetState, DecisionEvent
+from auto_researcher.contracts.models import (
+    ApprovalRequest,
+    BudgetState,
+    DecisionEvent,
+    ExperimentSpec,
+    SearchRequest,
+)
+from auto_researcher.graph.nodes.evaluate import _evaluation_identity
 from auto_researcher.graph.nodes.supervisor import supervisor_prepare
 from auto_researcher.providers.anthropic import create_anthropic_client
+from auto_researcher.research_state import SQLiteResearchStateStore
 from auto_researcher.runtime.checkpoints import checkpoint_serializer
 from auto_researcher.runtime.dependencies import task_memory_dependencies
 from auto_researcher.runtime.execution import execution_identity
+from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.resources import (
+    CourtesyResourceAdmissionPolicy,
+    ResourceBroker,
+    ResourceCandidate,
+    ResourceRequest,
+    ResourceRequirement,
+)
+from auto_researcher.search.optuna.naming import build_study_identity
 from auto_researcher.secrets import (
     EnvironmentSecretProvider,
     GoogleSecretManagerProvider,
@@ -40,6 +57,16 @@ from auto_researcher.tasks.synthetic import (
     SyntheticTask,
     default_synthetic_configuration,
     default_synthetic_contract,
+)
+from tests.unit.test_research_state import (
+    _cards,
+    _decision,
+    _experiment,
+    _external,
+    _hypotheses,
+    _inference,
+    _observation,
+    _programme,
 )
 
 
@@ -68,9 +95,18 @@ def _google_reference(
 
 
 class FakeGoogleClient:
-    def __init__(self, *, value: str = SECRET, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        value: object = SECRET.encode(),
+        values: list[object] | None = None,
+        error: Exception | None = None,
+        response: object | None = None,
+    ) -> None:
         self.value = value
+        self.values = values
         self.error = error
+        self.response = response
         self.requests: list[dict] = []
         self.timeouts: list[float] = []
 
@@ -79,7 +115,10 @@ class FakeGoogleClient:
         self.timeouts.append(timeout)
         if self.error is not None:
             raise self.error
-        return SimpleNamespace(payload=SimpleNamespace(data=self.value.encode()))
+        if self.response is not None:
+            return self.response
+        value = self.values.pop(0) if self.values is not None else self.value
+        return SimpleNamespace(payload=SimpleNamespace(data=value))
 
 
 def _named_error(name: str) -> Exception:
@@ -128,6 +167,65 @@ def test_environment_provider_missing_optional_returns_none():
     )
 
 
+def test_environment_provider_never_falls_back_to_logical_name():
+    invalid = SecretReference.model_construct(
+        logical_name="ANTHROPIC_API_KEY",
+        provider=SecretProviderKind.ENVIRONMENT,
+        provider_identifier=None,
+        version=None,
+        required=True,
+    )
+    with pytest.raises(SecretResolutionError) as caught:
+        EnvironmentSecretProvider({"ANTHROPIC_API_KEY": SECRET}).resolve(invalid)
+    assert caught.value.code is SecretResolutionErrorCode.INVALID_REFERENCE
+    assert SECRET not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "logical_name": "anthropic_api_key",
+            "provider": "environment",
+        },
+        {
+            "logical_name": "anthropic_api_key",
+            "provider": "google_secret_manager",
+        },
+        {
+            "logical_name": "anthropic_api_key",
+            "provider": "google_secret_manager",
+            "provider_identifier": "anthropic-api-key",
+        },
+    ],
+)
+def test_standard_references_require_explicit_unambiguous_identifiers(payload):
+    with pytest.raises(ValueError, match="secret_reference_invalid") as caught:
+        parse_secret_reference(payload)
+    assert SECRET not in str(caught.value)
+
+
+@pytest.mark.parametrize("version", [None, "7"])
+def test_every_accepted_google_reference_forms_exact_resource(monkeypatch, version):
+    import auto_researcher.secrets.providers as provider_module
+
+    client = FakeGoogleClient()
+    monkeypatch.setattr(provider_module, "_google_client_factory", lambda: client)
+    reference = parse_secret_reference(
+        _google_reference(version=version).model_dump(mode="json")
+    )
+
+    resolved = provider_module.provider_for_reference(reference).resolve(reference)
+
+    assert resolved is not None
+    assert client.requests == [
+        {
+            "name": "projects/auto-researcherv22/secrets/"
+            f"anthropic-api-key/versions/{version or 'latest'}"
+        }
+    ]
+
+
 def test_google_provider_uses_latest_and_explicit_versions():
     client = FakeGoogleClient()
     provider = GoogleSecretManagerProvider(client=client)
@@ -144,6 +242,33 @@ def test_google_provider_uses_latest_and_explicit_versions():
         {"name": "projects/auto-researcherv22/secrets/anthropic-api-key/versions/7"},
     ]
     assert client.timeouts == [10.0, 10.0]
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        FakeGoogleClient(value=b""),
+        FakeGoogleClient(value=b"\xff\xfe"),
+        FakeGoogleClient(value=object()),
+        FakeGoogleClient(response=SimpleNamespace()),
+    ],
+    ids=("empty", "non-utf8", "non-bytes", "malformed"),
+)
+def test_google_invalid_payloads_fail_closed_as_invalid_value(client):
+    with pytest.raises(SecretResolutionError) as caught:
+        GoogleSecretManagerProvider(client=client).resolve(_google_reference())
+    assert caught.value.code is SecretResolutionErrorCode.INVALID_VALUE
+    assert SECRET not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_google_invalid_optional_payload_is_still_an_invalid_value_error():
+    with pytest.raises(SecretResolutionError) as caught:
+        GoogleSecretManagerProvider(client=FakeGoogleClient(value=b"\xff")).resolve(
+            _google_reference(required=False)
+        )
+    assert caught.value.code is SecretResolutionErrorCode.INVALID_VALUE
 
 
 @pytest.mark.parametrize(
@@ -258,7 +383,39 @@ def test_untrusted_reference_parse_and_cli_rejections_do_not_echo_plaintext():
     assert SECRET not in str(cli_error.value)
 
 
-def test_secret_does_not_leak_through_logs_or_safe_domain_serialisation(caplog):
+def test_live_anthropic_rejects_optional_credentials_before_resolution():
+    from auto_researcher.cli import _load_live_agents
+
+    role = {
+        "maximum_output_tokens": 100,
+        "timeout_seconds": 10,
+        "maximum_attempts": 1,
+        "maximum_cost_per_call": 0.1,
+    }
+    with pytest.raises(ValueError, match="credentials must be required"):
+        _load_live_agents(
+            {
+                "agents": {
+                    "mode": "live",
+                    "provider": "anthropic",
+                    "model_id": "explicit-model-2026-07-30",
+                    "credential": _environment_reference(required=False).model_dump(
+                        mode="json"
+                    ),
+                    "pricing": {
+                        "version": "test-v1",
+                        "input_cost_per_million_tokens": 1,
+                        "output_cost_per_million_tokens": 2,
+                        "currency": "USD",
+                    },
+                    "hypothesis": role,
+                    "planner": role,
+                }
+            }
+        )
+
+
+def test_secret_does_not_leak_through_current_architecture_models(caplog, tmp_path):
     reference = _google_reference(version="9")
     resolved = ResolvedSecret(SECRET)
     with caplog.at_level(logging.DEBUG):
@@ -337,10 +494,90 @@ def test_secret_does_not_leak_through_logs_or_safe_domain_serialisation(caplog):
     system_prompt, user_prompt = load_prompt("hypothesis", "2.0.0").render(
         context_json=agent_context.model_dump_json()
     )
+    programme = _programme()
+    card = _cards()[0]
+    external = _external(programme, card)
+    observation = _observation(programme)
+    left, right, _, _ = _hypotheses(programme, card.evidence_id)
+    experiment = _experiment(programme, card.evidence_id)
+    inference = _inference(programme, card.evidence_id)
+    decision = _decision(programme, card.evidence_id)
+    state_path = tmp_path / "research-state.sqlite3"
+    research_store = SQLiteResearchStateStore(state_path)
+    research_store.create_programme(programme)
+    research_store.append_many(
+        (external, observation, left, right, experiment, inference, decision)
+    )
+    research_state = research_store.load_state(programme.programme_id)
+    research_store.close()
+
+    resource_request = ResourceRequest(
+        request_id="secret-boundary-resource-check",
+        requirements=(ResourceRequirement(resource_type="gpu"),),
+    )
+    resource_candidate = ResourceCandidate(
+        resource_id="gpu-0",
+        resource_type="gpu",
+    )
+
+    class FixedResourceProvider:
+        def candidates(self, _request):
+            return (resource_candidate,)
+
+    resource_admission = ResourceBroker(
+        FixedResourceProvider(),
+        CourtesyResourceAdmissionPolicy(),
+        clock=lambda: 0.0,
+    ).wait_for_admission(resource_request)
+
+    search_request = SearchRequest(
+        request_id="search-secret-boundary-check",
+        hypothesis_id="hypothesis-1",
+        search_type=SearchType.DIRECT,
+        target="objective_score",
+        search_space={},
+        experiment_budget=1,
+        rationale="Exercise the real search contract boundary.",
+    )
+    experiment_spec = ExperimentSpec(
+        experiment_id="experiment-secret-boundary-check",
+        hypothesis_id=search_request.hypothesis_id,
+        search_request_id=search_request.request_id,
+        configuration=default_synthetic_configuration(),
+        evaluator_id="synthetic-evaluator",
+        code_version="test-code-v1",
+        dataset_version="synthetic-data-v1",
+        provenance=ProvenanceKind.SIMULATED,
+    )
+
+    for model in (
+        contract,
+        search_request,
+        experiment_spec,
+        event,
+        approval,
+        call_record,
+        _model_config(),
+        TaskRuntimeContext(),
+        agent_context,
+        card,
+        research_state,
+        resource_request,
+        resource_candidate,
+        resource_admission,
+    ):
+        with pytest.raises(ValidationError) as caught:
+            type(model).model_validate(
+                {**model.model_dump(mode="python"), "credential": resolved}
+            )
+        assert SECRET not in str(caught.value)
+
     serialised = json.dumps(
         {
             "task_configuration": {"credential": reference.model_dump(mode="json")},
             "research_contract": contract.model_dump(mode="json"),
+            "search_request": search_request.model_dump(mode="json"),
+            "experiment_spec": experiment_spec.model_dump(mode="json"),
             "provenance": event.model_dump(mode="json"),
             "model_call_record": call_record.model_dump(mode="json"),
             "model_call_configuration": _model_config().model_dump(mode="json"),
@@ -353,12 +590,16 @@ def test_secret_does_not_leak_through_logs_or_safe_domain_serialisation(caplog):
             },
             "model_context": agent_context.model_dump(mode="json"),
             "model_prompts": [system_prompt, user_prompt],
+            "research_intelligence_card": card.model_dump(mode="json"),
+            "research_state": research_state.model_dump(mode="json"),
+            "resource_admission": resource_admission.model_dump(mode="json"),
         },
         sort_keys=True,
         default=str,
     )
     assert SECRET not in caplog.text
     assert SECRET not in serialised
+    assert SECRET.encode() not in state_path.read_bytes()
     assert "reveal" not in serialised
 
 
@@ -368,29 +609,99 @@ def test_resolved_value_is_rejected_by_checkpoint_serializer():
     assert SECRET not in str(caught.value)
 
 
-def test_environment_and_version_rotation_do_not_change_scientific_identity():
+def test_secret_rotation_does_not_change_any_scientific_or_reuse_identity():
     environment_reference = _environment_reference()
-    first = EnvironmentSecretProvider({"ANTHROPIC_API_KEY": "rotated-one"})
-    second = EnvironmentSecretProvider({"ANTHROPIC_API_KEY": "rotated-two"})
-    assert (
-        first.resolve(environment_reference).reveal()
-        != second.resolve(environment_reference).reveal()
-    )
     version_seven = _google_reference(version="7")
     version_eight = _google_reference(version="8")
-    google = GoogleSecretManagerProvider(client=FakeGoogleClient())
-    google.resolve(version_seven)
-    google.resolve(version_eight)
+    operational_credentials = (
+        (
+            environment_reference,
+            EnvironmentSecretProvider({"ANTHROPIC_API_KEY": "rotated-env"}).resolve(
+                environment_reference
+            ),
+        ),
+        (
+            version_seven,
+            GoogleSecretManagerProvider(
+                client=FakeGoogleClient(value=b"rotated-gsm-seven")
+            ).resolve(version_seven),
+        ),
+        (
+            version_eight,
+            GoogleSecretManagerProvider(
+                client=FakeGoogleClient(value=b"rotated-gsm-eight")
+            ).resolve(version_eight),
+        ),
+    )
+    assert (
+        len({reference.model_dump_json() for reference, _ in operational_credentials})
+        == 3
+    )
+    assert len({credential.reveal() for _, credential in operational_credentials}) == 3
+
+    contract = default_synthetic_contract(1)
+    request = SearchRequest(
+        request_id="search-rotation-invariant",
+        hypothesis_id="hypothesis-1",
+        search_type=SearchType.OPTUNA,
+        target="objective_score",
+        search_space={},
+        experiment_budget=2,
+        rationale="Test the bounded synthetic space.",
+    )
+    task = SyntheticTask()
+    runtime_context = TaskRuntimeContext(
+        run_id="run-1",
+        manifest_created_at=datetime(2026, 8, 13, tzinfo=UTC),
+    )
+    metadata = task.experiment_metadata(runtime_context)
+    study_spec = task.create_optuna_study_spec(contract, request)
+    experiment = ExperimentSpec(
+        experiment_id="experiment-1",
+        hypothesis_id=request.hypothesis_id,
+        search_request_id=request.request_id,
+        configuration=default_synthetic_configuration(),
+        evaluator_id=metadata.evaluator_id,
+        code_version=metadata.code_version,
+        dataset_version=metadata.dataset_version,
+        provenance=metadata.provenance,
+    )
+    dependencies = task_memory_dependencies(
+        task,
+        runtime_context,
+        contract,
+        default_synthetic_configuration(),
+    )
     initial = {
         "run_id": "run-1",
         "thread_id": "thread-1",
-        "contract": default_synthetic_contract(1),
+        "contract": contract,
     }
     configuration = {"configurable": {"thread_id": "thread-1"}}
-    environment_identity = execution_identity(initial, configuration)
-    version_seven_identity = execution_identity(initial, configuration)
-    version_eight_identity = execution_identity(initial, configuration)
-    assert environment_identity == version_seven_identity == version_eight_identity
+
+    identities = []
+    for _reference, credential in operational_credentials:
+        assert credential is not None
+        identities.append(
+            (
+                payload_hash(contract),
+                execution_identity(initial, configuration),
+                build_study_identity(
+                    run_id="run-1",
+                    contract=contract,
+                    request=request,
+                    metadata=metadata,
+                    spec=study_spec,
+                ),
+                payload_hash(experiment),
+                _evaluation_identity(
+                    {"run_id": "run-1", "experiment_spec": experiment},
+                    dependencies,
+                ),
+            )
+        )
+
+    assert identities[0] == identities[1] == identities[2]
 
 
 def test_existing_anthropic_environment_loading_remains_compatible(
@@ -415,11 +726,11 @@ def test_existing_anthropic_environment_loading_remains_compatible(
     assert SECRET not in repr(client)
 
 
-def test_runtime_uses_configured_google_reference_at_anthropic_boundary(monkeypatch):
+def test_runtime_resolves_once_per_assembly_and_refreshes_on_next_assembly(monkeypatch):
     import auto_researcher.secrets as secrets_module
     from auto_researcher.cli import _load_live_agents
 
-    client = FakeGoogleClient()
+    client = FakeGoogleClient(values=[b"assembly-one", b"assembly-two"])
     captured: list[dict] = []
 
     class FakeChatAnthropic:
@@ -442,27 +753,32 @@ def test_runtime_uses_configured_google_reference_at_anthropic_boundary(monkeypa
         "maximum_attempts": 1,
         "maximum_cost_per_call": 0.1,
     }
-    loaded = _load_live_agents(
-        {
-            "agents": {
-                "mode": "live",
-                "provider": "anthropic",
-                "model_id": "explicit-model-2026-07-30",
-                "credential": _google_reference(version="11").model_dump(mode="json"),
-                "pricing": {
-                    "version": "test-v1",
-                    "input_cost_per_million_tokens": 1,
-                    "output_cost_per_million_tokens": 2,
-                    "currency": "USD",
-                },
-                "hypothesis": role,
-                "planner": role,
-            }
+    payload = {
+        "agents": {
+            "mode": "live",
+            "provider": "anthropic",
+            "model_id": "explicit-model-2026-07-30",
+            "credential": _google_reference(version="11").model_dump(mode="json"),
+            "pricing": {
+                "version": "test-v1",
+                "input_cost_per_million_tokens": 1,
+                "output_cost_per_million_tokens": 2,
+                "currency": "USD",
+            },
+            "hypothesis": role,
+            "planner": role,
         }
-    )
-    assert loaded[-1] == "live"
-    assert len(captured) == 2
-    assert all(item["api_key"].get_secret_value() == SECRET for item in captured)
+    }
+    first = _load_live_agents(payload)
+    second = _load_live_agents(payload)
+
+    assert first[-1] == second[-1] == "live"
+    assert [item["api_key"].get_secret_value() for item in captured] == [
+        "assembly-one",
+        "assembly-one",
+        "assembly-two",
+        "assembly-two",
+    ]
     assert client.requests == [
         {"name": "projects/auto-researcherv22/secrets/anthropic-api-key/versions/11"},
         {"name": "projects/auto-researcherv22/secrets/anthropic-api-key/versions/11"},
