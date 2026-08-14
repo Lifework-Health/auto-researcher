@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import yaml
+import pytest
 from typer.testing import CliRunner
 
 from auto_researcher.agents.models import StructuredModelResponse
@@ -334,7 +335,12 @@ def test_standard_live_runtime_runs_multiple_generations_and_restart_without_red
     )
 
 
-def test_standard_cli_launches_metadata_only_live_lifecycle(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_controller", [False, True])
+def test_standard_cli_launches_metadata_only_live_lifecycle(
+    tmp_path,
+    monkeypatch,
+    native_controller,
+):
     run_id = "standard-cli-live-run"
     thread_id = f"{run_id}-thread"
     monkeypatch.setattr("auto_researcher.cli.utc_now", lambda: NOW)
@@ -368,13 +374,31 @@ def test_standard_cli_launches_metadata_only_live_lifecycle(tmp_path, monkeypatc
     )
     contract_file = _write_json(tmp_path / "contract.json", contract)
     config_file = tmp_path / "task.yaml"
+    experiment_configuration = _configuration()
+    if native_controller:
+        experiment_configuration["openevolve"].update(
+            {
+                "native_controller": True,
+                "population_size": 3,
+                "archive_size": 3,
+                "num_islands": 1,
+                "migration_interval": 2,
+                "migration_rate": 0.25,
+                "feature_dimensions": ["objective_score"],
+                "feature_bins": 4,
+                "parallel_evaluations": 2,
+                "checkpoint_interval": 1,
+                "maximum_candidate_evaluations": 3,
+                "use_template_stochasticity": True,
+            }
+        )
     config_file.write_text(
         yaml.safe_dump(
             {
                 "task": {"id": "synthetic", "version": "1.0"},
                 "agents": {"mode": "mock"},
                 "openevolve_live_mutation": configuration.model_dump(mode="json"),
-                "search": {"type": "OPENEVOLVE", **_configuration()},
+                "search": {"type": "OPENEVOLVE", **experiment_configuration},
                 "runtime": {
                     "output_dir": str((tmp_path / "cli-artefacts").resolve()),
                     "workspace_dir": str((tmp_path / "cli-workspace").resolve()),
@@ -414,3 +438,5 @@ def test_standard_cli_launches_metadata_only_live_lifecycle(tmp_path, monkeypatc
     assert "Status: COMPLETED" in result.stdout
     assert "OpenEvolve mutation mode: metadata_only_live" in result.stdout
     assert provider.invocation_count == 2
+    envelopes = tuple((tmp_path / "cli-artefacts").rglob("search-envelope.json"))
+    assert bool(envelopes) is native_controller

@@ -1,0 +1,61 @@
+profile: feta-a4-full-strength-acceptance-v1
+task: {id: feta_seg_evolve, version: "1.0"}
+agents: {mode: mock}
+notes:
+  - This is a bounded post-merge A4 acceptance profile, not a long optimisation campaign.
+  - Model credentials remain Managed Secrets references in the surrounding runtime configuration.
+openevolve_live_mutation:
+  protocol_version: metadata-only-live-openevolve-runtime-v1
+  mode: metadata_only
+  approval_file: /absolute/protected/path/a4-live-mutation-approval-v2.json
+  bridge_contract_file: /absolute/protected/path/a4-model-bridge-contract.json
+  adapter_lock_file: /absolute/path/to/auto_researcherv2.1/constraints/openevolve-0.3.2.lock
+  prompt_file: /absolute/path/to/auto_researcherv2.1/src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v2.md
+  executor_policy_file: /absolute/protected/path/a4-hardened-executor-policy.json
+  isolation_evidence_file: /absolute/protected/path/a4-executor-isolation-evidence.json
+  credential:
+    logical_name: anthropic_api_key
+    provider: google_secret_manager
+    provider_identifier: projects/<project>/secrets/<secret>
+    version: latest
+    required: true
+search:
+  type: OPENEVOLVE
+  openevolve:
+    native_controller: true
+    population_size: 12
+    archive_size: 12
+    num_islands: 3
+    migration_interval: 2
+    migration_rate: 0.25
+    feature_dimensions: [primary_score, policy_complexity]
+    feature_bins: 6
+    maximum_generations: 4
+    maximum_candidate_evaluations: 24
+    maximum_model_calls: 24
+    maximum_failed_candidates: 3
+    maximum_consecutive_failures: 2
+    maximum_artefact_bytes: 20000000
+    maximum_wall_time_seconds: 14400
+    parallel_evaluations: 3
+    checkpoint_interval: 2
+    random_seed: 20260814
+    objective_direction: MAXIMIZE
+    objective_threshold: null
+    diff_based_evolution: false
+    use_template_stochasticity: true
+    semantic_candidate_identity: TrainingPolicy@feta-training-policy-v1
+    evaluation_reuse: evaluation-reuse-v2
+    native_checkpoint_resume: true
+resources:
+  mode: equivalent_pool
+  resource_type: gpu
+  quantity_per_candidate: 1
+  preferred_candidate_count: 3
+  maximum_wait_seconds: 14400
+  maximum_utilization_percent: 10
+  equivalence_requirements: [nvidia-cuda, whole-physical-gpu]
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: /absolute/path/to/a4-output
+  workspace_dir: /absolute/path/to/a4-workspace

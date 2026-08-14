@@ -53,7 +53,15 @@ def test_pinned_dependency_and_adapter_contract_are_valid():
     validate_upstream_dependency(contract)
     assert contract.upstream_commit == "411fb59c886c18704caaffb611e17cf9e7d824d2"
     assert contract.evaluator_owner == contract.model_client_owner == "AUTO_RESEARCHER"
-    assert "provider_clients" in contract.unsupported_features
+    assert "provider_clients" not in contract.unsupported_features
+    assert set(contract.unsupported_features) == {
+        "arbitrary_package_installation",
+        "cascade_evaluation",
+        "direct_provider_credential_access",
+        "embedding_novelty",
+        "arbitrary_network_access",
+        "unrestricted_host_filesystem",
+    }
 
 
 @pytest.mark.parametrize(

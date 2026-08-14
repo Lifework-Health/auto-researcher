@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
@@ -83,9 +84,23 @@ class OpenEvolveBackend:
             raise ValueError("OpenEvolve requires an OPENEVOLVE SearchRequest")
         if request.search_type not in contract.allowed_search_types:
             raise ValueError("OpenEvolve is not permitted by the research contract")
-        raw = request.search_space.get("openevolve")
-        if not isinstance(raw, dict):
+        raw_payload = request.search_space.get("openevolve")
+        if not isinstance(raw_payload, dict):
             raise ValueError("openevolve_finite_configuration_required")
+        raw: dict[str, Any] = dict(raw_payload)
+        runner_id = getattr(self.sandbox_runner, "runner_id", "")
+        expected_sandbox = (
+            "openevolve-hardened-executor-v2"
+            if runner_id == "openevolve-hardened-executor-v2"
+            else "openevolve-sandbox-v1"
+        )
+        if raw.get("native_controller") is True:
+            raw.setdefault("maximum_failed_candidates", 3)
+            raw.setdefault("maximum_consecutive_failures", 2)
+            raw.setdefault("maximum_artefact_bytes", 20_000_000)
+            raw.setdefault("sandbox_policy_id", expected_sandbox)
+            raw.setdefault("evaluator_identity", self.evaluator_identity)
+            raw.setdefault("verifier_identity", self.verifier_identity)
         required = {
             "population_size",
             "maximum_generations",
@@ -102,12 +117,6 @@ class OpenEvolveBackend:
         }
         if not required.issubset(raw):
             raise ValueError("openevolve_finite_configuration_required")
-        runner_id = getattr(self.sandbox_runner, "runner_id", "")
-        expected_sandbox = (
-            "openevolve-hardened-executor-v2"
-            if runner_id == "openevolve-hardened-executor-v2"
-            else "openevolve-sandbox-v1"
-        )
         if raw["sandbox_policy_id"] != expected_sandbox:
             raise ValueError("openevolve_sandbox_policy_unavailable")
         if raw["evaluator_identity"] != self.evaluator_identity:

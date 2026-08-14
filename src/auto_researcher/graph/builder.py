@@ -33,6 +33,7 @@ from auto_researcher.graph.nodes.openevolve import (
     select_openevolve_parent,
     validate_openevolve_candidate,
 )
+from auto_researcher.graph.nodes.native_openevolve import run_native_openevolve
 from auto_researcher.graph.nodes.provenance import record_provenance
 from auto_researcher.graph.nodes.search_router import search_router
 from auto_researcher.graph.nodes.stop import supervisor_decide
@@ -49,6 +50,7 @@ from auto_researcher.graph.routing import (
     route_after_openevolve_decision,
     route_after_openevolve_preparation,
     route_after_openevolve_validation,
+    route_after_native_openevolve,
     route_after_prepare,
     route_after_verification,
     route_approval,
@@ -154,6 +156,10 @@ def build_graph(
         "finalise_openevolve",
         partial(finalise_openevolve, dependencies=dependencies),
     )
+    graph.add_node(
+        "run_native_openevolve",
+        partial(run_native_openevolve, dependencies=dependencies),
+    )
 
     graph.add_edge(START, "initialise_run")
     graph.add_conditional_edges(
@@ -201,6 +207,11 @@ def build_graph(
     graph.add_edge("select_openevolve_parent", "propose_openevolve_candidate")
     graph.add_edge("propose_openevolve_candidate", "validate_openevolve_candidate")
     graph.add_edge("finalise_openevolve", "supervisor_decide")
+    graph.add_conditional_edges(
+        "run_native_openevolve",
+        route_after_native_openevolve,
+        {"run_native_openevolve": "run_native_openevolve", "__end__": END},
+    )
     graph.add_edge("unavailable_backend", "record_provenance")
     graph.add_edge("record_provenance", "supervisor_decide")
     graph.add_conditional_edges(
