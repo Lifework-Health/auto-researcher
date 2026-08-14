@@ -33,6 +33,9 @@ agents-anthropic = [
 knowledge-neo4j = [
     "neo4j==6.2.0",
 ]
+secrets-gcp = [
+    "google-cloud-secret-manager==2.30.0",
+]
 openevolve = [
     "openevolve==0.3.2",
 ]

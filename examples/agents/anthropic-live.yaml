@@ -3,6 +3,14 @@
 agents:
   mode: live
   provider: anthropic
+  # Omit credential to preserve the ANTHROPIC_API_KEY environment default.
+  # Production alternative:
+  # credential:
+  #   logical_name: anthropic_api_key
+  #   provider: google_secret_manager
+  #   provider_identifier: projects/auto-researcherv22/secrets/anthropic-api-key
+  #   version: latest
+  #   required: true
   model_id: claude-sonnet-4-5-20250929
   pricing:
     version: example-review-required-2026-07

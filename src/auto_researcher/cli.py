@@ -215,6 +215,17 @@ def _load_task_configuration(
         raise ValueError("task config requires exactly one of experiment or search")
     if not isinstance(runtime, dict):
         raise ValueError("task config runtime section must be a mapping")
+    prohibited_runtime_secrets = {
+        "api_key",
+        "access_token",
+        "credential_value",
+        "credentials",
+        "password",
+        "secret_value",
+        "service_account_json",
+    }
+    if prohibited_runtime_secrets & _nested_keys(runtime):
+        raise ValueError("runtime credentials must be resolved from a secret reference")
     selected = experiment if experiment is not None else search
     if not isinstance(selected, dict):
         raise ValueError("task config experiment/search section must be a mapping")
@@ -250,6 +261,17 @@ def _load_live_agents(payload: dict[str, Any]):
         return None, None, None, None, AgentBudgetPolicy(), "mock"
     if mode != "live":
         raise ValueError("agents.mode must be 'mock' or 'live'")
+    prohibited_secret_fields = {
+        "api_key",
+        "access_token",
+        "credential_value",
+        "credentials",
+        "password",
+        "secret_value",
+        "service_account_json",
+    }
+    if prohibited_secret_fields & _nested_keys(configured):
+        raise ValueError("agents credentials must use a secret reference")
     provider = configured.get("provider")
     model_id = configured.get("model_id")
     if not isinstance(provider, str) or not isinstance(model_id, str):
@@ -286,10 +308,37 @@ def _load_live_agents(payload: dict[str, Any]):
     hypothesis_config = call_config("hypothesis", 0.2)
     planner_config = call_config("planner", 0.0)
     if provider.casefold() == "anthropic":
-        from auto_researcher.providers.anthropic import create_anthropic_client
+        from auto_researcher.providers.anthropic import (
+            ANTHROPIC_ENVIRONMENT_SECRET,
+            create_anthropic_client,
+        )
+        from auto_researcher.secrets import (
+            parse_secret_reference,
+            provider_for_reference,
+        )
 
-        hypothesis_client = create_anthropic_client(hypothesis_config)
-        planner_client = create_anthropic_client(planner_config)
+        credential_payload = configured.get("credential")
+        if credential_payload is None:
+            credential_reference = ANTHROPIC_ENVIRONMENT_SECRET
+        elif not isinstance(credential_payload, dict):
+            raise ValueError("agents.credential must be a secret reference mapping")
+        else:
+            credential_reference = parse_secret_reference(credential_payload)
+        if not credential_reference.required:
+            raise ValueError("live Anthropic credentials must be required")
+        resolver = provider_for_reference(credential_reference)
+        credential = resolver.resolve(credential_reference)
+        if credential is None:
+            raise RuntimeError("required live credential was not resolved") from None
+
+        hypothesis_client = create_anthropic_client(
+            hypothesis_config,
+            credential=credential,
+        )
+        planner_client = create_anthropic_client(
+            planner_config,
+            credential=credential,
+        )
     else:
         raise ValueError(
             f"unsupported live provider {provider!r}; live mode implements 'anthropic'"
