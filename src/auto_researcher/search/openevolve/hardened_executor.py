@@ -168,6 +168,11 @@ class HardenedDockerExecutor:
         ):
             raise ValueError("hardened_executor_policy_violation")
 
+    def validate_environment(self) -> None:
+        """Verify the exact approved runtime and image without executing a candidate."""
+
+        self._inspect()
+
     def _workspace_policy(
         self, candidate: OpenEvolveCandidate, policy: SandboxPolicy
     ) -> dict:
