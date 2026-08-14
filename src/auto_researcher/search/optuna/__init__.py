@@ -12,6 +12,11 @@ from auto_researcher.search.optuna.models import (
     OptunaTrialOutcome,
     OptunaTrialStatus,
 )
+from auto_researcher.search.optuna.storage import (
+    OptunaStorageBackend,
+    OptunaStorageConfiguration,
+    PostgreSQLStorageConfiguration,
+)
 
 __all__ = [
     "CategoricalParameterSpec",
@@ -21,7 +26,10 @@ __all__ = [
     "OptunaStudyResult",
     "OptunaStudySpec",
     "OptunaStudyState",
+    "OptunaStorageBackend",
+    "OptunaStorageConfiguration",
     "OptunaTrialReference",
     "OptunaTrialOutcome",
     "OptunaTrialStatus",
+    "PostgreSQLStorageConfiguration",
 ]

@@ -23,6 +23,10 @@ dev = [
 hpo = [
     "optuna>=4.9,<5",
 ]
+hpo-postgresql = [
+    "optuna>=4.9,<5",
+    "psycopg[binary]>=3.2,<4",
+]
 agents = [
     "langchain-core==1.5.3",
 ]
@@ -64,6 +68,7 @@ pythonpath = ["src"]
 addopts = "-ra"
 markers = [
     "hpo: optional tests requiring the Optuna hpo extra",
+    "postgresql: opt-in integration tests requiring AUTO_RESEARCHER_TEST_POSTGRESQL_URL",
     "v2: optional contract tests requiring the auto_agent_v2 package",
     "real_data: optional iCCA compatibility gate requiring explicit local data",
     "live_agent: optional paid provider smoke tests requiring explicit environment opt-in",
