@@ -91,6 +91,7 @@ from auto_researcher.tasks.models import (
 )
 from auto_researcher.tasks.protocols import (
     AgentContextCapableTask,
+    IntermediateReportingEvaluator,
     OpenEvolveCapableTask,
     OptunaCapableTask,
     ResearchTask,
@@ -239,10 +240,14 @@ def _assemble_task_dependencies(
             ),
             rationale="Validate the task capability before graph execution.",
         )
-        cast(OptunaCapableTask, task).create_optuna_study_spec(
+        validation_spec = cast(OptunaCapableTask, task).create_optuna_study_spec(
             contract,
             validation_request,
         )
+        if validation_spec.pruner.type != "none" and not isinstance(
+            task_evaluator, IntermediateReportingEvaluator
+        ):
+            raise ValueError("optuna_pruner_requires_intermediate_reporting_evaluator")
     if (
         search_type == SearchType.OPTUNA
         and optuna_installed

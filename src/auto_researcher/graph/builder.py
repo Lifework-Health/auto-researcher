@@ -46,6 +46,7 @@ from auto_researcher.graph.routing import (
     route_after_initialise,
     route_after_knowledge,
     route_after_optuna_decision,
+    route_after_evaluation,
     route_after_optuna_prepare,
     route_after_openevolve_decision,
     route_after_openevolve_preparation,
@@ -181,7 +182,7 @@ def build_graph(
     )
     graph.add_edge("optuna_ask_trial", "optuna_create_experiment")
     graph.add_edge("optuna_create_experiment", "evaluate_experiment")
-    graph.add_edge("evaluate_experiment", "verify_evidence")
+    graph.add_conditional_edges("evaluate_experiment", route_after_evaluation)
     graph.add_conditional_edges("verify_evidence", route_after_verification)
     graph.add_edge("optuna_tell_trial", "optuna_record_trial")
     graph.add_edge("optuna_record_trial", "optuna_decide_study")

@@ -980,3 +980,364 @@ def test_exact_resource_acquire_is_idempotent_across_process_race():
                 {"request_id": request_id},
             )
         engine.dispose()
+
+
+def _v2_spec(*, sampler="random", multi=False, constrained=False):
+    from auto_researcher.search.optuna.models import (
+        IntParameterSpec,
+        OptimisationDirection,
+        OptunaConstraintSpec,
+        OptunaObjectiveSpec,
+        OptunaSamplerSpec,
+        OptunaStudySpec,
+    )
+
+    return OptunaStudySpec(
+        schema_version="2.0",
+        task_id="postgres-concurrency",
+        task_version="2",
+        search_space_version="postgres-full-strength-v2",
+        direction=OptimisationDirection.MAXIMIZE,
+        parameters=(IntParameterSpec(name="x", low=0, high=6),),
+        trial_budget=8,
+        seed=505,
+        sampler=OptunaSamplerSpec(
+            type=sampler,
+            options=(
+                {"population_size": 4}
+                if sampler == "nsgaii"
+                else {"scramble": True}
+                if sampler == "qmc"
+                else {}
+            ),
+        ),
+        objective_metric="score",
+        objectives=(
+            OptunaObjectiveSpec(
+                name="score",
+                direction=OptimisationDirection.MAXIMIZE,
+                metric="score",
+            ),
+            *(
+                (
+                    OptunaObjectiveSpec(
+                        name="cost",
+                        direction=OptimisationDirection.MINIMIZE,
+                        metric="cost",
+                    ),
+                )
+                if multi
+                else ()
+            ),
+        ),
+        constraints=(
+            (
+                OptunaConstraintSpec(
+                    name="cost_limit",
+                    metric="cost",
+                    relation="LESS_THAN_OR_EQUAL",
+                    threshold=0.5,
+                ),
+            )
+            if constrained
+            else ()
+        ),
+    )
+
+
+def _v2_runtime(study_name, worker_id, spec, *, prepare=False):
+    from datetime import datetime, timezone
+
+    from optuna.storages import RDBStorage
+    from sqlalchemy import create_engine
+
+    from auto_researcher.search.optuna.backend import OptunaAskTellBackend
+    from auto_researcher.search.optuna.coordination import PostgresOptunaCoordination
+
+    url = _database_url()
+    storage = RDBStorage(url)
+    engine = create_engine(url, pool_pre_ping=True)
+    backend = OptunaAskTellBackend(
+        storage,
+        shared_workers=True,
+        coordination=PostgresOptunaCoordination(engine),
+        worker_id=worker_id,
+        worker_session_id=f"session-{worker_id}-{uuid4()}",
+    )
+    identity = _identity(study_name)
+    if prepare:
+        backend.prepare_or_load_study(
+            identity,
+            spec,
+            started_at=datetime.now(timezone.utc),
+            trial_budget=spec.trial_budget,
+        )
+    return backend, storage, engine, identity
+
+
+def _v2_terminal_models(experiment, *, score, cost):
+    from auto_researcher.contracts.enums import EvidenceStatus, ProvenanceKind
+    from auto_researcher.contracts.models import EvaluationResult, VerificationResult
+
+    evaluation = EvaluationResult(
+        experiment_id=experiment.experiment_id,
+        success=True,
+        primary_score=score,
+        metrics={"score": score, "cost": cost},
+        constraint_results={"cost": cost <= 0.5},
+        evaluator_version="integration-test",
+        provenance=ProvenanceKind.SIMULATED,
+    )
+    verification = VerificationResult(
+        experiment_id=experiment.experiment_id,
+        verified=True,
+        claimed_score=score,
+        measured_score=score,
+        constraint_compliant=True,
+        evidence_status=EvidenceStatus.INCONCLUSIVE,
+        reasons=(),
+        provenance=ProvenanceKind.SIMULATED,
+    )
+    return evaluation, verification
+
+
+def _complete_v2_trial(backend, identity, spec, slot):
+    reference, claim = backend.ask_and_claim_trial(
+        identity,
+        spec,
+        trial_budget=spec.trial_budget,
+        claim_ttl=timedelta(seconds=30),
+    )
+    task, metadata, request = _worker_domain_inputs(identity.study_name)
+    experiment = backend.create_experiment_spec(
+        task=task,
+        metadata=metadata,
+        spec=spec,
+        request=request,
+        reference=reference,
+    )
+    score = float(reference.parameters["x"])
+    evaluation, verification = _v2_terminal_models(
+        experiment,
+        score=score,
+        cost=float((slot % 3) + 1),
+    )
+    outcome = backend.tell_claimed_trial(
+        claim=claim,
+        spec=spec,
+        reference=reference,
+        experiment=experiment,
+        evaluation=evaluation,
+        verification=verification,
+        reported_at=datetime.now(timezone.utc),
+    )
+    return reference, outcome
+
+
+def test_non_tpe_native_sampler_is_shared_across_postgresql_workers():
+    import optuna
+
+    study_name = f"ar-random-shared-{uuid4()}"
+    spec = _v2_spec(sampler="random")
+    first, storage_a, engine_a, identity = _v2_runtime(
+        study_name, "random-a", spec, prepare=True
+    )
+    second, storage_b, engine_b, _ = _v2_runtime(study_name, "random-b", spec)
+    try:
+        numbers = []
+        for slot in range(6):
+            backend = first if slot % 2 == 0 else second
+            reference, outcome = _complete_v2_trial(backend, identity, spec, slot)
+            numbers.append(reference.trial_number)
+            assert outcome.status.value == "COMPLETE"
+        assert numbers == list(range(6))
+        assert (
+            type(first._load_study(study_name, spec).sampler).__name__
+            == "RandomSampler"
+        )
+        assert (
+            len(optuna.load_study(study_name=study_name, storage=storage_b).trials) == 6
+        )
+    finally:
+        optuna.delete_study(study_name=study_name, storage=storage_a)
+        storage_a.engine.dispose()
+        storage_b.engine.dispose()
+        engine_a.dispose()
+        engine_b.dispose()
+
+
+def test_multi_objective_postgresql_workers_expose_native_pareto_vectors():
+    import optuna
+
+    study_name = f"ar-pareto-shared-{uuid4()}"
+    spec = _v2_spec(sampler="random", multi=True)
+    first, storage_a, engine_a, identity = _v2_runtime(
+        study_name, "pareto-a", spec, prepare=True
+    )
+    second, storage_b, engine_b, _ = _v2_runtime(study_name, "pareto-b", spec)
+    try:
+        for slot in range(6):
+            _complete_v2_trial(
+                first if slot % 2 == 0 else second,
+                identity,
+                spec,
+                slot,
+            )
+        summary = second.load_study_summary(identity, spec, 6)
+        outcomes = second.trial_outcomes(study_name)
+        assert summary.pareto_trial_numbers
+        assert all(len(outcome.objective_values) == 2 for outcome in outcomes)
+        assert summary.best_overall_trial_number is None
+    finally:
+        optuna.delete_study(study_name=study_name, storage=storage_a)
+        storage_a.engine.dispose()
+        storage_b.engine.dispose()
+        engine_a.dispose()
+        engine_b.dispose()
+
+
+def test_native_constraints_are_durable_and_visible_to_later_postgresql_worker():
+    import optuna
+
+    study_name = f"ar-constraints-shared-{uuid4()}"
+    spec = _v2_spec(sampler="nsgaii", constrained=True)
+    first, storage_a, engine_a, identity = _v2_runtime(
+        study_name, "constraints-a", spec, prepare=True
+    )
+    second, storage_b, engine_b, _ = _v2_runtime(study_name, "constraints-b", spec)
+    try:
+        _, outcome = _complete_v2_trial(first, identity, spec, 0)
+        assert outcome.status.value == "COMPLETE"
+        assert outcome.feasible is False
+        assert outcome.constraint_values == (0.5,)
+        frozen = optuna.load_study(
+            study_name=study_name,
+            storage=storage_b,
+        ).trials[0]
+        assert tuple(frozen.system_attrs["constraints"]) == (0.5,)
+        record = second.operational_store.load_constraints(study_name, 0)
+        assert record is not None and record.values == (0.5,)
+        later, later_outcome = _complete_v2_trial(second, identity, spec, 1)
+        assert later.trial_number == 1
+        assert later_outcome.status.value == "COMPLETE"
+    finally:
+        optuna.delete_study(study_name=study_name, storage=storage_a)
+        storage_a.engine.dispose()
+        storage_b.engine.dispose()
+        engine_a.dispose()
+        engine_b.dispose()
+
+
+def test_acknowledged_prune_recovery_fences_lost_postgresql_owner() -> None:
+    import optuna
+
+    from auto_researcher.search.optuna.coordination import TellOwnershipMismatch
+    from auto_researcher.search.optuna.models import OptunaPrunerSpec
+    from auto_researcher.search.optuna.pruning import OptunaPruningAcknowledged
+
+    study_name = f"ar-prune-recovery-{uuid4()}"
+    spec = _v2_spec(sampler="random").model_copy(
+        update={
+            "pruner": OptunaPrunerSpec(type="threshold", options={"upper": 0.5}),
+            "intermediate_reporting": True,
+        }
+    )
+    owner, storage_a, engine_a, identity = _v2_runtime(
+        study_name, "prune-owner", spec, prepare=True
+    )
+    recovery, storage_b, engine_b, _ = _v2_runtime(study_name, "prune-recovery", spec)
+    try:
+        reference, old_claim = owner.ask_and_claim_trial(
+            identity,
+            spec,
+            trial_budget=spec.trial_budget,
+            claim_ttl=timedelta(seconds=1),
+        )
+        reporter = owner.intermediate_reporter(spec=spec, reference=reference)
+        assert reporter.report(0.8, 4) is True
+        with pytest.raises(OptunaPruningAcknowledged):
+            reporter.acknowledge_pruning()
+
+        time.sleep(1.2)
+        assert recovery.coordination is not None
+        recovery_claim = recovery.coordination.take_over_stale(
+            study_name=study_name,
+            trial_number=reference.trial_number,
+            recovery_worker_id="prune-recovery",
+            ttl=timedelta(seconds=30),
+        )
+        outcome = recovery.prune_claimed_trial(
+            claim=recovery_claim,
+            spec=spec,
+            reference=reference,
+            reported_at=datetime.now(timezone.utc),
+        )
+        assert outcome.status.value == "PRUNED"
+        assert outcome.pruned_at_step == 4
+        assert outcome.objective_values == ()
+
+        with pytest.raises(TellOwnershipMismatch):
+            owner.prune_claimed_trial(
+                claim=old_claim,
+                spec=spec,
+                reference=reference,
+                reported_at=datetime.now(timezone.utc),
+            )
+        frozen = optuna.load_study(
+            study_name=study_name,
+            storage=storage_b,
+        ).get_trials()[reference.trial_number]
+        assert frozen.state == optuna.trial.TrialState.PRUNED
+        assert frozen.intermediate_values == {4: 0.8}
+    finally:
+        optuna.delete_study(study_name=study_name, storage=storage_a)
+        storage_a.engine.dispose()
+        storage_b.engine.dispose()
+        engine_a.dispose()
+        engine_b.dispose()
+
+
+def test_sampler_specific_seed_policy_uses_one_postgresql_study() -> None:
+    import optuna
+
+    for sampler_type in ("qmc", "grid", "brute_force"):
+        study_name = f"ar-seed-{sampler_type}-{uuid4()}"
+        spec = _v2_spec(sampler=sampler_type)
+        first, storage_a, engine_a, identity = _v2_runtime(
+            study_name, f"{sampler_type}-a", spec, prepare=True
+        )
+        second, storage_b, engine_b, _ = _v2_runtime(
+            study_name, f"{sampler_type}-b", spec
+        )
+        try:
+            first_sampler = first._load_study(study_name, spec).sampler
+            second_sampler = second._load_study(study_name, spec).sampler
+            if sampler_type == "qmc":
+                assert first_sampler._seed == second_sampler._seed == spec.seed
+            elif sampler_type == "grid":
+                assert first_sampler._all_grids == second_sampler._all_grids
+            else:
+                assert first_sampler._rng._rng is None
+                assert second_sampler._rng._rng is None
+
+            first_reference, first_outcome = _complete_v2_trial(
+                first, identity, spec, 0
+            )
+            second_reference, second_outcome = _complete_v2_trial(
+                second, identity, spec, 1
+            )
+            assert (
+                first_reference.study_name == second_reference.study_name == study_name
+            )
+            assert first_outcome.status.value == "COMPLETE"
+            assert second_outcome.status.value == "COMPLETE"
+            assert (
+                len(optuna.load_study(study_name=study_name, storage=storage_b).trials)
+                == 2
+            )
+        finally:
+            optuna.delete_study(study_name=study_name, storage=storage_a)
+            storage_a.engine.dispose()
+            storage_b.engine.dispose()
+            engine_a.dispose()
+            engine_b.dispose()

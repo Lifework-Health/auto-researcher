@@ -77,6 +77,33 @@ def _request(*, maximum_epochs: int = 50) -> SearchRequest:
     )
 
 
+def test_bounded_optuna_11_7_acceptance_template_selects_native_v2() -> None:
+    path = (
+        Path(__file__).parents[2]
+        / "examples/tasks/feta_seg_search/optuna-11-7-bounded-acceptance.yaml"
+    )
+    selected, runtime = _load_task_configuration(path, "feta_seg_search", "1.0")
+    request = SearchRequest(
+        request_id="feta-11-7-acceptance",
+        hypothesis_id="hypothesis",
+        search_type=SearchType.OPTUNA,
+        target="mean_subject_macro_dice",
+        search_space=selected,
+        experiment_budget=int(selected["trial_budget"]),
+        rationale="Validate the checked-in post-merge acceptance envelope.",
+    )
+    spec = FeTASegSearchTask().create_optuna_study_spec(
+        default_feta_search_contract(maximum_experiments=6), request
+    )
+
+    assert spec.schema_version == "2.0"
+    assert spec.sampler_spec.type == "random"
+    assert spec.pruner.type == "none"
+    assert spec.trial_budget == 6
+    assert spec.diagnostics.parameter_importance
+    assert runtime["options"]["gpu_scheduler"]["physical_gpu_index"] == 0
+
+
 def _metrics(configuration: FeTASegSearchConfiguration) -> dict:
     rows = []
     for index in range(14):

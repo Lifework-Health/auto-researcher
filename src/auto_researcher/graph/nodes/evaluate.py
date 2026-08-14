@@ -17,6 +17,8 @@ from auto_researcher.tasks.artifacts import (
     artefact_references,
 )
 from auto_researcher.tasks.scientific_json import SCIENTIFIC_JSON_ENCODING_VERSION
+from auto_researcher.search.optuna.pruning import OptunaPruningAcknowledged
+from auto_researcher.tasks.protocols import IntermediateReportingEvaluator
 
 if TYPE_CHECKING:
     from auto_researcher.runtime.dependencies import RuntimeDependencies
@@ -199,7 +201,79 @@ def evaluate_experiment(
             raise RuntimeError("conflicting_completed_evaluation_identity")
         result = validate_reused_evaluation(existing, dependencies)
     else:
-        result = dependencies.evaluator.evaluate(experiment, state["contract"])
+        optuna_spec = state.get("optuna_study_spec")
+        optuna_summary = state.get("optuna_study_state")
+        pruning_enabled = bool(
+            optuna_spec is not None
+            and optuna_summary is not None
+            and optuna_summary.current_trial is not None
+            and optuna_spec.pruner.type != "none"
+        )
+        if pruning_enabled:
+            assert (
+                optuna_spec is not None
+                and optuna_summary is not None
+                and optuna_summary.current_trial is not None
+            )
+            if not isinstance(dependencies.evaluator, IntermediateReportingEvaluator):
+                raise RuntimeError(
+                    "optuna_pruner_requires_intermediate_reporting_evaluator"
+                )
+            assert dependencies.optuna_backend is not None
+            try:
+                reporter = dependencies.optuna_backend.intermediate_reporter(
+                    spec=optuna_spec,
+                    reference=optuna_summary.current_trial,
+                )
+            except RuntimeError as exc:
+                if str(exc) != "optuna_intermediate_trial_not_live_after_restart":
+                    raise
+                outcome = (
+                    dependencies.optuna_backend.recover_interrupted_reporting_trial(
+                        spec=optuna_spec,
+                        reference=optuna_summary.current_trial,
+                        reported_at=dependencies.clock(),
+                    )
+                )
+                return {
+                    "evaluation_result": None,
+                    "verification_result": None,
+                    "optuna_trial_outcome": outcome,
+                    "optuna_trial_pruned": (outcome.status.value == "PRUNED"),
+                    "optuna_trial_operational_terminal": True,
+                    "optuna_evaluation_reused": False,
+                    "budget": state["budget"],
+                    "errors": [],
+                    "executed_nodes": ["evaluate_experiment_recovered_terminal"],
+                }
+            try:
+                result = dependencies.evaluator.evaluate_with_intermediate_reporting(
+                    experiment,
+                    state["contract"],
+                    reporter,
+                )
+            except OptunaPruningAcknowledged:
+                outcome = dependencies.optuna_backend.prune_trial(
+                    spec=optuna_spec,
+                    reference=optuna_summary.current_trial,
+                    reported_at=dependencies.clock(),
+                )
+                cost = float(
+                    getattr(dependencies.evaluator, "cost_per_experiment", 0.0)
+                )
+                return {
+                    "evaluation_result": None,
+                    "verification_result": None,
+                    "optuna_trial_outcome": outcome,
+                    "optuna_trial_pruned": True,
+                    "optuna_trial_operational_terminal": True,
+                    "optuna_evaluation_reused": False,
+                    "budget": state["budget"].record_experiment(cost),
+                    "errors": [],
+                    "executed_nodes": ["evaluate_experiment_pruned"],
+                }
+        else:
+            result = dependencies.evaluator.evaluate(experiment, state["contract"])
         if result.success and result.artefact_references:
             if (
                 result.experiment_id != experiment.experiment_id
@@ -237,6 +311,9 @@ def evaluate_experiment(
     )
     return {
         "evaluation_result": result,
+        "optuna_trial_pruned": False,
+        "optuna_trial_operational_terminal": False,
+        "optuna_evaluation_reused": reused,
         "budget": budget,
         "errors": errors,
         "executed_nodes": [
