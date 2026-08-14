@@ -1,0 +1,32 @@
+profile: feta-a4-full-strength-acceptance-v1
+notes:
+  - This is a bounded post-merge A4 acceptance profile, not a long optimisation campaign.
+  - Model credentials remain Managed Secrets references in the surrounding runtime configuration.
+search:
+  type: OPENEVOLVE
+  openevolve:
+    native_controller: true
+    population_size: 12
+    archive_size: 12
+    num_islands: 3
+    migration_interval: 2
+    migration_rate: 0.25
+    feature_dimensions: [primary_score, policy_complexity]
+    feature_bins: 6
+    maximum_generations: 4
+    maximum_candidate_evaluations: 24
+    maximum_model_calls: 24
+    maximum_wall_time_seconds: 14400
+    parallel_evaluations: 3
+    checkpoint_interval: 2
+    random_seed: 20260814
+    diff_based_evolution: false
+    use_template_stochasticity: true
+    semantic_candidate_identity: TrainingPolicy@feta-training-policy-v1
+    evaluation_reuse: evaluation-reuse-v2
+    native_checkpoint_resume: true
+resources:
+  mode: equivalent_pool
+  resource_type: gpu
+  quantity_per_candidate: 1
+  preferred_candidate_count: 3

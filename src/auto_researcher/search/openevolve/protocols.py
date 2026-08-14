@@ -39,6 +39,16 @@ class EvolvableComponent(Protocol):
 
 
 @runtime_checkable
+class ScientificCandidateComponent(Protocol):
+    """Optional task-owned canonical identity projection for semantic reuse."""
+
+    def canonical_scientific_configuration(
+        self,
+        preparation: CandidatePreparationResult,
+    ) -> dict: ...
+
+
+@runtime_checkable
 class MutationOperator(Protocol):
     operator_id: str
     operator_version: str

@@ -47,21 +47,10 @@ from auto_researcher.tasks.protocols import (
 )
 
 DISABLED_UPSTREAM_FEATURES = (
-    "controller",
-    "evaluator",
-    "provider_clients",
-    "embeddings",
-    "network",
-    "subprocess_execution",
-    "package_installation",
-    "filesystem_mutation",
-    "persistence",
-    "resume",
-    "budgets",
-    "stopping",
-    "scientific_judgement",
-    "parallel_execution",
-    "telemetry_prompts",
+    "arbitrary_package_installation",
+    "direct_provider_credential_access",
+    "arbitrary_network_access",
+    "unrestricted_host_filesystem",
 )
 
 
@@ -102,7 +91,7 @@ def validate_upstream_dependency(contract: UpstreamOpenEvolveAdapterContract) ->
         raise ValueError("upstream_openevolve_identity_mismatch")
     if installed_record_hash() != UPSTREAM_INSTALLED_RECORD_HASH:
         raise ValueError("upstream_openevolve_dependency_hash_mismatch")
-    from openevolve.database import Program
+    from openevolve.database import Program  # type: ignore[import-untyped]
 
     required = {"id", "code", "parent_id", "generation", "metrics", "metadata"}
     if not required.issubset(Program.__dataclass_fields__):
@@ -252,8 +241,11 @@ class UpstreamOpenEvolveAdapter:
         self, candidates: tuple[OpenEvolveCandidate, ...], scores: dict[str, float]
     ) -> str:
         """Use upstream population bookkeeping as a suggestion, never authority."""
-        from openevolve.config import DatabaseConfig
-        from openevolve.database import Program, ProgramDatabase
+        from openevolve.config import DatabaseConfig  # type: ignore[import-untyped]
+        from openevolve.database import (  # type: ignore[import-untyped]
+            Program,
+            ProgramDatabase,
+        )
 
         database = ProgramDatabase(
             DatabaseConfig(
@@ -302,6 +294,10 @@ def default_adapter_contract(lock_path: Path) -> UpstreamOpenEvolveAdapterContra
             "program_dataclass": True,
             "database_mapping": True,
             "direct_provider_calls": False,
+            "native_controller": True,
+            "native_population_archive": True,
+            "resource_broker_parallel_adapter": True,
+            "scientific_evaluator_adapter": True,
         },
     )
 
