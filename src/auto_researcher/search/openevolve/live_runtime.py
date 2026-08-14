@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 import yaml
 
 from auto_researcher.agents.call_store import AgentCallStore, SQLiteAgentCallStore
 from auto_researcher.providers.protocols import StructuredModelClient
+from auto_researcher.providers.anthropic import ANTHROPIC_ENVIRONMENT_SECRET
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.identity import component_interface_identity
 from auto_researcher.search.openevolve.live_boundary import (
@@ -37,6 +38,14 @@ from auto_researcher.search.openevolve.upstream_models import (
     HardenedExecutorPolicy,
 )
 from auto_researcher.search.openevolve.hardened_executor import HardenedDockerExecutor
+from auto_researcher.secrets import (
+    ResolvedSecret,
+    SecretProvider,
+    SecretReference,
+    SecretResolutionError,
+    SecretResolutionErrorCode,
+    provider_for_reference,
+)
 from auto_researcher.tasks.protocols import (
     MetadataOnlyLiveMutationCapableTask,
     ResearchTask,
@@ -48,7 +57,7 @@ class LiveRuntimeModel(BaseModel):
 
 
 class MetadataOnlyLiveOpenEvolveConfiguration(LiveRuntimeModel):
-    """Credential-free file references accepted by the standard runtime."""
+    """Value-free artifact and provider-secret references for live mutation."""
 
     protocol_version: Literal["metadata-only-live-openevolve-runtime-v1"] = (
         "metadata-only-live-openevolve-runtime-v1"
@@ -60,6 +69,13 @@ class MetadataOnlyLiveOpenEvolveConfiguration(LiveRuntimeModel):
     prompt_file: Path
     executor_policy_file: Path
     isolation_evidence_file: Path
+    credential: SecretReference = ANTHROPIC_ENVIRONMENT_SECRET
+
+    @model_validator(mode="after")
+    def credential_is_required(self) -> "MetadataOnlyLiveOpenEvolveConfiguration":
+        if not self.credential.required:
+            raise ValueError("live_mutation_credentials_must_be_required")
+        return self
 
     @field_validator(
         "approval_file",
@@ -85,6 +101,7 @@ class MetadataOnlyLiveOpenEvolveRuntime:
     configuration: MetadataOnlyLiveOpenEvolveConfiguration
     thread_id: str
     provider_factory: ProviderFactory | None = None
+    secret_provider_factory: Callable[[SecretReference], SecretProvider] | None = None
     executor_validator: Callable[[HardenedDockerExecutor], None] | None = None
 
     def __post_init__(self) -> None:
@@ -124,6 +141,9 @@ def _load_artifact_object(path: Path) -> dict:
 
 def default_live_mutation_provider_factory(
     contract: OpenEvolveModelBridgeContract,
+    credential_reference: SecretReference = ANTHROPIC_ENVIRONMENT_SECRET,
+    *,
+    secret_provider_factory: Callable[[SecretReference], SecretProvider] | None = None,
 ) -> ProviderFactory | None:
     """Return the sole production provider path; fake production is injected."""
 
@@ -133,10 +153,22 @@ def default_live_mutation_provider_factory(
     if config.provider != "anthropic":
         raise ValueError("live_mutation_provider_not_supported")
 
+    resolved_credential: ResolvedSecret | None = None
+
     def create() -> StructuredModelClient:
+        nonlocal resolved_credential
         from auto_researcher.providers.anthropic import create_anthropic_client
 
-        return create_anthropic_client(config)
+        if resolved_credential is None:
+            resolver_factory = secret_provider_factory or provider_for_reference
+            resolver = resolver_factory(credential_reference)
+            resolved_credential = resolver.resolve(credential_reference)
+            if resolved_credential is None:
+                raise SecretResolutionError(
+                    SecretResolutionErrorCode.MISSING,
+                    credential_reference,
+                ) from None
+        return create_anthropic_client(config, credential=resolved_credential)
 
     return create
 
@@ -228,7 +260,11 @@ def assemble_metadata_only_live_openevolve(
         provider_factory=(
             runtime.provider_factory
             if runtime.provider_factory is not None
-            else default_live_mutation_provider_factory(bridge_contract)
+            else default_live_mutation_provider_factory(
+                bridge_contract,
+                runtime.configuration.credential,
+                secret_provider_factory=runtime.secret_provider_factory,
+            )
         ),
         now=now,
         system_prompt=prompt,

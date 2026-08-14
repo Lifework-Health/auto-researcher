@@ -268,18 +268,32 @@ def _load_live_openevolve_runtime(
         raise ValueError("openevolve_live_mutation section must be a mapping")
     prohibited = {
         "api_key",
-        "credential",
+        "access_token",
+        "credential_value",
         "credentials",
+        "password",
         "secret",
+        "secret_value",
+        "service_account_json",
         "token",
         "provider_client",
         "provider_url",
     }
     if prohibited & _nested_keys(configured):
-        raise ValueError("live mutation credentials must come from the environment")
+        raise ValueError("live mutation credentials must use a secret reference")
+    configuration_payload = dict(configured)
+    credential_payload = configuration_payload.get("credential")
+    if credential_payload is not None:
+        if not isinstance(credential_payload, dict):
+            raise ValueError(
+                "openevolve_live_mutation.credential must be a secret reference mapping"
+            )
+        from auto_researcher.secrets import parse_secret_reference
+
+        configuration_payload["credential"] = parse_secret_reference(credential_payload)
     return MetadataOnlyLiveOpenEvolveRuntime(
         configuration=MetadataOnlyLiveOpenEvolveConfiguration.model_validate(
-            configured
+            configuration_payload
         ),
         thread_id=thread_id,
     )

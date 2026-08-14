@@ -19,7 +19,9 @@ auto-researcher run start \
   --knowledge-retrievals-db /protected/state/knowledge.sqlite
 ```
 
-Resume uses the same configuration and store paths. The runtime rejects relative/missing artifacts, embedded credentials, non-metadata-only approval, identity drift, expired approval, a non-durable model-call store, zero live-call budget, local sandbox policy or executor/image mismatch before provider dispatch. Anthropic credentials are read from `ANTHROPIC_API_KEY` only after durable reservation; provider construction has no retries. Fake production is available only through dependency injection in offline tests, never as a CLI fallback.
+Resume uses the same configuration and store paths. The runtime rejects relative/missing artifacts, raw credential values, non-metadata-only approval, identity drift, expired approval, a non-durable model-call store, zero live-call budget, local sandbox policy or executor/image mismatch before provider dispatch. Omitting `credential` uses the backwards-compatible `ANTHROPIC_API_KEY` environment reference. Production deployments may instead provide a value-free Google Secret Manager reference with a fully-qualified `projects/<project>/secrets/<secret>` identifier and ADC/attached workload identity. Application code never enables APIs or changes IAM; protected environment loading remains the fallback.
+
+Resolution remains after durable dispatch ownership. Approval or executor preflight failure, completed-call replay, and failure to obtain `DISPATCHING` ownership perform zero secret accesses. The first new dispatch in an assembled runtime resolves once; subsequent calls reuse the same runtime-only `ResolvedSecret` while constructing fresh zero-retry clients. A reconstructed runtime starts with only the `SecretReference`: replay remains credential-free, while its first new dispatch resolves again and observes rotation. The value is never persisted, serialised, written to a disk cache or incorporated into scientific/model-call identity. Fake production is available only through dependency injection in offline tests, never as a CLI fallback.
 
 ## Required identities
 

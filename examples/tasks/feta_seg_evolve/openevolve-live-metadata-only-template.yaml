@@ -1,8 +1,8 @@
 task: {id: feta_seg_evolve, version: "1.0"}
 agents: {mode: mock}
 
-# Every referenced artifact is credential-free and must be generated/reviewed
-# for this exact run before launch. Credentials remain environment-only.
+# Every artifact and secret reference is value-free and must be reviewed for this run.
+# Omit credential to use ANTHROPIC_API_KEY through EnvironmentSecretProvider.
 openevolve_live_mutation:
   protocol_version: metadata-only-live-openevolve-runtime-v1
   mode: metadata_only
@@ -12,10 +12,19 @@ openevolve_live_mutation:
   prompt_file: /absolute/path/to/auto_researcherv2.1/src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v2.md
   executor_policy_file: /absolute/protected/path/hardened-executor-policy.json
   isolation_evidence_file: /absolute/protected/path/executor-isolation-evidence.json
+  # Production example (non-sensitive reference; resolved lazily through ADC):
+  credential:
+    logical_name: anthropic_api_key
+    provider: google_secret_manager
+    provider_identifier: projects/<project>/secrets/<secret>
+    version: latest
+    required: true
 
 search:
   type: OPENEVOLVE
   openevolve:
+    # Minimal paid-call operational canary only; not a recommended/default
+    # evolutionary-search population. PR 11.6 / #53 addresses native parity.
     population_size: 1
     maximum_generations: 2
     maximum_candidate_evaluations: 3

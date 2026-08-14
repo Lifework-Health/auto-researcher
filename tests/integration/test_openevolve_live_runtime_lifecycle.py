@@ -354,7 +354,7 @@ def test_standard_cli_launches_metadata_only_live_lifecycle(tmp_path, monkeypatc
     monkeypatch.setattr("auto_researcher.cli.default_task_registry", lambda: Registry())
     monkeypatch.setattr(
         "auto_researcher.search.openevolve.live_runtime.default_live_mutation_provider_factory",
-        lambda bridge: lambda: provider,
+        lambda bridge, credential, *, secret_provider_factory=None: lambda: provider,
     )
 
     def cheap_hardened_prepare(self, candidate, component, policy, base):
