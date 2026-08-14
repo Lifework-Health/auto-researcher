@@ -17,6 +17,7 @@ from auto_researcher.search.optuna.models import (
     OptunaStudySpec,
 )
 from auto_researcher.search.optuna.operational import OptunaOperationalRecordStore
+from auto_researcher.search.optuna.space import uses_trial_suggestions
 
 
 SamplerFactory = Callable[[OptunaSamplerSpec, "SamplerBuildContext"], Any]
@@ -30,18 +31,58 @@ class SamplerBuildContext:
     shared_workers: bool
     operational_store: OptunaOperationalRecordStore
 
+    @property
+    def constraints_callback(self) -> Callable[[Any], tuple[float, ...]] | None:
+        if not self.study_spec.constraints:
+            return None
+        return self.operational_store.constraints_for_frozen_trial
+
+
+@dataclass(frozen=True)
+class ApprovedSamplerRegistration:
+    """Runtime-reviewed custom sampler contract; configuration cannot assert it."""
+
+    factory: SamplerFactory
+    supports_single_objective: bool = True
+    supports_multi_objective: bool = False
+    supports_constraints: bool = False
+    shared_worker_safe: bool = False
+    supports_dynamic_space: bool = False
+    optional_dependency_identity: str | None = None
+
 
 @dataclass
 class ApprovedOptunaComponentRegistry:
     """Runtime-only extension seam; configuration never imports Python paths."""
 
-    sampler_factories: dict[str, SamplerFactory] = field(default_factory=dict)
+    sampler_registrations: dict[str, ApprovedSamplerRegistration] = field(
+        default_factory=dict
+    )
     pruner_factories: dict[str, PrunerFactory] = field(default_factory=dict)
 
-    def register_sampler(self, name: str, factory: SamplerFactory) -> None:
-        if name in NATIVE_SAMPLERS or name in self.sampler_factories:
+    def register_sampler(
+        self,
+        name: str,
+        factory: SamplerFactory,
+        *,
+        supports_single_objective: bool = True,
+        supports_multi_objective: bool = False,
+        supports_constraints: bool = False,
+        shared_worker_safe: bool = False,
+        supports_dynamic_space: bool = False,
+        optional_dependency_identity: str | None = None,
+    ) -> None:
+        if name in NATIVE_SAMPLERS or name in self.sampler_registrations:
             raise ValueError("Optuna sampler registry name is reserved or duplicated")
-        self.sampler_factories[name] = factory
+        self.sampler_registrations[name] = ApprovedSamplerRegistration(
+            factory=factory,
+            supports_single_objective=supports_single_objective,
+            supports_multi_objective=supports_multi_objective,
+            supports_constraints=supports_constraints,
+            shared_worker_safe=shared_worker_safe,
+            supports_dynamic_space=supports_dynamic_space,
+            optional_dependency_identity=optional_dependency_identity,
+        )
 
     def register_pruner(self, name: str, factory: PrunerFactory) -> None:
         if name in NATIVE_PRUNERS or name in self.pruner_factories:
@@ -147,16 +188,29 @@ def build_sampler(
     """Construct only public native samplers or runtime-approved extensions."""
 
     sampler_type = configuration.type
-    custom = registry.sampler_factories.get(sampler_type)
+    custom = registry.sampler_registrations.get(sampler_type)
+    objective_count = len(context.study_spec.objective_specs)
     if custom is not None:
-        sampler = custom(configuration, context)
+        if objective_count == 1 and not custom.supports_single_objective:
+            raise ValueError("optuna_custom_sampler_single_objective_incompatible")
+        if objective_count > 1 and not custom.supports_multi_objective:
+            raise ValueError("optuna_custom_sampler_multi_objective_incompatible")
+        if context.study_spec.constraints and not custom.supports_constraints:
+            raise ValueError("optuna_custom_sampler_constraints_unsupported")
+        if context.shared_workers and not custom.shared_worker_safe:
+            raise ValueError("optuna_custom_sampler_shared_worker_incompatible")
+        if (
+            uses_trial_suggestions(context.study_spec)
+            and not custom.supports_dynamic_space
+        ):
+            raise ValueError("optuna_custom_sampler_dynamic_space_incompatible")
+        sampler = custom.factory(configuration, context)
         samplers, _ = _imports()
         if not isinstance(sampler, samplers.BaseSampler):
             raise TypeError("approved Optuna sampler factory must return BaseSampler")
         return sampler
     if sampler_type not in NATIVE_SAMPLERS:
         raise ValueError("optuna_sampler_not_approved")
-    objective_count = len(context.study_spec.objective_specs)
     if objective_count > 1 and sampler_type not in MULTI_OBJECTIVE_SAMPLERS:
         raise ValueError("optuna_sampler_multi_objective_incompatible")
     if context.shared_workers and sampler_type not in SHARED_WORKER_SAMPLERS:

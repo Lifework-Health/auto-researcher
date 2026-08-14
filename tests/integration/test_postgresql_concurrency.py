@@ -1220,3 +1220,72 @@ def test_native_constraints_are_durable_and_visible_to_later_postgresql_worker()
         storage_b.engine.dispose()
         engine_a.dispose()
         engine_b.dispose()
+
+
+def test_acknowledged_prune_recovery_fences_lost_postgresql_owner() -> None:
+    import optuna
+
+    from auto_researcher.search.optuna.coordination import TellOwnershipMismatch
+    from auto_researcher.search.optuna.models import OptunaPrunerSpec
+    from auto_researcher.search.optuna.pruning import OptunaPruningAcknowledged
+
+    study_name = f"ar-prune-recovery-{uuid4()}"
+    spec = _v2_spec(sampler="random").model_copy(
+        update={
+            "pruner": OptunaPrunerSpec(type="threshold", options={"upper": 0.5}),
+            "intermediate_reporting": True,
+        }
+    )
+    owner, storage_a, engine_a, identity = _v2_runtime(
+        study_name, "prune-owner", spec, prepare=True
+    )
+    recovery, storage_b, engine_b, _ = _v2_runtime(study_name, "prune-recovery", spec)
+    try:
+        reference, old_claim = owner.ask_and_claim_trial(
+            identity,
+            spec,
+            trial_budget=spec.trial_budget,
+            claim_ttl=timedelta(seconds=1),
+        )
+        reporter = owner.intermediate_reporter(spec=spec, reference=reference)
+        assert reporter.report(0.8, 4) is True
+        with pytest.raises(OptunaPruningAcknowledged):
+            reporter.acknowledge_pruning()
+
+        time.sleep(1.2)
+        assert recovery.coordination is not None
+        recovery_claim = recovery.coordination.take_over_stale(
+            study_name=study_name,
+            trial_number=reference.trial_number,
+            recovery_worker_id="prune-recovery",
+            ttl=timedelta(seconds=30),
+        )
+        outcome = recovery.prune_claimed_trial(
+            claim=recovery_claim,
+            spec=spec,
+            reference=reference,
+            reported_at=datetime.now(timezone.utc),
+        )
+        assert outcome.status.value == "PRUNED"
+        assert outcome.pruned_at_step == 4
+        assert outcome.objective_values == ()
+
+        with pytest.raises(TellOwnershipMismatch):
+            owner.prune_claimed_trial(
+                claim=old_claim,
+                spec=spec,
+                reference=reference,
+                reported_at=datetime.now(timezone.utc),
+            )
+        frozen = optuna.load_study(
+            study_name=study_name,
+            storage=storage_b,
+        ).get_trials()[reference.trial_number]
+        assert frozen.state == optuna.trial.TrialState.PRUNED
+        assert frozen.intermediate_values == {4: 0.8}
+    finally:
+        optuna.delete_study(study_name=study_name, storage=storage_a)
+        storage_a.engine.dispose()
+        storage_b.engine.dispose()
+        engine_a.dispose()
+        engine_b.dispose()

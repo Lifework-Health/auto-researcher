@@ -25,7 +25,9 @@ class OptunaIntermediateReporter:
         self._store = operational_store
         self._values: dict[int, float] = {}
         self._prune_requested = False
-        self._pruned_at_step: int | None = None
+        self._prune_requested_at_step: int | None = None
+        self._prune_acknowledged = False
+        self._prune_acknowledged_at_step: int | None = None
 
     def report(self, value: float, step: int) -> bool:
         numeric = float(value)
@@ -38,18 +40,31 @@ class OptunaIntermediateReporter:
         self._values[step] = numeric
         requested = bool(self._trial.should_prune())
         self._prune_requested = self._prune_requested or requested
-        if requested and self._pruned_at_step is None:
-            self._pruned_at_step = step
+        if requested and self._prune_requested_at_step is None:
+            self._prune_requested_at_step = step
         self._store.persist_intermediate(
             study_name=self._study_name,
             trial_number=self._trial.number,
             values=self._values,
             prune_requested=self._prune_requested,
-            pruned_at_step=self._pruned_at_step,
+            prune_requested_at_step=self._prune_requested_at_step,
+            prune_acknowledged=self._prune_acknowledged,
+            prune_acknowledged_at_step=self._prune_acknowledged_at_step,
         )
         return requested
 
     def acknowledge_pruning(self) -> None:
         if not self._prune_requested:
             raise RuntimeError("Optuna pruning was not requested")
+        self._prune_acknowledged = True
+        self._prune_acknowledged_at_step = self._prune_requested_at_step
+        self._store.persist_intermediate(
+            study_name=self._study_name,
+            trial_number=self._trial.number,
+            values=self._values,
+            prune_requested=True,
+            prune_requested_at_step=self._prune_requested_at_step,
+            prune_acknowledged=True,
+            prune_acknowledged_at_step=self._prune_acknowledged_at_step,
+        )
         raise OptunaPruningAcknowledged("optuna_pruning_cooperatively_acknowledged")

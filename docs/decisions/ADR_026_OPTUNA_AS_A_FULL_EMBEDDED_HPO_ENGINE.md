@@ -61,6 +61,15 @@ Successive Halving, Hyperband, Threshold, and Wilcoxon. Runtime code may registe
 an approved `BaseSampler` or `BasePruner` factory under a logical name. YAML can
 never contain an arbitrary import path.
 
+A custom sampler registration carries runtime-reviewed capability metadata for
+single- and multi-objective use, native constraints, shared-worker safety, and
+dynamic spaces. Undeclared capabilities are unsupported. These claims cannot be
+supplied by YAML, and the adapter validates the complete study combination before
+constructing the sampler or creating/asking a study. A constraint-capable factory
+receives the durable constraint callback in `SamplerBuildContext` and must bind it
+explicitly; returning `BaseSampler` alone is insufficient and never triggers a
+fallback to TPE.
+
 ### Search spaces and objectives
 
 V1 static spaces continue through `Study.ask(fixed_distributions=...)`. V2 uses
@@ -89,9 +98,11 @@ silently discard a completed projection required by a later worker.
 
 A task may optionally implement the intermediate-reporting evaluator protocol.
 The narrow reporter calls native `Trial.report()` and `Trial.should_prune()` and
-persists each finite step/value plus the prune decision. Evaluation stops only at
-a cooperative safe checkpoint. Auto Researcher never forcibly kills arbitrary
-in-process Python.
+persists each finite step/value plus a prune request and its exact step. A request
+is not an execution acknowledgement. Evaluation stops only at a cooperative safe
+checkpoint, where `acknowledge_pruning()` durably records a distinct monotonic
+acknowledgement and the same step before raising the cooperative exception. Auto
+Researcher never forcibly kills arbitrary in-process Python.
 
 After cooperative acknowledgement, public `Study.tell(state=PRUNED)` records the
 terminal state without a fabricated final objective. Worker and resource leases
@@ -99,10 +110,20 @@ are released. Optuna 4.9 does not support multi-objective `report`/`should_prune
 so v2 rejects multi-objective pruning rather than scalarizing.
 
 Optuna 4.9 also has no public API to reconstruct a live reporting `Trial` after
-process loss. A persisted prune decision is finalized as `PRUNED`; otherwise a
-detached interrupted trial becomes `FAIL` and a later native ask replaces it.
-This is explicitly classified as weakened, and sampler RNG state is likewise not
-durably stored by upstream. Distributed outcomes are schedule-dependent.
+process loss. A persisted request plus acknowledgement may be finalized as
+`PRUNED`. A request without acknowledgement, or an interruption without a prune
+request, becomes `FAIL`; neither path fabricates a final objective, and a later
+native ask may replace the failed trial. Replaying an acknowledged prune is
+idempotent. This boundary is explicitly classified as weakened, and sampler RNG
+state is likewise not durably stored by upstream. Distributed outcomes are
+schedule-dependent.
+
+Grid and brute-force exhaustion remain native. Their `after_trial` hooks call
+`Study.stop()`, which raises outside `Study.optimize()` only after public
+ask/tell has committed the terminal state. The adapter accepts solely that known
+Optuna 4.9 stop error after verifying the exact committed state and objective
+values. The outer trial budget remains stopping authority; no extra trial/value
+is fabricated and unrelated runtime errors propagate.
 
 ### PostgreSQL and resources
 

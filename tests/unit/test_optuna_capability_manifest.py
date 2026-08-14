@@ -108,6 +108,7 @@ def test_manifest_claims_name_real_runtime_probes_and_adapter_contracts() -> Non
             CapabilityClassification.PRESERVED_VIA_ADAPTER,
         }:
             assert item.probe in test_names
+        assert all(probe in test_names for probe in item.probes)
         if item.classification is CapabilityClassification.PRESERVED_VIA_ADAPTER:
             assert item.adapter_contract
         if item.classification in {

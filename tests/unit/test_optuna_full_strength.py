@@ -251,7 +251,7 @@ def test_approved_custom_sampler_and_pruner_registry_has_no_import_paths() -> No
         "approved-nop",
         lambda _configuration: optuna.pruners.NopPruner(),
     )
-    spec = _spec()
+    spec = _spec(dynamic=False).model_copy(update={"schema_version": "1.0"})
     context = SamplerBuildContext(
         spec,
         spec.seed,
@@ -266,6 +266,144 @@ def test_approved_custom_sampler_and_pruner_registry_has_no_import_paths() -> No
         build_pruner(OptunaPrunerSpec(type="approved-nop"), registry),
         optuna.pruners.NopPruner,
     )
+
+
+def test_custom_sampler_capabilities_default_to_fail_closed() -> None:
+    registry = ApprovedOptunaComponentRegistry()
+    registry.register_sampler(
+        "conservative-random",
+        lambda _configuration, context: optuna.samplers.RandomSampler(
+            seed=context.seed
+        ),
+    )
+    storage = optuna.storages.InMemoryStorage()
+    store = OptunaOperationalRecordStore(storage)
+    simple = _spec(dynamic=False).model_copy(update={"schema_version": "1.0"})
+    assert isinstance(
+        build_sampler(
+            OptunaSamplerSpec(type="conservative-random"),
+            SamplerBuildContext(simple, simple.seed, False, store),
+            registry,
+        ),
+        optuna.samplers.RandomSampler,
+    )
+    incompatible = (
+        (_spec(constrained=True, dynamic=False), False, "constraints"),
+        (_spec(multi=True, dynamic=False), False, "multi_objective"),
+        (_spec(dynamic=False), True, "shared_worker"),
+        (_spec(dynamic=True), False, "dynamic_space"),
+    )
+    for study_spec, shared_workers, reason in incompatible:
+        with pytest.raises(ValueError, match=reason):
+            build_sampler(
+                OptunaSamplerSpec(type="conservative-random"),
+                SamplerBuildContext(
+                    study_spec,
+                    study_spec.seed,
+                    shared_workers,
+                    store,
+                ),
+                registry,
+            )
+
+
+def test_constraint_aware_custom_sampler_binds_and_invokes_durable_callback() -> None:
+    calls: list[int] = []
+    registry = ApprovedOptunaComponentRegistry()
+
+    def factory(_configuration, context):
+        callback = context.constraints_callback
+        assert callback is not None
+
+        def observed_callback(trial):
+            calls.append(trial.number)
+            return callback(trial)
+
+        return optuna.samplers.TPESampler(
+            seed=context.seed,
+            n_startup_trials=0,
+            constraints_func=observed_callback,
+        )
+
+    registry.register_sampler(
+        "constraint-aware",
+        factory,
+        supports_constraints=True,
+        supports_dynamic_space=True,
+    )
+    spec = _spec(constrained=True).model_copy(
+        update={"sampler": OptunaSamplerSpec(type="constraint-aware")}
+    )
+    backend = OptunaAskTellBackend(
+        optuna.storages.InMemoryStorage(),
+        component_registry=registry,
+    )
+    identity = _prepare(backend, spec, "custom-constraint-callback")
+    reference, _ = backend.ask_or_recover_trial(
+        identity, spec, slot_index=0, asked_at=NOW
+    )
+    experiment = backend.create_experiment_spec(
+        task=EchoTask(),
+        metadata=_metadata(),
+        spec=spec,
+        request=_request(),
+        reference=reference,
+    )
+    evaluation, verification = _terminal_models(
+        experiment, score=0.7, latency=3.0, compliant=False
+    )
+    outcome = backend.tell_trial(
+        spec=spec,
+        reference=reference,
+        experiment=experiment,
+        evaluation=evaluation,
+        verification=verification,
+        reported_at=NOW,
+    )
+    assert outcome.status == OptunaTrialStatus.COMPLETE
+    assert calls == [reference.trial_number]
+
+
+def test_explicit_shared_worker_safe_custom_sampler_is_accepted() -> None:
+    registry = ApprovedOptunaComponentRegistry()
+    registry.register_sampler(
+        "shared-random",
+        lambda _configuration, context: optuna.samplers.RandomSampler(
+            seed=context.seed
+        ),
+        shared_worker_safe=True,
+        supports_dynamic_space=True,
+    )
+    spec = _spec()
+    sampler = build_sampler(
+        OptunaSamplerSpec(type="shared-random"),
+        SamplerBuildContext(
+            spec,
+            spec.seed,
+            True,
+            OptunaOperationalRecordStore(optuna.storages.InMemoryStorage()),
+        ),
+        registry,
+    )
+    assert isinstance(sampler, optuna.samplers.RandomSampler)
+
+
+def test_false_custom_sampler_combination_fails_before_study_ask() -> None:
+    registry = ApprovedOptunaComponentRegistry()
+    registry.register_sampler(
+        "misdeclared-random",
+        lambda _configuration, context: optuna.samplers.RandomSampler(
+            seed=context.seed
+        ),
+    )
+    spec = _spec(constrained=True).model_copy(
+        update={"sampler": OptunaSamplerSpec(type="misdeclared-random")}
+    )
+    storage = optuna.storages.InMemoryStorage()
+    backend = OptunaAskTellBackend(storage, component_registry=registry)
+    with pytest.raises(ValueError, match="constraints_unsupported"):
+        _prepare(backend, spec, "custom-fails-before-ask")
+    assert optuna.study.get_all_study_names(storage=storage) == []
 
 
 def test_multi_objective_trials_use_three_equivalent_resources_without_identity_leak() -> (
@@ -385,6 +523,89 @@ def test_multi_objective_trials_use_three_equivalent_resources_without_identity_
     assert summary.pareto_trial_numbers == (0, 1, 2)
     assert all("gpu" not in reference.parameters for reference in references)
     assert all("gpu" not in experiment.configuration for experiment in experiments)
+
+
+def _exercise_finite_sampler_exhaustion(sampler: str, study_name: str) -> None:
+    spec = _spec(sampler=sampler, dynamic=False).model_copy(
+        update={
+            "parameters": (
+                CategoricalParameterSpec(name="choice", choices=("a", "b")),
+            ),
+            "trial_budget": 2,
+            "diagnostics": OptunaDiagnosticsSpec(),
+        }
+    )
+    backend = OptunaAskTellBackend(optuna.storages.InMemoryStorage())
+    identity = _prepare(backend, spec, study_name)
+    for slot, score in enumerate((0.25, 0.75)):
+        reference, _ = backend.ask_or_recover_trial(
+            identity, spec, slot_index=slot, asked_at=NOW
+        )
+        experiment = backend.create_experiment_spec(
+            task=EchoTask(),
+            metadata=_metadata(),
+            spec=spec,
+            request=_request(),
+            reference=reference,
+        )
+        evaluation, verification = _terminal_models(
+            experiment,
+            score=score,
+            latency=1.0,
+        )
+        outcome = backend.tell_trial(
+            spec=spec,
+            reference=reference,
+            experiment=experiment,
+            evaluation=evaluation,
+            verification=verification,
+            reported_at=NOW,
+        )
+        assert outcome.status == OptunaTrialStatus.COMPLETE
+        assert outcome.objective_values == (score,)
+    study = backend._load_study(identity.study_name, spec)
+    assert len(study.trials) == 2
+    assert [trial.state for trial in study.trials] == [
+        optuna.trial.TrialState.COMPLETE,
+        optuna.trial.TrialState.COMPLETE,
+    ]
+    assert [tuple(trial.values or ()) for trial in study.trials] == [
+        (0.25,),
+        (0.75,),
+    ]
+    summary = backend.load_study_summary(identity, spec, 2)
+    assert summary.trials_asked == summary.trial_budget == 2
+    assert summary.trials_completed == 2
+
+
+def test_grid_ask_tell_exhaustion_commits_native_state_and_values() -> None:
+    _exercise_finite_sampler_exhaustion("grid", "grid-exhaustion")
+
+
+def test_bruteforce_ask_tell_exhaustion_commits_native_state_and_values() -> None:
+    _exercise_finite_sampler_exhaustion("brute_force", "bruteforce-exhaustion")
+
+
+def test_exhaustion_adapter_does_not_swallow_unrelated_runtime_error() -> None:
+    class BrokenStudy:
+        message = "unrelated sampler failure"
+
+        def tell(self, *_args, **_kwargs):
+            raise RuntimeError(self.message)
+
+    study = BrokenStudy()
+    for message in (
+        "unrelated sampler failure",
+        "`Study.stop` is supposed to be invoked inside an objective function or a callback. extra",
+    ):
+        study.message = message
+        with pytest.raises(RuntimeError, match="unrelated|extra"):
+            OptunaAskTellBackend(optuna.storages.InMemoryStorage())._tell_public(
+                study,
+                0,
+                1.0,
+                state=optuna.trial.TrialState.COMPLETE,
+            )
 
 
 def test_native_pruner_factory_covers_exact_public_pruners() -> None:
@@ -566,6 +787,91 @@ def test_native_cooperative_pruning_is_durable_and_distinct_from_fail() -> None:
     assert outcome.objective_values == ()
     assert outcome.pruned_at_step == 3
     assert outcome.intermediate_values == {3: 0.8}
+
+
+def _interrupted_pruning_case(
+    name: str,
+    *,
+    value: float,
+    acknowledge: bool,
+):
+    spec = _spec(pruner=OptunaPrunerSpec(type="threshold", options={"upper": 0.5}))
+    storage = optuna.storages.InMemoryStorage()
+    owner = OptunaAskTellBackend(storage)
+    identity = _prepare(owner, spec, name)
+    reference, _ = owner.ask_or_recover_trial(
+        identity, spec, slot_index=0, asked_at=NOW
+    )
+    reporter = owner.intermediate_reporter(spec=spec, reference=reference)
+    requested = reporter.report(value, 3)
+    if acknowledge:
+        assert requested is True
+        with pytest.raises(OptunaPruningAcknowledged):
+            reporter.acknowledge_pruning()
+    restarted = OptunaAskTellBackend(storage)
+    outcome = restarted.recover_interrupted_reporting_trial(
+        spec=spec,
+        reference=reference,
+        reported_at=NOW,
+    )
+    return owner, restarted, reporter, spec, reference, outcome
+
+
+def test_prune_request_crash_before_acknowledgement_recovers_fail() -> None:
+    owner, _, reporter, spec, reference, outcome = _interrupted_pruning_case(
+        "prune-request-only-crash",
+        value=0.8,
+        acknowledge=False,
+    )
+    assert outcome.status == OptunaTrialStatus.FAIL
+    assert outcome.objective_values == ()
+    with pytest.raises(OptunaPruningAcknowledged):
+        reporter.acknowledge_pruning()
+    with pytest.raises(RuntimeError, match="conflicting report"):
+        owner.prune_trial(spec=spec, reference=reference, reported_at=NOW)
+    frozen = owner._load_study(reference.study_name, spec).trials[0]
+    assert frozen.state == optuna.trial.TrialState.FAIL
+    assert frozen.values is None
+
+
+def test_acknowledged_prune_crash_before_tell_recovers_pruned() -> None:
+    _, _, _, _, _, outcome = _interrupted_pruning_case(
+        "acknowledged-prune-crash",
+        value=0.8,
+        acknowledge=True,
+    )
+    assert outcome.status == OptunaTrialStatus.PRUNED
+    assert outcome.pruned_at_step == 3
+    assert outcome.objective_values == ()
+
+
+def test_non_pruning_report_crash_recovers_fail() -> None:
+    _, _, _, _, _, outcome = _interrupted_pruning_case(
+        "non-pruning-report-crash",
+        value=0.4,
+        acknowledge=False,
+    )
+    assert outcome.status == OptunaTrialStatus.FAIL
+    assert outcome.objective_values == ()
+
+
+def test_acknowledged_prune_replay_is_idempotently_pruned() -> None:
+    owner, restarted, reporter, spec, reference, first = _interrupted_pruning_case(
+        "acknowledged-prune-replay",
+        value=0.8,
+        acknowledge=True,
+    )
+    with pytest.raises(OptunaPruningAcknowledged):
+        reporter.acknowledge_pruning()
+    second = restarted.recover_interrupted_reporting_trial(
+        spec=spec,
+        reference=reference,
+        reported_at=NOW,
+    )
+    third = owner.prune_trial(spec=spec, reference=reference, reported_at=NOW)
+    assert first == second == third
+    assert first.status == OptunaTrialStatus.PRUNED
+    assert first.objective_values == ()
 
 
 def test_multi_objective_pruning_is_rejected_as_absent_upstream() -> None:

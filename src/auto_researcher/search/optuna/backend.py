@@ -835,8 +835,8 @@ class OptunaAskTellBackend:
         )
         if (
             record is None
-            or not record.prune_requested
-            or record.pruned_at_step is None
+            or not record.prune_acknowledged
+            or record.prune_acknowledged_at_step is None
         ):
             raise RuntimeError("optuna_pruning_not_durably_acknowledged")
         study = self._load_study(reference.study_name, spec)
@@ -850,7 +850,7 @@ class OptunaAskTellBackend:
             "objective_values": (),
             "constraint_names": tuple(item.name for item in spec.constraints),
             "constraint_values": (),
-            "pruned_at_step": record.pruned_at_step,
+            "pruned_at_step": record.prune_acknowledged_at_step,
             "intermediate_values": record.values,
         }
         if frozen.state == TrialState.RUNNING:
@@ -892,7 +892,7 @@ class OptunaAskTellBackend:
             reference.study_name,
             reference.trial_number,
         )
-        if record is None or not record.prune_requested:
+        if record is None or not record.prune_acknowledged:
             raise RuntimeError("optuna_pruning_not_durably_acknowledged")
         recorded = self.coordination.record_report(
             claim,
@@ -925,7 +925,7 @@ class OptunaAskTellBackend:
             reference.study_name,
             reference.trial_number,
         )
-        if record is not None and record.prune_requested:
+        if record is not None and record.prune_acknowledged:
             return self.prune_trial(
                 spec=spec,
                 reference=reference,
@@ -945,7 +945,11 @@ class OptunaAskTellBackend:
             "objective_values": (),
             "constraint_names": tuple(item.name for item in spec.constraints),
             "constraint_values": (),
-            "failure_classification": "intermediate_trial_process_lost",
+            "failure_classification": (
+                "intermediate_trial_process_lost_before_prune_acknowledgement"
+                if record is not None and record.prune_requested
+                else "intermediate_trial_process_lost"
+            ),
             "intermediate_values": record.values if record is not None else {},
         }
         if frozen.state == TrialState.RUNNING:
@@ -1121,7 +1125,7 @@ class OptunaAskTellBackend:
                 )
             ),
             pruned_at_step=(
-                intermediate.pruned_at_step
+                intermediate.prune_acknowledged_at_step
                 if intermediate is not None
                 else report.get("pruned_at_step")
             ),
@@ -1258,7 +1262,10 @@ class OptunaAskTellBackend:
                 skip_if_finished=True,
             )
         except RuntimeError as exc:
-            if "`Study.stop` is supposed to be invoked" not in str(exc):
+            if str(exc) != (
+                "`Study.stop` is supposed to be invoked inside an objective "
+                "function or a callback."
+            ):
                 raise
             frozen = self._trial_by_number(study, trial_number)
             if frozen.state != state:

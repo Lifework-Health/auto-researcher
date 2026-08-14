@@ -29,6 +29,7 @@ class CapabilityItem(BaseModel):
     classification: CapabilityClassification
     upstream_evidence: str = Field(min_length=1)
     probe: str | None = None
+    probes: tuple[str, ...] = ()
     adapter_contract: str | None = None
     justification: str | None = None
 
@@ -43,6 +44,10 @@ class CapabilityItem(BaseModel):
             and not self.probe
         ):
             raise ValueError("preserved Optuna capabilities require a runtime probe")
+        if self.probe is not None and self.probe in self.probes:
+            raise ValueError("Optuna capability probes must be unique")
+        if len(self.probes) != len(set(self.probes)):
+            raise ValueError("Optuna capability probes must be unique")
         if (
             self.classification is CapabilityClassification.PRESERVED_VIA_ADAPTER
             and not self.adapter_contract

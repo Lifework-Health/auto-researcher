@@ -8,11 +8,11 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 CONSTRAINT_PROTOCOL = "optuna-native-constraints-v1"
-INTERMEDIATE_PROTOCOL = "optuna-intermediate-report-v1"
+INTERMEDIATE_PROTOCOL = "optuna-intermediate-report-v2"
 
 
 def _key(kind: str, trial_number: int) -> str:
@@ -56,8 +56,25 @@ class IntermediateRecord(BaseModel):
     trial_number: int = Field(ge=0)
     values: dict[int, float]
     prune_requested: bool = False
-    pruned_at_step: int | None = Field(default=None, ge=0)
+    prune_requested_at_step: int | None = Field(default=None, ge=0)
+    prune_acknowledged: bool = False
+    prune_acknowledged_at_step: int | None = Field(default=None, ge=0)
     digest: str = Field(min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def pruning_lifecycle_is_coherent(self) -> "IntermediateRecord":
+        if self.prune_requested != (self.prune_requested_at_step is not None):
+            raise ValueError("prune request and step must be recorded together")
+        if self.prune_acknowledged != (self.prune_acknowledged_at_step is not None):
+            raise ValueError("prune acknowledgement and step must be recorded together")
+        if self.prune_acknowledged:
+            if not self.prune_requested:
+                raise ValueError("prune acknowledgement requires a durable request")
+            if self.prune_acknowledged_at_step != self.prune_requested_at_step:
+                raise ValueError(
+                    "prune acknowledgement must preserve the requested step"
+                )
+        return self
 
 
 class OptunaOperationalRecordStore:
@@ -145,7 +162,9 @@ class OptunaOperationalRecordStore:
         trial_number: int,
         values: dict[int, float],
         prune_requested: bool,
-        pruned_at_step: int | None,
+        prune_requested_at_step: int | None,
+        prune_acknowledged: bool,
+        prune_acknowledged_at_step: int | None,
     ) -> IntermediateRecord:
         if not values or not all(
             step >= 0 and math.isfinite(value) for step, value in values.items()
@@ -159,7 +178,9 @@ class OptunaOperationalRecordStore:
                 int(step): float(value) for step, value in sorted(values.items())
             },
             "prune_requested": prune_requested,
-            "pruned_at_step": pruned_at_step,
+            "prune_requested_at_step": prune_requested_at_step,
+            "prune_acknowledged": prune_acknowledged,
+            "prune_acknowledged_at_step": prune_acknowledged_at_step,
         }
         record = IntermediateRecord.model_validate({**body, "digest": _digest(body)})
         study = self._study(study_name)
@@ -170,10 +191,26 @@ class OptunaOperationalRecordStore:
             existing_body = existing.model_dump(mode="json", exclude={"digest"})
             if existing.digest != _digest(existing_body):
                 raise RuntimeError("tampered_optuna_intermediate_record")
-            if set(existing.values) - set(record.values):
+            if any(
+                record.values.get(step) != value
+                for step, value in existing.values.items()
+            ):
                 raise RuntimeError("optuna_intermediate_report_regression")
             if existing.prune_requested and not record.prune_requested:
                 raise RuntimeError("optuna_prune_decision_regression")
+            if (
+                existing.prune_requested_at_step is not None
+                and record.prune_requested_at_step != existing.prune_requested_at_step
+            ):
+                raise RuntimeError("optuna_prune_request_step_regression")
+            if existing.prune_acknowledged and not record.prune_acknowledged:
+                raise RuntimeError("optuna_prune_acknowledgement_regression")
+            if (
+                existing.prune_acknowledged_at_step is not None
+                and record.prune_acknowledged_at_step
+                != existing.prune_acknowledged_at_step
+            ):
+                raise RuntimeError("optuna_prune_acknowledgement_step_regression")
         study.set_user_attr(key, record.model_dump(mode="json"))
         return record
 

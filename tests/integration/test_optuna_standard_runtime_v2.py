@@ -136,6 +136,18 @@ class MultiObjectiveSyntheticTask(FullStrengthSyntheticTask):
         )
 
 
+class RandomSamplerSyntheticTask(FullStrengthSyntheticTask):
+    def create_optuna_study_spec(self, contract, request):
+        base = super().create_optuna_study_spec(contract, request)
+        return base.model_copy(
+            update={
+                "search_space_version": "synthetic-optuna-random-v2",
+                "sampler": OptunaSamplerSpec(type="random"),
+                "constraints": (),
+            }
+        )
+
+
 def _invoke(graph, contract, run_id, thread_id, value=None):
     payload = (
         {"run_id": run_id, "thread_id": thread_id, "contract": contract}
@@ -145,7 +157,7 @@ def _invoke(graph, contract, run_id, thread_id, value=None):
     return graph.invoke(payload, {"configurable": {"thread_id": thread_id}})
 
 
-def test_standard_runtime_random_conditional_pruning_constraints_reuse_and_diagnostics(
+def test_standard_runtime_nsgaii_conditional_pruning_constraints_reuse_and_diagnostics(
     tmp_path,
 ) -> None:
     contract = default_synthetic_contract(
@@ -182,6 +194,41 @@ def test_standard_runtime_random_conditional_pruning_constraints_reuse_and_diagn
     assert any(outcome.evaluation_reused for outcome in outcomes)
     assert result.diagnostics.sampler == "NSGAIISampler"
     assert result.diagnostics.epistemic_status == "OPERATIONAL_SEARCH_DIAGNOSTIC"
+
+
+def test_standard_runtime_random_sampler_executes_native_start_to_finish(
+    tmp_path,
+) -> None:
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.OPTUNA}),
+        maximum_experiments=6,
+    )
+    context = TaskRuntimeContext(
+        run_id="standard-optuna-random-v2",
+        output_dir=tmp_path,
+        manifest_created_at=NOW,
+    )
+    dependencies = task_memory_dependencies(
+        RandomSamplerSyntheticTask(),
+        context,
+        contract,
+        {"trial_budget": 6},
+        search_type=SearchType.OPTUNA,
+        clock=lambda: NOW,
+    )
+    final = _invoke(
+        build_graph(dependencies),
+        contract,
+        "standard-optuna-random-v2",
+        "standard-optuna-random-v2-thread",
+    )
+    result = final["optuna_study_result"]
+    outcomes = dependencies.optuna_backend.trial_outcomes(result.study_name)
+    assert result.trials_asked == 6
+    assert result.trials_pruned > 0
+    assert result.trials_completed > 0
+    assert any(outcome.intermediate_values for outcome in outcomes)
+    assert result.diagnostics.sampler == "RandomSampler"
 
 
 def test_standard_sqlite_start_resume_retains_native_v2_envelope(tmp_path) -> None:
