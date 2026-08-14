@@ -32,6 +32,10 @@ class ResourceInspectionError(ResourceBrokerError):
     pass
 
 
+class InvalidResourceRequest(ResourceBrokerError):
+    pass
+
+
 class InvalidResourceState(ResourceBrokerError):
     pass
 
@@ -58,6 +62,8 @@ class CourtesyResourceAdmissionPolicy:
         worker_id: str | None,
         stable_idle_seconds: float,
     ) -> ResourceAdmissionDecision:
+        del worker_id  # Worker IDs belong to lease ownership, not provider namespaces.
+
         def decision(
             outcome: AdmissionOutcome,
             reason: str,
@@ -77,32 +83,25 @@ class CourtesyResourceAdmissionPolicy:
             return decision(
                 AdmissionOutcome.REJECTED, candidate.state_reason or "invalid_state"
             )
-        if len(request.requirements) != 1:
-            return decision(
-                AdmissionOutcome.REJECTED, "resource_bundle_not_implemented"
-            )
         matching = tuple(
             requirement
             for requirement in request.requirements
             if requirement.resource_type == candidate.resource_type
         )
         if len(matching) != 1:
-            return decision(AdmissionOutcome.WAIT, "resource_type_mismatch")
+            return decision(AdmissionOutcome.REJECTED, "resource_type_mismatch")
         requirement = matching[0]
         if not request.equivalence_requirements.issubset(candidate.equivalence_tags):
-            return decision(AdmissionOutcome.WAIT, "equivalence_mismatch")
+            return decision(AdmissionOutcome.REJECTED, "equivalence_mismatch")
         if candidate.quantity < requirement.quantity:
-            return decision(AdmissionOutcome.WAIT, "insufficient_quantity")
+            return decision(AdmissionOutcome.REJECTED, "insufficient_quantity")
         for minimum in requirement.minimum_capacities:
             observed = candidate.capacity(minimum.name)
             if observed is None:
                 return decision(AdmissionOutcome.REJECTED, "capacity_state_missing")
             if observed < minimum.value:
                 return decision(AdmissionOutcome.WAIT, f"low_{minimum.name}")
-        foreign_owners = tuple(
-            owner for owner in candidate.foreign_owners if owner != worker_id
-        )
-        if foreign_owners:
+        if candidate.foreign_owners:
             return decision(AdmissionOutcome.WAIT, "foreign_owner")
         if not candidate.available:
             return decision(AdmissionOutcome.WAIT, "resource_busy")
@@ -208,6 +207,37 @@ class ResourceBroker:
         if self.decision_observer is not None:
             self.decision_observer(decision, candidate, now)
 
+    @staticmethod
+    def _validate_request(request: ResourceRequest) -> None:
+        if len(request.requirements) != 1:
+            raise InvalidResourceRequest("resource_bundle_not_implemented")
+        if request.preemption is not PreemptionPolicy.NEVER:
+            raise InvalidResourceRequest("resource_preemption_not_implemented")
+
+    @staticmethod
+    def _telemetry(
+        request: ResourceRequest,
+        candidate: ResourceCandidate,
+        *,
+        started: float,
+        now: float,
+        poll_count: int,
+        observed_continuous_idle_seconds: float,
+    ) -> ResourceAdmissionTelemetry:
+        return ResourceAdmissionTelemetry(
+            request_id=request.request_id,
+            resource_id=candidate.resource_id,
+            resource_type=candidate.resource_type,
+            admission_class=request.admission_class,
+            wait_seconds=max(0.0, now - started),
+            poll_count=poll_count,
+            observed_continuous_idle_seconds=observed_continuous_idle_seconds,
+            required_stable_idle_seconds=request.stable_idle_seconds,
+            observed_capacities=candidate.capacities,
+            utilization_percent=candidate.utilization_percent,
+            foreign_owner_count=len(candidate.foreign_owners),
+        )
+
     def _wait(
         self,
         request: ResourceRequest,
@@ -215,9 +245,13 @@ class ResourceBroker:
         worker_id: str | None,
         lease_ttl: timedelta | None,
     ) -> ResourceAdmission:
-        if request.preemption is not PreemptionPolicy.NEVER:
-            raise ResourceBrokerError("resource_preemption_not_implemented")
+        self._validate_request(request)
         started = self.clock()
+        deadline = (
+            None
+            if request.maximum_wait_seconds is None
+            else started + request.maximum_wait_seconds
+        )
         idle_started: dict[str, float] = {}
         poll_count = 0
         while True:
@@ -229,14 +263,20 @@ class ResourceBroker:
                 raise ResourceInspectionError("resource_inspection_failed") from exc
             poll_count += 1
             now = self.clock()
-            if not candidates:
-                raise InvalidResourceState("resource_provider_returned_no_candidates")
+            if deadline is not None and now > deadline:
+                raise ResourceWaitTimeout("resource_maximum_wait_exceeded")
+            if any(
+                not isinstance(candidate, ResourceCandidate) for candidate in candidates
+            ):
+                raise ResourceInspectionError("resource_snapshot_invalid")
+            observed_ids = {candidate.resource_id for candidate in candidates}
+            if len(observed_ids) != len(candidates):
+                raise ResourceInspectionError("resource_snapshot_duplicate_ids")
+            for absent_id in set(idle_started) - observed_ids:
+                idle_started.pop(absent_id, None)
 
+            rejected_reasons: list[str] = []
             for candidate in sorted(candidates, key=lambda item: item.resource_id):
-                if not candidate.state_valid:
-                    raise InvalidResourceState(
-                        candidate.state_reason or "invalid_resource_state"
-                    )
                 active_lease = (
                     None
                     if self.lease_store is None
@@ -246,6 +286,38 @@ class ResourceBroker:
                 )
                 if active_lease is not None:
                     idle_started.pop(candidate.resource_id, None)
+                    if (
+                        worker_id is not None
+                        and active_lease.worker_id == worker_id
+                        and active_lease.request_id == request.request_id
+                    ):
+                        assert self.lease_store is not None and lease_ttl is not None
+                        recovered = self.lease_store.acquire(
+                            request,
+                            candidate,
+                            worker_id=worker_id,
+                            now=self.wall_clock(),
+                            ttl=lease_ttl,
+                        )
+                        decision = ResourceAdmissionDecision(
+                            outcome=AdmissionOutcome.ADMITTED,
+                            request_id=request.request_id,
+                            resource_id=candidate.resource_id,
+                            reason="lease_recovered",
+                        )
+                        self._observe(decision, candidate, now)
+                        return ResourceAdmission(
+                            decision=decision,
+                            telemetry=self._telemetry(
+                                request,
+                                candidate,
+                                started=started,
+                                now=now,
+                                poll_count=poll_count,
+                                observed_continuous_idle_seconds=0,
+                            ),
+                            lease=recovered,
+                        )
                     decision = ResourceAdmissionDecision(
                         outcome=AdmissionOutcome.WAIT,
                         request_id=request.request_id,
@@ -262,7 +334,10 @@ class ResourceBroker:
                     stable_idle_seconds=0,
                 )
                 if initial.outcome is AdmissionOutcome.REJECTED:
-                    raise InvalidResourceState(initial.reason)
+                    idle_started.pop(candidate.resource_id, None)
+                    rejected_reasons.append(initial.reason)
+                    self._observe(initial, candidate, now)
+                    continue
                 if not initial.continuously_idle:
                     idle_started.pop(candidate.resource_id, None)
                     self._observe(initial, candidate, now)
@@ -278,6 +353,10 @@ class ResourceBroker:
                     stable_idle_seconds=stable_idle_seconds,
                 )
                 self._observe(decision, candidate, now)
+                if decision.outcome is AdmissionOutcome.REJECTED:
+                    idle_started.pop(candidate.resource_id, None)
+                    rejected_reasons.append(decision.reason)
+                    continue
                 if decision.outcome is not AdmissionOutcome.ADMITTED:
                     continue
 
@@ -302,32 +381,27 @@ class ResourceBroker:
                         )
                         self._observe(conflict, candidate, now)
                         continue
-                telemetry = ResourceAdmissionTelemetry(
-                    request_id=request.request_id,
-                    resource_id=candidate.resource_id,
-                    resource_type=candidate.resource_type,
-                    admission_class=request.admission_class,
-                    wait_seconds=max(0.0, now - started),
-                    poll_count=poll_count,
-                    stable_idle_seconds=request.stable_idle_seconds,
-                    observed_capacities=candidate.capacities,
-                    utilization_percent=candidate.utilization_percent,
-                    foreign_owner_count=len(
-                        tuple(
-                            owner
-                            for owner in candidate.foreign_owners
-                            if owner != worker_id
-                        )
-                    ),
-                )
                 return ResourceAdmission(
-                    decision=decision, telemetry=telemetry, lease=lease
+                    decision=decision,
+                    telemetry=self._telemetry(
+                        request,
+                        candidate,
+                        started=started,
+                        now=now,
+                        poll_count=poll_count,
+                        observed_continuous_idle_seconds=decision.stable_idle_seconds,
+                    ),
+                    lease=lease,
                 )
 
-            elapsed = max(0.0, now - started)
-            if (
-                request.maximum_wait_seconds is not None
-                and elapsed + self.poll_seconds > request.maximum_wait_seconds
-            ):
+            if candidates and len(rejected_reasons) == len(candidates):
+                raise InvalidResourceState(
+                    "no_eligible_resource_candidates:" + ",".join(rejected_reasons)
+                )
+            if deadline is None:
+                self.sleeper(self.poll_seconds)
+                continue
+            remaining = deadline - now
+            if remaining <= 0:
                 raise ResourceWaitTimeout("resource_maximum_wait_exceeded")
-            self.sleeper(self.poll_seconds)
+            self.sleeper(min(self.poll_seconds, remaining))

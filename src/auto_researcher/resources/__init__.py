@@ -2,6 +2,7 @@
 
 from auto_researcher.resources.broker import (
     CourtesyResourceAdmissionPolicy,
+    InvalidResourceRequest,
     InvalidResourceState,
     ResourceBroker,
     ResourceBrokerError,
@@ -25,6 +26,7 @@ from auto_researcher.resources.models import (
     ResourceCandidate,
     ResourceCapacity,
     ResourceLease,
+    ResourceOwner,
     ResourceRequest,
     ResourceRequirement,
 )
@@ -39,6 +41,7 @@ __all__ = [
     "AdmissionOutcome",
     "CourtesyResourceAdmissionPolicy",
     "InMemoryResourceLeaseStore",
+    "InvalidResourceRequest",
     "InvalidResourceState",
     "PreemptionPolicy",
     "ResourceAdmission",
@@ -56,6 +59,7 @@ __all__ = [
     "ResourceLeaseNotFound",
     "ResourceLeaseOwnershipError",
     "ResourceLeaseStore",
+    "ResourceOwner",
     "ResourceProvider",
     "ResourceRequest",
     "ResourceRequirement",

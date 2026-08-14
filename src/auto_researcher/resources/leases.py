@@ -70,7 +70,14 @@ class InMemoryResourceLeaseStore:
             raise ValueError("worker_id and a positive lease ttl are required")
         with self._lock:
             self._recover_stale_locked(now)
-            if candidate.resource_id in self._active_by_resource:
+            active_id = self._active_by_resource.get(candidate.resource_id)
+            if active_id is not None:
+                active = self._leases[active_id]
+                if (
+                    active.worker_id == worker_id
+                    and active.request_id == request.request_id
+                ):
+                    return active
                 raise ResourceLeaseConflict("resource_already_leased")
             lease = ResourceLease(
                 lease_id=f"lease-{uuid4()}",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -35,6 +36,14 @@ class ResourceCapacity(ResourceModel):
     value: float = Field(ge=0)
 
 
+class ResourceOwner(ResourceModel):
+    """Provider-classified foreign ownership in an explicit identity namespace."""
+
+    namespace: str = Field(min_length=1)
+    owner_id: str = Field(min_length=1)
+    display_name: str | None = None
+
+
 class ResourceRequirement(ResourceModel):
     resource_type: str = Field(min_length=1)
     quantity: int = Field(default=1, ge=1)
@@ -49,7 +58,12 @@ class ResourceRequirement(ResourceModel):
 
 
 class ResourceRequest(ResourceModel):
-    """Operational requirements only; scientific configuration has no place here."""
+    """Operational intent only; priority is not local queue-order enforcement.
+
+    Admission class may drive configured courtesy policy. Priority is retained for a
+    future coordinator comparing multiple requests; the process-local v1 broker
+    evaluates one request and does not order a shared queue.
+    """
 
     request_id: str = Field(min_length=1)
     requirements: tuple[ResourceRequirement, ...] = Field(min_length=1)
@@ -71,7 +85,11 @@ class ResourceRequest(ResourceModel):
 
 
 class ResourceCandidate(ResourceModel):
-    """A current, provider-observed resource or resource bundle."""
+    """One indivisible allocation unit; a lease reserves this entire bundle.
+
+    Quantity is matching capacity inside the bundle, not a partially leasable pool.
+    Providers expose independently allocatable units as distinct candidate IDs.
+    """
 
     resource_id: str = Field(min_length=1)
     resource_type: str = Field(min_length=1)
@@ -79,7 +97,7 @@ class ResourceCandidate(ResourceModel):
     capacities: tuple[ResourceCapacity, ...] = ()
     utilization_percent: float | None = Field(default=None, ge=0, le=100)
     available: bool = True
-    foreign_owners: tuple[str, ...] = ()
+    foreign_owners: tuple[ResourceOwner, ...] = ()
     equivalence_tags: frozenset[str] = Field(default_factory=frozenset)
     state_valid: bool = True
     state_reason: str | None = None
@@ -118,7 +136,8 @@ class ResourceAdmissionTelemetry(ResourceModel):
     admission_class: AdmissionClass
     wait_seconds: float = Field(ge=0)
     poll_count: int = Field(ge=1)
-    stable_idle_seconds: float = Field(ge=0)
+    observed_continuous_idle_seconds: float = Field(ge=0)
+    required_stable_idle_seconds: float = Field(ge=0)
     observed_capacities: tuple[ResourceCapacity, ...] = ()
     utilization_percent: float | None = Field(default=None, ge=0, le=100)
     foreign_owner_count: int = Field(default=0, ge=0)
@@ -128,10 +147,13 @@ class ResourceAdmissionTelemetry(ResourceModel):
 
 
 class ResourceLease(ResourceModel):
+    """Whole-candidate ownership, idempotent by resource/request/worker identity."""
+
     lease_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     resource_id: str = Field(min_length=1)
     worker_id: str = Field(min_length=1)
+    allocation_semantics: Literal["whole_candidate"] = "whole_candidate"
     acquired_at: datetime
     heartbeat_at: datetime
     expires_at: datetime

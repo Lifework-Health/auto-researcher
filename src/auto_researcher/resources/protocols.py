@@ -14,6 +14,12 @@ from auto_researcher.resources.models import (
 
 
 class ResourceProvider(Protocol):
+    """Return one authoritative snapshot or raise when it cannot be trusted.
+
+    Foreign owners are already classified by the provider and carry an explicit
+    identity namespace. Broker worker IDs are not compared to provider owner IDs.
+    """
+
     def candidates(self, request: ResourceRequest) -> tuple[ResourceCandidate, ...]: ...
 
 
@@ -29,6 +35,12 @@ class ResourceAdmissionPolicy(Protocol):
 
 
 class ResourceLeaseStore(Protocol):
+    """Authoritative atomic lease boundary.
+
+    Acquire is idempotent for the same active resource, request ID, and worker ID;
+    all other active claims on the resource conflict.
+    """
+
     def active_for(
         self, resource_id: str, *, now: datetime
     ) -> ResourceLease | None: ...

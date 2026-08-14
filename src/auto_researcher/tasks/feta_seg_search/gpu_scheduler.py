@@ -31,6 +31,7 @@ from auto_researcher.resources import (
     ResourceCandidate,
     ResourceCapacity,
     ResourceInspectionError,
+    ResourceOwner,
     ResourceRequest,
     ResourceRequirement,
 )
@@ -240,9 +241,11 @@ class FeTAGPUResourceProvider:
             if process.pid != self.current_pid
         )
         owners = tuple(
-            f"{process.pid}:{process.username}"
-            if process.username is not None
-            else str(process.pid)
+            ResourceOwner(
+                namespace="process_pid",
+                owner_id=str(process.pid),
+                display_name=process.username,
+            )
             for process in foreign
         )
         return (
@@ -361,10 +364,10 @@ def wait_for_gpu_admission(
         }.get(decision.reason, decision.reason)
         detail = ""
         if reason == "foreign_process" and candidate.foreign_owners:
-            process = candidate.foreign_owners[0].split(":", 1)
-            detail = f" pid={process[0]}"
-            if len(process) == 2:
-                detail += f" user={process[1]}"
+            process = candidate.foreign_owners[0]
+            detail = f" pid={process.owner_id}"
+            if process.display_name is not None:
+                detail += f" user={process.display_name}"
         elif reason == "low_free_memory":
             detail = f" free_memory_mib={int(candidate.capacity('memory_mib') or 0)}"
         elif reason == "high_utilization":
