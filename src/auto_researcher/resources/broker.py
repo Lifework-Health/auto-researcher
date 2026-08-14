@@ -275,8 +275,62 @@ class ResourceBroker:
             for absent_id in set(idle_started) - observed_ids:
                 idle_started.pop(absent_id, None)
 
+            request_lease = (
+                None
+                if self.lease_store is None
+                else self.lease_store.active_for_request(
+                    request.request_id, now=self.wall_clock()
+                )
+            )
+            if request_lease is not None:
+                idle_started.clear()
+                leased_candidate = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if candidate.resource_id == request_lease.resource_id
+                    ),
+                    None,
+                )
+                if (
+                    worker_id == request_lease.worker_id
+                    and leased_candidate is not None
+                ):
+                    decision = ResourceAdmissionDecision(
+                        outcome=AdmissionOutcome.ADMITTED,
+                        request_id=request.request_id,
+                        resource_id=leased_candidate.resource_id,
+                        reason="lease_recovered",
+                    )
+                    self._observe(decision, leased_candidate, now)
+                    return ResourceAdmission(
+                        decision=decision,
+                        telemetry=self._telemetry(
+                            request,
+                            leased_candidate,
+                            started=started,
+                            now=now,
+                            poll_count=poll_count,
+                            observed_continuous_idle_seconds=0,
+                        ),
+                        lease=request_lease,
+                    )
+                if leased_candidate is not None:
+                    decision = ResourceAdmissionDecision(
+                        outcome=AdmissionOutcome.WAIT,
+                        request_id=request.request_id,
+                        resource_id=leased_candidate.resource_id,
+                        reason="request_already_leased",
+                    )
+                    self._observe(decision, leased_candidate, now)
+
             rejected_reasons: list[str] = []
-            for candidate in sorted(candidates, key=lambda item: item.resource_id):
+            candidates_to_consider = (
+                ()
+                if request_lease is not None
+                else tuple(sorted(candidates, key=lambda item: item.resource_id))
+            )
+            for candidate in candidates_to_consider:
                 active_lease = (
                     None
                     if self.lease_store is None
@@ -394,7 +448,11 @@ class ResourceBroker:
                     lease=lease,
                 )
 
-            if candidates and len(rejected_reasons) == len(candidates):
+            if (
+                request_lease is None
+                and candidates
+                and len(rejected_reasons) == len(candidates)
+            ):
                 raise InvalidResourceState(
                     "no_eligible_resource_candidates:" + ",".join(rejected_reasons)
                 )

@@ -291,6 +291,7 @@ def test_broker_acquires_renews_and_releases_resource_lease() -> None:
     released = broker.release_lease(admission.lease.lease_id, worker_id="worker-a")
     assert released.released_at == clock.wall()
     assert store.active_for("cpu:0", now=clock.wall()) is None
+    assert store.active_for_request(request().request_id, now=clock.wall()) is None
 
 
 def test_stale_lease_is_detected_recovered_and_resource_can_be_reclaimed() -> None:
@@ -343,6 +344,152 @@ def test_restart_reacquire_recovers_exact_same_live_lease() -> None:
     assert recovered.lease.expires_at == first.lease.expires_at
 
 
+def test_request_recovery_precedes_sorted_alternative_candidate_selection() -> None:
+    clock = FakeClock()
+    store = InMemoryResourceLeaseStore()
+    resource_z = cpu_candidate("cpu:z")
+    original = store.acquire(
+        request(),
+        resource_z,
+        worker_id="worker-a",
+        now=clock.wall(),
+        ttl=timedelta(seconds=30),
+    )
+    provider = SequenceProvider([((cpu_candidate("cpu:a"), resource_z))])
+
+    recovered = broker_for(provider, clock, lease_store=store).acquire(
+        request(), worker_id="worker-a", lease_ttl=timedelta(seconds=30)
+    )
+
+    assert recovered.lease is original
+    assert recovered.telemetry.resource_id == "cpu:z"
+    assert store.active_for("cpu:a", now=clock.wall()) is None
+    assert store.active_for_request(request().request_id, now=clock.wall()) is original
+
+
+def test_request_recovery_waits_while_leased_resource_is_absent() -> None:
+    clock = FakeClock()
+    store = InMemoryResourceLeaseStore()
+    resource_z = cpu_candidate("cpu:z")
+    original = store.acquire(
+        request(),
+        resource_z,
+        worker_id="worker-a",
+        now=clock.wall(),
+        ttl=timedelta(seconds=30),
+    )
+    provider = SequenceProvider(
+        [
+            (cpu_candidate("cpu:a"),),
+            (cpu_candidate("cpu:a"), resource_z),
+        ]
+    )
+
+    recovered = broker_for(provider, clock, lease_store=store).acquire(
+        request(), worker_id="worker-a", lease_ttl=timedelta(seconds=30)
+    )
+
+    assert recovered.lease is original
+    assert recovered.telemetry.wait_seconds == 10
+    assert store.active_for("cpu:a", now=clock.wall()) is None
+    assert provider.calls == 2
+
+
+def test_other_worker_cannot_duplicate_an_active_logical_request() -> None:
+    clock = FakeClock()
+    store = InMemoryResourceLeaseStore()
+    resource_z = cpu_candidate("cpu:z")
+    original = store.acquire(
+        request(),
+        resource_z,
+        worker_id="worker-a",
+        now=clock.wall(),
+        ttl=timedelta(seconds=30),
+    )
+    provider = SequenceProvider([((cpu_candidate("cpu:a"), resource_z))])
+
+    with pytest.raises(ResourceWaitTimeout, match="maximum_wait"):
+        broker_for(provider, clock, lease_store=store).acquire(
+            request(maximum_wait_seconds=10),
+            worker_id="worker-b",
+            lease_ttl=timedelta(seconds=30),
+        )
+
+    assert store.active_for_request(request().request_id, now=clock.wall()) is original
+    assert store.active_for("cpu:a", now=clock.wall()) is None
+
+
+def test_stale_request_lease_allows_normal_candidate_selection_to_resume() -> None:
+    clock = FakeClock()
+    store = InMemoryResourceLeaseStore()
+    original = store.acquire(
+        request(),
+        cpu_candidate("cpu:z"),
+        worker_id="worker-a",
+        now=clock.wall(),
+        ttl=timedelta(seconds=10),
+    )
+    clock.sleep(10)
+
+    replacement = broker_for(
+        SequenceProvider([(cpu_candidate("cpu:a"),)]), clock, lease_store=store
+    ).acquire(request(), worker_id="worker-a", lease_ttl=timedelta(seconds=30))
+
+    assert replacement.lease is not None
+    assert replacement.lease.lease_id != original.lease_id
+    assert replacement.lease.resource_id == "cpu:a"
+    assert store.active_for("cpu:z", now=clock.wall()) is None
+    assert (
+        store.active_for_request(request().request_id, now=clock.wall())
+        is replacement.lease
+    )
+
+
+def test_lease_store_enforces_one_active_resource_per_logical_request() -> None:
+    clock = FakeClock()
+    store = InMemoryResourceLeaseStore()
+    logical_request = request()
+    resource_z = cpu_candidate("cpu:z")
+    original = store.acquire(
+        logical_request,
+        resource_z,
+        worker_id="worker-a",
+        now=clock.wall(),
+        ttl=timedelta(seconds=30),
+    )
+
+    exact = store.acquire(
+        logical_request,
+        resource_z,
+        worker_id="worker-a",
+        now=clock.wall(),
+        ttl=timedelta(seconds=30),
+    )
+    assert exact is original
+    assert (
+        store.active_for_request(logical_request.request_id, now=clock.wall())
+        is original
+    )
+
+    with pytest.raises(ResourceLeaseConflict, match="request_already_leased"):
+        store.acquire(
+            logical_request,
+            cpu_candidate("cpu:a"),
+            worker_id="worker-a",
+            now=clock.wall(),
+            ttl=timedelta(seconds=30),
+        )
+    with pytest.raises(ResourceLeaseConflict, match="request_already_leased"):
+        store.acquire(
+            logical_request,
+            cpu_candidate("cpu:a"),
+            worker_id="worker-b",
+            now=clock.wall(),
+            ttl=timedelta(seconds=30),
+        )
+    assert store.active_for("cpu:a", now=clock.wall()) is None
+
+
 def test_atomic_whole_candidate_lease_rejects_other_worker_or_request() -> None:
     clock = FakeClock()
     store = InMemoryResourceLeaseStore()
@@ -356,7 +503,7 @@ def test_atomic_whole_candidate_lease_rejects_other_worker_or_request() -> None:
     )
     assert original.allocation_semantics == "whole_candidate"
 
-    with pytest.raises(ResourceLeaseConflict, match="resource_already_leased"):
+    with pytest.raises(ResourceLeaseConflict, match="request_already_leased"):
         store.acquire(
             request(),
             candidate,

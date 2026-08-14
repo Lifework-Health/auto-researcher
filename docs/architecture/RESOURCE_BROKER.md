@@ -38,7 +38,21 @@ Those remain under the existing task, search, and evaluator boundaries.
   worker ownership, acquisition, heartbeat renewal, release, expiry detection,
   and stale recovery. Acquisition is idempotent for the same active resource,
   request ID, and worker ID, returning the exact existing lease after a caller
-  restart or lost response. A different request or worker conflicts.
+  restart or lost response. A logical request ID may have at most one active
+  lease across all candidates. A different request on the resource, a different
+  resource for the request, or a different worker presenting the active request
+  conflicts at the store's atomic boundary.
+
+Before selecting any candidate, the broker asks the lease store for the active
+lease associated with the logical request. If its resource is present and the
+worker matches, the exact lease is recovered without renewal. If that resource
+is temporarily absent, all substitute candidates are ignored while the lease
+remains active and the broker rechecks until the normal deadline. A different
+worker presenting the same active request also waits rather than creating a
+second execution. Once the lease is released or recovered stale, ordinary
+candidate selection resumes. This request-level lookup and uniqueness rule is
+part of the `ResourceLeaseStore` protocol for an atomic PostgreSQL
+implementation in PR 11.5.
 
 `ResourceCandidate` is an indivisible allocation unit or bundle in v1.
 `quantity` describes matching capacity in that bundle; acquiring a lease

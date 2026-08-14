@@ -30,11 +30,12 @@ class ResourceLeaseNotFound(ResourceLeaseError):
 
 
 class InMemoryResourceLeaseStore:
-    """Process-local atomic leases; PostgreSQL/shared workers belong in PR 11.5."""
+    """Atomic whole-candidate and logical-request leases for one local process."""
 
     def __init__(self) -> None:
         self._leases: dict[str, ResourceLease] = {}
         self._active_by_resource: dict[str, str] = {}
+        self._active_by_request: dict[str, str] = {}
         self._lock = RLock()
 
     def _is_stale(self, lease: ResourceLease, now: datetime) -> bool:
@@ -47,7 +48,10 @@ class InMemoryResourceLeaseStore:
                 continue
             released = lease.model_copy(update={"released_at": now})
             self._leases[lease_id] = released
-            self._active_by_resource.pop(lease.resource_id, None)
+            if self._active_by_resource.get(lease.resource_id) == lease_id:
+                self._active_by_resource.pop(lease.resource_id, None)
+            if self._active_by_request.get(lease.request_id) == lease_id:
+                self._active_by_request.pop(lease.request_id, None)
             recovered.append(released)
         return tuple(recovered)
 
@@ -55,6 +59,14 @@ class InMemoryResourceLeaseStore:
         with self._lock:
             self._recover_stale_locked(now)
             lease_id = self._active_by_resource.get(resource_id)
+            return None if lease_id is None else self._leases[lease_id]
+
+    def active_for_request(
+        self, request_id: str, *, now: datetime
+    ) -> ResourceLease | None:
+        with self._lock:
+            self._recover_stale_locked(now)
+            lease_id = self._active_by_request.get(request_id)
             return None if lease_id is None else self._leases[lease_id]
 
     def acquire(
@@ -70,6 +82,15 @@ class InMemoryResourceLeaseStore:
             raise ValueError("worker_id and a positive lease ttl are required")
         with self._lock:
             self._recover_stale_locked(now)
+            request_lease_id = self._active_by_request.get(request.request_id)
+            if request_lease_id is not None:
+                request_lease = self._leases[request_lease_id]
+                if (
+                    request_lease.resource_id == candidate.resource_id
+                    and request_lease.worker_id == worker_id
+                ):
+                    return request_lease
+                raise ResourceLeaseConflict("request_already_leased")
             active_id = self._active_by_resource.get(candidate.resource_id)
             if active_id is not None:
                 active = self._leases[active_id]
@@ -90,6 +111,7 @@ class InMemoryResourceLeaseStore:
             )
             self._leases[lease.lease_id] = lease
             self._active_by_resource[candidate.resource_id] = lease.lease_id
+            self._active_by_request[request.request_id] = lease.lease_id
             return lease
 
     def renew(
@@ -127,7 +149,10 @@ class InMemoryResourceLeaseStore:
                 raise ResourceLeaseOwnershipError("resource_lease_worker_mismatch")
             released = lease.model_copy(update={"released_at": now})
             self._leases[lease_id] = released
-            self._active_by_resource.pop(lease.resource_id, None)
+            if self._active_by_resource.get(lease.resource_id) == lease_id:
+                self._active_by_resource.pop(lease.resource_id, None)
+            if self._active_by_request.get(lease.request_id) == lease_id:
+                self._active_by_request.pop(lease.request_id, None)
             return released
 
     def stale(self, *, now: datetime) -> tuple[ResourceLease, ...]:

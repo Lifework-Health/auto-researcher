@@ -37,12 +37,17 @@ class ResourceAdmissionPolicy(Protocol):
 class ResourceLeaseStore(Protocol):
     """Authoritative atomic lease boundary.
 
-    Acquire is idempotent for the same active resource, request ID, and worker ID;
-    all other active claims on the resource conflict.
+    At most one active lease may exist for a logical request ID. Acquire is
+    idempotent only for the same active resource, request ID, and worker ID;
+    all other active claims on the request or resource conflict.
     """
 
     def active_for(
         self, resource_id: str, *, now: datetime
+    ) -> ResourceLease | None: ...
+
+    def active_for_request(
+        self, request_id: str, *, now: datetime
     ) -> ResourceLease | None: ...
 
     def acquire(

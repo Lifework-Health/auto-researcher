@@ -147,7 +147,7 @@ class ResourceAdmissionTelemetry(ResourceModel):
 
 
 class ResourceLease(ResourceModel):
-    """Whole-candidate ownership, idempotent by resource/request/worker identity."""
+    """Whole-candidate ownership under a unique active logical request."""
 
     lease_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
