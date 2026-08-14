@@ -14,6 +14,7 @@ from auto_researcher.search.optuna.artifacts import (
 from auto_researcher.search.optuna.models import (
     OptunaStudyResult,
     OptunaStudySpec,
+    OptunaTrialStatus,
 )
 from auto_researcher.search.optuna.naming import build_study_identity
 from auto_researcher.search.optuna.provenance import append_optuna_event
@@ -65,8 +66,7 @@ def optuna_prepare_study(
         raise ValueError("Optuna objective metric does not match the contract")
     remaining = max(
         0,
-        state["budget"].maximum_experiments
-        - state["budget"].experiments_used,
+        state["budget"].maximum_experiments - state["budget"].experiments_used,
     )
     effective_budget = min(
         registered.trial_budget,
@@ -106,51 +106,53 @@ def optuna_prepare_study(
         run_id=state["run_id"],
         cycle=state["cycle"],
     )
-    event_ids.extend([
-        append_optuna_event(
-            dependencies.provenance_store,
-            run_id=state["run_id"],
-            cycle=state["cycle"],
-            study_name=identity.study_name,
-            event_type=EventType.HYPOTHESIS_PROPOSED,
-            actor="hypothesis_agent",
-            inputs=(
-                state["contract"].contract_id,
-                *((hypothesis.agent_call_id,) if hypothesis.agent_call_id else ()),
+    event_ids.extend(
+        [
+            append_optuna_event(
+                dependencies.provenance_store,
+                run_id=state["run_id"],
+                cycle=state["cycle"],
+                study_name=identity.study_name,
+                event_type=EventType.HYPOTHESIS_PROPOSED,
+                actor="hypothesis_agent",
+                inputs=(
+                    state["contract"].contract_id,
+                    *((hypothesis.agent_call_id,) if hypothesis.agent_call_id else ()),
+                ),
+                outputs=(
+                    hypothesis.hypothesis_id,
+                    f"source:{hypothesis.proposal_source.value}",
+                    f"grounding:{hypothesis.grounding_status.value}",
+                    f"prompt:{hypothesis.prompt_version or 'none'}",
+                ),
+                rationale=hypothesis.rationale,
+                timestamp=timestamp,
+                provenance=hypothesis.provenance,
             ),
-            outputs=(
-                hypothesis.hypothesis_id,
-                f"source:{hypothesis.proposal_source.value}",
-                f"grounding:{hypothesis.grounding_status.value}",
-                f"prompt:{hypothesis.prompt_version or 'none'}",
+            append_optuna_event(
+                dependencies.provenance_store,
+                run_id=state["run_id"],
+                cycle=state["cycle"],
+                study_name=identity.study_name,
+                event_type=EventType.SEARCH_PLANNED,
+                actor="planner_agent",
+                inputs=(
+                    request.hypothesis_id,
+                    *((request.agent_call_id,) if request.agent_call_id else ()),
+                ),
+                outputs=(
+                    request.request_id,
+                    f"search_type:{request.search_type.value}",
+                    f"source:{request.proposal_source.value}",
+                    f"grounding:{request.grounding_status.value}",
+                    f"prompt:{request.prompt_version or 'none'}",
+                ),
+                rationale=request.rationale,
+                timestamp=timestamp,
+                provenance=hypothesis.provenance,
             ),
-            rationale=hypothesis.rationale,
-            timestamp=timestamp,
-            provenance=hypothesis.provenance,
-        ),
-        append_optuna_event(
-            dependencies.provenance_store,
-            run_id=state["run_id"],
-            cycle=state["cycle"],
-            study_name=identity.study_name,
-            event_type=EventType.SEARCH_PLANNED,
-            actor="planner_agent",
-            inputs=(
-                request.hypothesis_id,
-                *((request.agent_call_id,) if request.agent_call_id else ()),
-            ),
-            outputs=(
-                request.request_id,
-                f"search_type:{request.search_type.value}",
-                f"source:{request.proposal_source.value}",
-                f"grounding:{request.grounding_status.value}",
-                f"prompt:{request.prompt_version or 'none'}",
-            ),
-            rationale=request.rationale,
-            timestamp=timestamp,
-            provenance=hypothesis.provenance,
-        ),
-    ])
+        ]
+    )
     if state.get("human_approval_granted") is not None:
         event_ids.append(
             append_optuna_event(
@@ -163,9 +165,7 @@ def optuna_prepare_study(
                 inputs=(request.request_id,),
                 outputs=(),
                 rationale=(
-                    "approved"
-                    if state["human_approval_granted"]
-                    else "rejected"
+                    "approved" if state["human_approval_granted"] else "rejected"
                 ),
                 timestamp=timestamp,
                 provenance=dependencies.experiment_metadata.provenance,
@@ -210,7 +210,7 @@ def optuna_ask_trial(
     )
     summary = _backend(dependencies).load_study_summary(
         identity,
-        spec.direction,
+        spec,
         summary.trial_budget,
         current_trial=reference,
     )
@@ -258,12 +258,13 @@ def optuna_create_experiment(
     )
     reference = reference.model_copy(update={"experiment_id": experiment.experiment_id})
     return {
-        "optuna_study_state": summary.model_copy(
-            update={"current_trial": reference}
-        ),
+        "optuna_study_state": summary.model_copy(update={"current_trial": reference}),
         "experiment_spec": experiment,
         "evaluation_result": None,
         "verification_result": None,
+        "optuna_trial_pruned": False,
+        "optuna_trial_operational_terminal": False,
+        "optuna_evaluation_reused": False,
         "executed_nodes": ["optuna_create_experiment"],
     }
 
@@ -292,11 +293,12 @@ def optuna_tell_trial(
         evaluation=evaluation,
         verification=verification,
         reported_at=dependencies.clock(),
+        evaluation_reused=state.get("optuna_evaluation_reused", False),
     )
     identity = _identity(state, dependencies)
     summary = _backend(dependencies).load_study_summary(
         identity,
-        spec.direction,
+        spec,
         summary.trial_budget,
     )
     return {
@@ -314,17 +316,48 @@ def optuna_record_trial(
     experiment = state["experiment_spec"]
     evaluation = state["evaluation_result"]
     verification = state["verification_result"]
-    assert outcome and experiment and evaluation and verification
+    summary = state["optuna_study_state"]
+    assert outcome and experiment and summary
     attrs = _backend(dependencies).trial_user_attrs(
-        state["optuna_study_state"].study_name,
+        summary.study_name,
         outcome.trial_number,
     )
     timestamp = _parse_timestamp(str(attrs["reported_at"]))
+    if outcome.status in {OptunaTrialStatus.PRUNED, OptunaTrialStatus.FAIL} and (
+        evaluation is None or verification is None
+    ):
+        event_id = append_optuna_event(
+            dependencies.provenance_store,
+            run_id=state["run_id"],
+            cycle=state["cycle"],
+            study_name=summary.study_name,
+            event_type=EventType.OPTUNA_TRIAL_REPORTED,
+            actor="optuna_tell_trial",
+            inputs=(experiment.experiment_id,),
+            outputs=(
+                f"trial:{outcome.trial_number}",
+                f"status:{outcome.status.value}",
+                f"pruned_at_step:{outcome.pruned_at_step}",
+            ),
+            rationale=(
+                "Recorded a cooperatively acknowledged native Optuna prune."
+                if outcome.status == OptunaTrialStatus.PRUNED
+                else "Recorded an interrupted reporting trial as native FAIL."
+            ),
+            timestamp=timestamp,
+            provenance=dependencies.experiment_metadata.provenance,
+            trial_number=outcome.trial_number,
+        )
+        return {
+            "decision_event_ids": [event_id],
+            "executed_nodes": ["optuna_record_trial"],
+        }
+    assert evaluation and verification
     common = {
         "store": dependencies.provenance_store,
         "run_id": state["run_id"],
         "cycle": state["cycle"],
-        "study_name": state["optuna_study_state"].study_name,
+        "study_name": summary.study_name,
         "timestamp": timestamp,
         "provenance": evaluation.provenance,
         "trial_number": outcome.trial_number,
@@ -396,12 +429,13 @@ def optuna_decide_study(state: ResearchState) -> dict:
             if budget_exhausted
             else "effective_trial_budget_reached"
         )
-        summary = summary.model_copy(
-            update={"finished": True, "finish_reason": reason}
-        )
+        summary = summary.model_copy(update={"finished": True, "finish_reason": reason})
     return {
         "optuna_study_state": summary,
         "optuna_trial_outcome": None,
+        "optuna_trial_pruned": False,
+        "optuna_trial_operational_terminal": False,
+        "optuna_evaluation_reused": False,
         "executed_nodes": ["optuna_decide_study"],
     }
 
@@ -414,9 +448,13 @@ def optuna_finalise_study(
     spec = state["optuna_study_spec"]
     assert summary is not None and spec is not None and summary.finished
     backend = _backend(dependencies)
+    outcomes = backend.trial_outcomes(summary.study_name)
+    multi_objective = len(spec.objective_specs) > 1
     feasible = summary.best_feasible_trial_number
     diagnostic = summary.best_overall_trial_number
-    selected_number = feasible if feasible is not None else diagnostic
+    selected_number = (
+        None if multi_objective else feasible if feasible is not None else diagnostic
+    )
     selected_models = (
         backend.load_trial_models(summary.study_name, selected_number)
         if selected_number is not None
@@ -425,15 +463,29 @@ def optuna_finalise_study(
     preliminary = OptunaStudyResult(
         study_name=summary.study_name,
         direction=summary.direction,
+        objective_names=summary.objective_names,
+        directions=summary.directions,
         trial_budget=summary.trial_budget,
         trials_asked=summary.trials_asked,
         trials_completed=summary.trials_completed,
         trials_failed=summary.trials_failed,
+        trials_pruned=summary.trials_pruned,
         best_feasible_trial_number=summary.best_feasible_trial_number,
         best_feasible_score=summary.best_feasible_score,
         best_overall_trial_number=summary.best_overall_trial_number,
         best_overall_score=summary.best_overall_score,
-        feasible_trial_found=feasible is not None,
+        feasible_trial_found=(
+            any(outcome.feasible for outcome in outcomes)
+            if multi_objective
+            else feasible is not None
+        ),
+        pareto_trial_numbers=summary.pareto_trial_numbers,
+        pareto_trials=tuple(
+            outcome
+            for outcome in outcomes
+            if outcome.trial_number in summary.pareto_trial_numbers
+        ),
+        diagnostics=backend.study_diagnostics(summary.study_name, spec),
         finish_reason=summary.finish_reason or "study_finished",
     )
     references = study_artefact_references(
@@ -449,7 +501,7 @@ def optuna_finalise_study(
             "trial_number": selected_number,
             "parameters": next(
                 item.parameters
-                for item in backend.trial_outcomes(summary.study_name)
+                for item in outcomes
                 if item.trial_number == selected_number
             ),
         }
@@ -458,7 +510,7 @@ def optuna_finalise_study(
         dependencies.artefact_policy,
         spec,
         result,
-        backend.trial_outcomes(summary.study_name),
+        outcomes,
         selected_payload,
     )
     completed_at = backend.set_study_completed_at(

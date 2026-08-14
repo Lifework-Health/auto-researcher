@@ -21,11 +21,28 @@ dev = [
     "pytest==9.0.2",
 ]
 hpo = [
-    "optuna>=4.9,<5",
+    "optuna==4.9.0",
 ]
 hpo-postgresql = [
-    "optuna>=4.9,<5",
+    "optuna==4.9.0",
     "psycopg[binary]>=3.2,<4",
+]
+hpo-cmaes = [
+    "optuna==4.9.0",
+    "cmaes>=0.12,<1",
+]
+hpo-gp = [
+    "optuna==4.9.0",
+    "scipy>=1.10,<2",
+    "torch>=2.0",
+]
+hpo-qmc = [
+    "optuna==4.9.0",
+    "scipy>=1.10,<2",
+]
+hpo-diagnostics = [
+    "optuna==4.9.0",
+    "scikit-learn>=1.5,<2",
 ]
 agents = [
     "langchain-core==1.5.3",

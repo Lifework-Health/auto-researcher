@@ -113,6 +113,17 @@ def route_after_optuna_prepare(
     return "optuna_ask_trial"
 
 
+def route_after_evaluation(
+    state: ResearchState,
+) -> Literal["verify_evidence", "optuna_record_trial"]:
+    return (
+        "optuna_record_trial"
+        if state.get("optuna_trial_pruned", False)
+        or state.get("optuna_trial_operational_terminal", False)
+        else "verify_evidence"
+    )
+
+
 def route_after_verification(
     state: ResearchState,
 ) -> Literal[

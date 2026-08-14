@@ -9,10 +9,12 @@ from pydantic import JsonValue
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import (
     EvaluationResult,
+    ExperimentSpec,
     ResearchContract,
     SearchRequest,
 )
 from auto_researcher.search.optuna.models import OptunaStudySpec
+from auto_researcher.search.optuna.pruning import OptunaIntermediateReporter
 from auto_researcher.search.openevolve.protocols import EvolvableComponent
 from auto_researcher.search.openevolve.live_dataset import LiveMutationDatasetClass
 from auto_researcher.search.openevolve.live_boundary import (
@@ -93,6 +95,20 @@ class OptunaCapableTask(Protocol):
         contract: ResearchContract,
         request: SearchRequest,
     ) -> OptunaStudySpec: ...
+
+
+@runtime_checkable
+class IntermediateReportingEvaluator(Protocol):
+    """Optional cooperative evaluator seam for native Optuna pruning."""
+
+    evaluator_id: str
+
+    def evaluate_with_intermediate_reporting(
+        self,
+        experiment: ExperimentSpec,
+        contract: ResearchContract,
+        reporter: OptunaIntermediateReporter,
+    ) -> EvaluationResult: ...
 
 
 @runtime_checkable

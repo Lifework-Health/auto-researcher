@@ -34,6 +34,10 @@ from auto_researcher.search.optuna.models import (
     OptunaTrialReference,
 )
 from auto_researcher.search.optuna.naming import StudyIdentity
+from auto_researcher.search.optuna.pruning import (
+    OptunaIntermediateReporter,
+    OptunaPruningAcknowledged,
+)
 from auto_researcher.tasks.models import ExperimentMetadata
 from auto_researcher.tasks.protocols import ResearchTask
 
@@ -195,6 +199,7 @@ class WorkerExecutionContext(BaseModel):
     claim: TrialClaim
     resource_admission: ResourceAdmission | None = None
     process_environment: Mapping[str, str] | None = None
+    intermediate_reporter: OptunaIntermediateReporter | None = None
 
 
 class CoordinatedTrialResult(BaseModel):
@@ -203,8 +208,8 @@ class CoordinatedTrialResult(BaseModel):
     reference: OptunaTrialReference
     claim: TrialClaim
     experiment: ExperimentSpec
-    evaluation: EvaluationResult
-    verification: VerificationResult
+    evaluation: EvaluationResult | None = None
+    verification: VerificationResult | None = None
     outcome: OptunaTrialOutcome
     resource_id: str | None = None
 
@@ -344,15 +349,47 @@ class CoordinatedOptunaWorker:
                             base_environment=self.base_process_environment,
                         )
             claim = guard.assert_owner()
-            evaluation = self.evaluator(
-                WorkerExecutionContext(
-                    experiment=experiment,
-                    trial=reference,
-                    claim=claim,
-                    resource_admission=admission,
-                    process_environment=process_environment,
+            reporter = (
+                self.backend.intermediate_reporter(
+                    spec=self.study_spec,
+                    reference=reference,
                 )
+                if self.study_spec.pruner.type != "none"
+                else None
             )
+            try:
+                evaluation = self.evaluator(
+                    WorkerExecutionContext(
+                        experiment=experiment,
+                        trial=reference,
+                        claim=claim,
+                        resource_admission=admission,
+                        process_environment=process_environment,
+                        intermediate_reporter=reporter,
+                    )
+                )
+            except OptunaPruningAcknowledged:
+                claim = guard.assert_owner()
+                guard.stop()
+                claim = guard.assert_owner()
+                terminal_started = True
+                outcome = self.backend.prune_claimed_trial(
+                    claim=claim,
+                    spec=self.study_spec,
+                    reference=reference,
+                    reported_at=self.clock(),
+                )
+                return CoordinatedTrialResult(
+                    reference=reference,
+                    claim=claim,
+                    experiment=experiment,
+                    outcome=outcome,
+                    resource_id=(
+                        admission.lease.resource_id
+                        if admission is not None and admission.lease is not None
+                        else None
+                    ),
+                )
             claim = guard.assert_owner()
             verification = self.verifier(experiment, evaluation)
             claim = guard.assert_owner()
