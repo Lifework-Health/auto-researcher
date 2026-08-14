@@ -11,10 +11,12 @@ from auto_researcher.resources.broker import (
 )
 from auto_researcher.resources.leases import (
     InMemoryResourceLeaseStore,
+    PostgresResourceLeaseStore,
     ResourceLeaseConflict,
     ResourceLeaseError,
     ResourceLeaseNotFound,
     ResourceLeaseOwnershipError,
+    ResourceLeaseStoreUnavailable,
 )
 from auto_researcher.resources.models import (
     AdmissionClass,
@@ -30,6 +32,15 @@ from auto_researcher.resources.models import (
     ResourceRequest,
     ResourceRequirement,
 )
+from auto_researcher.resources.nvidia import (
+    InvalidGPUProviderSnapshot,
+    NvidiaComputeProcess,
+    NvidiaGPUObservation,
+    NvidiaGPUResourceProvider,
+    NvidiaSmiGPUEnumerator,
+    cuda_environment_for_lease,
+    physical_gpu_index,
+)
 from auto_researcher.resources.protocols import (
     ResourceAdmissionPolicy,
     ResourceLeaseStore,
@@ -41,8 +52,14 @@ __all__ = [
     "AdmissionOutcome",
     "CourtesyResourceAdmissionPolicy",
     "InMemoryResourceLeaseStore",
+    "PostgresResourceLeaseStore",
     "InvalidResourceRequest",
     "InvalidResourceState",
+    "InvalidGPUProviderSnapshot",
+    "NvidiaComputeProcess",
+    "NvidiaGPUObservation",
+    "NvidiaGPUResourceProvider",
+    "NvidiaSmiGPUEnumerator",
     "PreemptionPolicy",
     "ResourceAdmission",
     "ResourceAdmissionDecision",
@@ -59,9 +76,12 @@ __all__ = [
     "ResourceLeaseNotFound",
     "ResourceLeaseOwnershipError",
     "ResourceLeaseStore",
+    "ResourceLeaseStoreUnavailable",
     "ResourceOwner",
     "ResourceProvider",
     "ResourceRequest",
     "ResourceRequirement",
     "ResourceWaitTimeout",
+    "cuda_environment_for_lease",
+    "physical_gpu_index",
 ]

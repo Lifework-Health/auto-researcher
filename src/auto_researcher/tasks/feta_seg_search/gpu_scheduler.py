@@ -50,6 +50,7 @@ class GPUSchedulerPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     mode: Literal["disabled", "primary", "opportunistic"] = "disabled"
+    gpu_selection: Literal["exact", "equivalent_pool"] = "exact"
     physical_gpu_index: int | None = Field(default=None, strict=True, ge=0)
     poll_seconds: int = Field(default=20, strict=True, gt=0)
     stable_idle_seconds: int = Field(default=0, strict=True, ge=0)
@@ -98,8 +99,19 @@ class GPUSchedulerPolicy(BaseModel):
     def validate_mode_binding(self) -> "GPUSchedulerPolicy":
         if self.mode == "disabled" and self.physical_gpu_index is not None:
             raise ValueError("disabled scheduler cannot select a GPU")
-        if self.mode != "disabled" and self.physical_gpu_index is None:
+        if self.mode == "disabled" and self.gpu_selection != "exact":
+            raise ValueError("disabled scheduler cannot select a GPU pool")
+        if (
+            self.mode != "disabled"
+            and self.gpu_selection == "exact"
+            and self.physical_gpu_index is None
+        ):
             raise ValueError("enabled scheduler requires physical_gpu_index")
+        if (
+            self.gpu_selection == "equivalent_pool"
+            and self.physical_gpu_index is not None
+        ):
+            raise ValueError("equivalent GPU pool cannot select a physical index")
         return self
 
 
@@ -258,18 +270,29 @@ class FeTAGPUResourceProvider:
                 ),
                 utilization_percent=observed.utilization_percent,
                 foreign_owners=owners,
-                equivalence_tags=frozenset({"cuda-logical-device-0"}),
+                # The additive generic provider/request path uses this tag. The
+                # legacy exact provider still exposes only the configured card.
+                equivalence_tags=frozenset(
+                    {"cuda-logical-device-0", "nvidia-cuda", "whole-physical-gpu"}
+                ),
             ),
         )
 
 
-def gpu_resource_request(policy: GPUSchedulerPolicy) -> ResourceRequest:
+def gpu_resource_request(
+    policy: GPUSchedulerPolicy,
+    *,
+    request_id: str | None = None,
+) -> ResourceRequest:
     """Translate FeTA runtime policy without admitting scientific configuration."""
 
     if policy.mode == "disabled":
         raise ValueError("disabled gpu scheduler has no resource request")
+    if policy.gpu_selection == "equivalent_pool" and request_id is None:
+        raise ValueError("equivalent_gpu_pool_requires_logical_request_id")
+    logical_request_id = request_id or f"feta-gpu-{policy.physical_gpu_index}"
     return ResourceRequest(
-        request_id=f"feta-gpu-{policy.physical_gpu_index}",
+        request_id=logical_request_id,
         requirements=(
             ResourceRequirement(
                 resource_type="gpu",
@@ -285,7 +308,11 @@ def gpu_resource_request(policy: GPUSchedulerPolicy) -> ResourceRequest:
         priority=100 if policy.mode == "primary" else 0,
         maximum_wait_seconds=None,
         stable_idle_seconds=policy.stable_idle_seconds,
-        equivalence_requirements=frozenset({"cuda-logical-device-0"}),
+        equivalence_requirements=(
+            frozenset({"cuda-logical-device-0"})
+            if policy.gpu_selection == "exact"
+            else frozenset({"nvidia-cuda", "whole-physical-gpu"})
+        ),
     )
 
 
@@ -304,6 +331,8 @@ def verify_physical_cuda_binding(
 ) -> None:
     if policy.mode == "disabled":
         return
+    if policy.gpu_selection != "exact":
+        raise ValueError("equivalent_gpu_pool_requires_leased_process_binding")
     visible = (environ if environ is not None else os.environ).get(
         "CUDA_VISIBLE_DEVICES"
     )
@@ -333,6 +362,8 @@ def wait_for_gpu_admission(
 
     if policy.mode == "disabled":
         return None
+    if policy.gpu_selection != "exact":
+        raise ValueError("equivalent_gpu_pool_requires_resource_broker_worker")
     verify_physical_cuda_binding(policy, environ=environ)
     if maximum_epochs not in policy.allowed_fidelities:
         raise ValueError("feta_search_gpu_fidelity_disallowed")
