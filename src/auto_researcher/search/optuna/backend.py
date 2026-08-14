@@ -8,6 +8,7 @@ import math
 import warnings
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from auto_researcher.contracts.models import (
     EvaluationResult,
@@ -71,13 +72,21 @@ class OptunaAskTellBackend:
         shared_workers: bool = False,
         coordination: PostgresOptunaCoordination | None = None,
         worker_id: str | None = None,
+        worker_session_id: str | None = None,
     ) -> None:
         if shared_workers and (coordination is None or not worker_id):
             raise ValueError("shared Optuna requires coordination and worker_id")
+        if worker_session_id is not None and not worker_session_id:
+            raise ValueError("worker_session_id cannot be empty")
         self.storage = storage
         self.shared_workers = shared_workers
         self.coordination = coordination
         self.worker_id = worker_id
+        # Operational runtime incarnation only. It never enters study, request,
+        # experiment, or other scientific identity.
+        self.worker_session_id = worker_session_id
+        if shared_workers and self.worker_session_id is None:
+            self.worker_session_id = str(uuid4())
         # Optuna persists trials, not sampler RNG state. Keep one sampler-bearing
         # Study object per prepared study for the lifetime of this runtime so
         # sequential ask calls advance the seeded sampler instead of resetting it.
@@ -107,9 +116,13 @@ class OptunaAskTellBackend:
         seed = spec.seed
         if self.shared_workers:
             assert self.worker_id is not None
-            # A stable worker-specific native sampler stream preserves the study
-            # seed while avoiding identical independent streams in each process.
-            material = f"{spec.seed}\x1f{self.worker_id}".encode("utf-8")
+            assert self.worker_session_id is not None
+            # Optuna does not durably persist sampler RNG state. Include the
+            # process incarnation so restarting one logical worker cannot replay
+            # that worker's initial native TPE stream.
+            material = (
+                f"{spec.seed}\x1f{self.worker_id}\x1f{self.worker_session_id}"
+            ).encode("utf-8")
             seed = int.from_bytes(hashlib.sha256(material).digest()[:4], "big")
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -694,9 +707,20 @@ class OptunaAskTellBackend:
                     is not None
                 ):
                     continue
-                if trial.datetime_start is None:
-                    continue
-                started = trial.datetime_start
+                asked_at = trial.user_attrs.get("asked_at")
+                started: datetime | None = None
+                if isinstance(asked_at, str):
+                    try:
+                        parsed = datetime.fromisoformat(asked_at)
+                    except ValueError:
+                        parsed = None
+                    if parsed is not None and parsed.tzinfo is not None:
+                        # ask_and_claim_trial obtains this value from PostgreSQL.
+                        started = parsed
+                if started is None:
+                    if trial.datetime_start is None:
+                        continue
+                    started = trial.datetime_start
                 if started.tzinfo is None:
                     # Optuna 4.9 RDB datetime_start is host-local and naive. Python
                     # applies the recovery host's zone rules here; shared workers

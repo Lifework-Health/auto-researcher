@@ -68,18 +68,19 @@ replacement, if any, is a new native Optuna trial.
 The ASK crash windows are explicit. A crash before ask creates nothing. A crash
 after native ask but before durable claim can leave an unclaimed RUNNING trial;
 ownership is never guessed. Operators/recovery code must apply a bounded orphan
-grace before public-API FAIL reconciliation. Optuna 4.9 persists
-`datetime_start` as a naive asking-host local time. Recovery interprets it using
-the recovery host's local-zone rules, so a shared deployment must configure one
-worker timezone (UTC is preferred), bound clock skew, and set the orphan grace
-above that bound. This host-time fallback is necessary only because the crash can
-occur before Auto Researcher writes database-time claim metadata. Durable claim
-expiry itself never relies on host time. A claimed crash is recovered only after
-database-time expiry. Expired resource leases are independently released
-by ResourceLeaseStore. Evaluator output reuse remains the provenance/evaluation
-store's responsibility; the coordination report digest lets replay distinguish
-the exact already-recorded report. If tell committed before acknowledgement,
-the terminal native trial plus exact digest makes replay idempotent.
+grace before public-API FAIL reconciliation. A valid `asked_at` user attribute is
+preferred because `ask_and_claim_trial` obtains it from PostgreSQL. If the crash
+happened before that attribute was durably written, recovery falls back to
+Optuna 4.9's naive asking-host-local `datetime_start`. The fallback interprets it
+using the recovery host's local-zone rules, so a shared deployment must configure
+one worker timezone (UTC is preferred), bound clock skew, and set the orphan grace
+above that bound. Durable claim expiry itself never relies on host time. A claimed
+crash is recovered only after database-time expiry. Expired resource leases are
+independently released by ResourceLeaseStore. Evaluator output reuse remains the
+provenance/evaluation store's responsibility; the coordination report digest lets
+replay distinguish the exact already-recorded report. If tell committed before
+acknowledgement, the terminal native trial plus exact digest makes replay
+idempotent.
 
 Optuna 4.9 automatic RDB heartbeat handling is designed around
 `Study.optimize()`. It does not automatically heartbeat an external ask/tell
@@ -87,15 +88,37 @@ lifecycle, so PR 11.5 does not enable `RDBStorage.heartbeat_interval` or claim
 that Optuna recovers these workers. Auto Researcher claims heartbeat explicitly;
 stale RUNNING trials are reconciled through public `Study.tell(..., state=FAIL)`.
 
+`CoordinatedOptunaWorker` starts a synchronous claim heartbeat immediately after
+ASK admission, then renews the claim in a background loop throughout experiment
+construction, resource admission, evaluation, and verification. The default
+interval is one quarter of `claim_ttl`; an explicit interval must be positive and
+no greater than one third of the TTL. Each heartbeat is a short independent
+PostgreSQL transaction, never a transaction held across scientific work. Once a
+resource lease is acquired, a second loop renews that exact lease with the same
+default and validation rule relative to `resource_lease_ttl`.
+
+The first heartbeat failure is retained by the execution guard. A detected lost
+claim or lease prevents subsequent verification and prevents native tell or FAIL
+under the superseded token. Specific coordination and lease-ownership errors are
+surfaced rather than collapsed into an evaluator error. Both heartbeat loops are
+stopped and joined before terminal tell/fail and resource-release teardown, so a
+late heartbeat cannot race claim release. Python cannot forcibly stop an
+arbitrary injected evaluator already executing when a database or network failure
+is detected; the minimum enforced boundary is that it cannot verify or write a
+terminal Optuna result after it returns and the guard observes the failure.
+
 ## Distributed TPE
 
 Sequential storage retains the exact configured seed and previous sampler-cache
 behaviour. Shared workers use native `TPESampler(constant_liar=True)`. Each
-worker's native sampler seed is a stable hash of the configured study seed and
-worker ID, preventing every process from starting an identical independent RNG
-stream while still incorporating the configured seed. Optuna remains the only
-component suggesting values. Distributed TPE is order- and schedule-dependent;
-PR 11.5 does not claim schedule-independent reproducibility.
+runtime's native sampler seed is a hash of the configured study seed, durable
+logical `worker_id`, and unique operational `worker_session_id`. The session ID
+distinguishes process incarnations so restarting the same logical worker does not
+replay its initial in-memory RNG stream. It never enters `SearchRequest`,
+`ExperimentSpec`, study attributes, or scientific identity, and tests may inject
+it deterministically. Optuna remains the only component suggesting values.
+Distributed TPE is order- and schedule-dependent; PR 11.5 neither claims full
+duplicate prevention nor schedule-independent reproducibility.
 
 ## PostgreSQL resource leases
 
@@ -103,11 +126,14 @@ PR 11.5 does not claim schedule-independent reproducibility.
 Partial unique indexes enforce at most one unreleased lease for a logical
 `request_id` and for a physical `resource_id`. Transactions recover database-time
 expired rows before acquisition. Exact same-request/same-worker/same-resource
-recovery returns the original lease without renewal. Conflicting worker or
-resource acquisition fails at the database boundary. Release or stale recovery
-allows ordinary selection again. Allocation remains whole-candidate with no
-partial allocation, substitution of an active request, pre-emption, or second
-allocation state.
+recovery returns the original lease without renewal. If two exact first-time
+acquisitions race at INSERT, the losing transaction rolls back and a fresh
+transaction reads the authoritative active row; the exact match returns that same
+lease ID and timestamps without renewal. A different worker, request, or resource
+remains a conflict, and the partial unique indexes remain the final authority.
+Release or stale recovery allows ordinary selection again. Allocation remains
+whole-candidate with no partial allocation, substitution of an active request,
+pre-emption, or second allocation state.
 
 ## Equivalent GPUs and scientific identity
 
@@ -128,11 +154,24 @@ ID and the coordinated ResourceBroker worker seam.
 
 ## Consequences and deferred scope
 
-The LangGraph programme remains single-owner per checkpoint thread. PR 11.5 adds
-`CoordinatedOptunaWorker.run_one()` rather than another graph or a multiprocess
+The standard `run start` and sequential LangGraph Optuna path remains a
+single-worker SQLite runtime. PR 11.5 establishes reusable PostgreSQL
+storage/claim/resource boundaries and `CoordinatedOptunaWorker.run_one()` for a
+separately wired shared-worker runtime; it does not make the ordinary CLI launch
+multiple HPO workers. The LangGraph programme remains single-owner per checkpoint
+thread, and this PR deliberately avoids another graph or a multiprocess
 control-plane rewrite. PostgreSQL must be provisioned and migrated operationally;
 application code creates only its small coordination tables and never provisions
 a server or edits Optuna tables.
+
+The real PostgreSQL gate exercises the worker seam with a one-second claim TTL
+and a 2.3-second evaluator, delayed resource admission beyond the claim TTL,
+resource renewal beyond the original lease TTL, a superseded-token loss path,
+and both conflicting and exact-idempotent two-process lease races. These tests
+demonstrate advancing database heartbeat timestamps, blocked stale takeover,
+native COMPLETE plus released claim on success, no verification/tell after known
+ownership loss, and one unchanged active lease row for an exact concurrent
+acquisition.
 
 PR 11.7 remains responsible for sampler parity, pruning, multi-objective/Pareto,
 constraints, and plugin samplers/pruners. Also deferred are multi-GPU trials,

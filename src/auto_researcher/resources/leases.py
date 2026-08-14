@@ -366,14 +366,69 @@ class PostgresResourceLeaseStore:
             raise
         except Exception as exc:
             # A database-enforced partial unique index is the final arbiter for
-            # races that passed both reads on separate connections.
+            # races that passed both reads on separate connections. Once the
+            # failed transaction has rolled back, resolve the authoritative row
+            # in a fresh transaction so an exact duplicate remains idempotent.
             if type(exc).__name__ == "IntegrityError":
-                raise ResourceLeaseConflict(
-                    "resource_or_request_already_leased"
-                ) from None
+                return self._resolve_acquire_race(
+                    request_id=request.request_id,
+                    resource_id=candidate.resource_id,
+                    worker_id=worker_id,
+                )
             raise ResourceLeaseStoreUnavailable(
                 "resource_lease_store_unavailable"
             ) from None
+
+    def _resolve_acquire_race(
+        self,
+        *,
+        request_id: str,
+        resource_id: str,
+        worker_id: str,
+    ) -> ResourceLease:
+        try:
+            with self.engine.begin() as connection:
+                request_row = connection.execute(
+                    self._text(
+                        """
+                        SELECT * FROM ar_resource_lease
+                        WHERE request_id = :request_id AND released_at IS NULL
+                        """
+                    ),
+                    {"request_id": request_id},
+                ).one_or_none()
+                if request_row is not None:
+                    existing = self._lease(request_row)
+                    if (
+                        existing.worker_id == worker_id
+                        and existing.resource_id == resource_id
+                    ):
+                        return existing
+                    raise ResourceLeaseConflict("request_already_leased")
+                resource_row = connection.execute(
+                    self._text(
+                        """
+                        SELECT * FROM ar_resource_lease
+                        WHERE resource_id = :resource_id AND released_at IS NULL
+                        """
+                    ),
+                    {"resource_id": resource_id},
+                ).one_or_none()
+                if resource_row is not None:
+                    existing = self._lease(resource_row)
+                    if (
+                        existing.worker_id == worker_id
+                        and existing.request_id == request_id
+                    ):
+                        return existing
+                    raise ResourceLeaseConflict("resource_already_leased")
+        except ResourceLeaseConflict:
+            raise
+        except Exception:
+            raise ResourceLeaseStoreUnavailable(
+                "resource_lease_store_unavailable"
+            ) from None
+        raise ResourceLeaseStoreUnavailable("resource_lease_race_row_not_found")
 
     @staticmethod
     def _uuid(lease_id: str) -> str:

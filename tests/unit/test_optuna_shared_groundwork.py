@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from pydantic import ValidationError
 
@@ -16,6 +18,7 @@ from auto_researcher.search.optuna.storage import (
     in_memory_storage,
     sqlite_storage,
 )
+from auto_researcher.search.optuna.worker import CoordinatedOptunaWorker
 from auto_researcher.secrets.models import SecretProviderKind, SecretReference
 
 
@@ -78,12 +81,14 @@ def test_distributed_workers_use_native_distinct_seeded_tpe_streams() -> None:
         shared_workers=True,
         coordination=object(),  # not exercised by this sampler-only test
         worker_id="worker-a",
+        worker_session_id="shared-session",
     )._sampler(spec)
     second = OptunaAskTellBackend(
         in_memory_storage().storage,
         shared_workers=True,
         coordination=object(),
         worker_id="worker-b",
+        worker_session_id="shared-session",
     )._sampler(spec)
 
     import optuna
@@ -102,6 +107,105 @@ def test_distributed_workers_use_native_distinct_seeded_tpe_streams() -> None:
 
     assert type(first).__name__ == "TPESampler"
     assert suggestions_a != suggestions_b
+    assert all(0 <= value <= 10_000 for value in (*suggestions_a, *suggestions_b))
+
+
+@pytest.mark.hpo
+def test_restarted_logical_worker_uses_new_native_tpe_stream() -> None:
+    spec = OptunaStudySpec(
+        task_id="test",
+        schema_version="1.0",
+        task_version="1",
+        search_space_version="1",
+        direction=OptimisationDirection.MAXIMIZE,
+        parameters=(IntParameterSpec(name="x", low=0, high=10_000),),
+        trial_budget=12,
+        seed=1729,
+        n_startup_trials=12,
+        objective_metric="score",
+    )
+    samplers = [
+        OptunaAskTellBackend(
+            in_memory_storage().storage,
+            shared_workers=True,
+            coordination=object(),
+            worker_id="durable-worker",
+            worker_session_id=session_id,
+        )._sampler(spec)
+        for session_id in ("runtime-one", "runtime-two")
+    ]
+
+    import optuna
+    from optuna.distributions import IntDistribution
+
+    streams = []
+    for sampler in samplers:
+        study = optuna.create_study(sampler=sampler)
+        streams.append(
+            [
+                study.ask(fixed_distributions={"x": IntDistribution(0, 10_000)}).params[
+                    "x"
+                ]
+                for _ in range(6)
+            ]
+        )
+
+    assert streams[0] != streams[1]
+    assert all(0 <= value <= 10_000 for stream in streams for value in stream)
+
+
+def test_shared_backend_generates_unique_runtime_session_identity() -> None:
+    backends = [
+        OptunaAskTellBackend(
+            in_memory_storage().storage,
+            shared_workers=True,
+            coordination=object(),
+            worker_id="durable-worker",
+        )
+        for _ in range(2)
+    ]
+    assert backends[0].worker_session_id
+    assert backends[0].worker_session_id != backends[1].worker_session_id
+
+
+@pytest.mark.hpo
+def test_worker_session_identity_does_not_change_sequential_seed_stream() -> None:
+    spec = OptunaStudySpec(
+        task_id="test",
+        schema_version="1.0",
+        task_version="1",
+        search_space_version="1",
+        direction=OptimisationDirection.MAXIMIZE,
+        parameters=(IntParameterSpec(name="x", low=0, high=10_000),),
+        trial_budget=12,
+        seed=1729,
+        n_startup_trials=12,
+        objective_metric="score",
+    )
+    backends = [
+        OptunaAskTellBackend(
+            in_memory_storage().storage,
+            worker_session_id=session_id,
+        )
+        for session_id in ("ignored-one", "ignored-two")
+    ]
+
+    import optuna
+    from optuna.distributions import IntDistribution
+
+    streams = []
+    for backend in backends:
+        study = optuna.create_study(sampler=backend._sampler(spec))
+        streams.append(
+            [
+                study.ask(fixed_distributions={"x": IntDistribution(0, 10_000)}).params[
+                    "x"
+                ]
+                for _ in range(6)
+            ]
+        )
+
+    assert streams[0] == streams[1]
 
 
 def test_shared_validation_allows_multiple_valid_running_trials() -> None:
@@ -130,3 +234,31 @@ def test_shared_validation_allows_multiple_valid_running_trials() -> None:
         foreign = Trial(3)
         foreign.user_attrs["run_id"] = "other"
         backend._validate_running_trials([foreign], identity)
+
+
+def test_coordinated_worker_rejects_unsafe_heartbeat_intervals() -> None:
+    common = {
+        "backend": object(),
+        "identity": object(),
+        "study_spec": object(),
+        "trial_budget": 1,
+        "claim_ttl": timedelta(seconds=3),
+        "task": object(),
+        "metadata": object(),
+        "search_request": object(),
+        "evaluator": lambda context: None,
+        "verifier": lambda experiment, evaluation: None,
+    }
+    with pytest.raises(ValueError, match="claim heartbeat interval"):
+        CoordinatedOptunaWorker(
+            **common,
+            claim_heartbeat_interval=timedelta(seconds=2),
+        )
+    with pytest.raises(ValueError, match="resource heartbeat interval"):
+        CoordinatedOptunaWorker(
+            **common,
+            resource_broker=object(),
+            resource_request_factory=lambda reference, experiment: None,
+            resource_lease_ttl=timedelta(seconds=3),
+            resource_heartbeat_interval=timedelta(seconds=2),
+        )
