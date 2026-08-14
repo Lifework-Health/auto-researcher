@@ -17,6 +17,11 @@ from auto_researcher.search.optuna.models import (
     OptunaStudySpec,
 )
 from auto_researcher.search.optuna.operational import OptunaOperationalRecordStore
+from auto_researcher.search.optuna.seeding import (
+    CUSTOM_DISTRIBUTED_SEED_POLICIES,
+    DistributedSamplerSeedPolicy,
+    native_sampler_seed_plan,
+)
 from auto_researcher.search.optuna.space import uses_trial_suggestions
 
 
@@ -26,6 +31,8 @@ PrunerFactory = Callable[[OptunaPrunerSpec], Any]
 
 @dataclass(frozen=True)
 class SamplerBuildContext:
+    """Factory context where ``seed`` is the ordinary worker-distinct seed."""
+
     study_spec: OptunaStudySpec
     seed: int
     shared_workers: bool
@@ -49,6 +56,7 @@ class ApprovedSamplerRegistration:
     shared_worker_safe: bool = False
     supports_dynamic_space: bool = False
     optional_dependency_identity: str | None = None
+    distributed_seed_policy: DistributedSamplerSeedPolicy | None = None
 
 
 @dataclass
@@ -71,9 +79,16 @@ class ApprovedOptunaComponentRegistry:
         shared_worker_safe: bool = False,
         supports_dynamic_space: bool = False,
         optional_dependency_identity: str | None = None,
+        distributed_seed_policy: DistributedSamplerSeedPolicy | None = None,
     ) -> None:
         if name in NATIVE_SAMPLERS or name in self.sampler_registrations:
             raise ValueError("Optuna sampler registry name is reserved or duplicated")
+        if shared_worker_safe and (
+            distributed_seed_policy not in CUSTOM_DISTRIBUTED_SEED_POLICIES
+        ):
+            raise ValueError(
+                "shared custom Optuna sampler requires an explicit distributed seed policy"
+            )
         self.sampler_registrations[name] = ApprovedSamplerRegistration(
             factory=factory,
             supports_single_objective=supports_single_objective,
@@ -82,6 +97,7 @@ class ApprovedOptunaComponentRegistry:
             shared_worker_safe=shared_worker_safe,
             supports_dynamic_space=supports_dynamic_space,
             optional_dependency_identity=optional_dependency_identity,
+            distributed_seed_policy=distributed_seed_policy,
         )
 
     def register_pruner(self, name: str, factory: PrunerFactory) -> None:
@@ -199,6 +215,10 @@ def build_sampler(
             raise ValueError("optuna_custom_sampler_constraints_unsupported")
         if context.shared_workers and not custom.shared_worker_safe:
             raise ValueError("optuna_custom_sampler_shared_worker_incompatible")
+        if context.shared_workers and (
+            custom.distributed_seed_policy not in CUSTOM_DISTRIBUTED_SEED_POLICIES
+        ):
+            raise ValueError("optuna_custom_sampler_seed_policy_missing")
         if (
             uses_trial_suggestions(context.study_spec)
             and not custom.supports_dynamic_space
@@ -224,7 +244,14 @@ def build_sampler(
         if context.study_spec.constraints
         else None
     )
-    seed = context.seed
+    seed_plan = native_sampler_seed_plan(
+        sampler_type,
+        shared_workers=context.shared_workers,
+        study_seed=context.study_spec.seed,
+        worker_seed=context.seed,
+        qmc_scramble=bool(configuration.options.get("scramble", False)),
+    )
+    seed = seed_plan.sampler_seed
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=Warning, module=r"optuna\..*")
         if sampler_type == "native_default":
@@ -337,7 +364,13 @@ def build_sampler(
                     "warn_independent_sampling",
                 },
             )
-            return samplers.QMCSampler(seed=seed, **options)
+            return samplers.QMCSampler(
+                seed=seed,
+                independent_sampler=samplers.RandomSampler(
+                    seed=seed_plan.independent_sampler_seed
+                ),
+                **options,
+            )
         if sampler_type == "grid":
             _options(configuration, set())
             return samplers.GridSampler(_grid_space(context.study_spec), seed=seed)

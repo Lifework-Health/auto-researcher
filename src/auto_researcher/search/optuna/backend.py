@@ -53,6 +53,7 @@ from auto_researcher.search.optuna.selection import (
     SelectionCandidate,
     select_trials,
 )
+from auto_researcher.search.optuna.seeding import worker_distinct_seed
 from auto_researcher.search.optuna.space import (
     suggest_parameters,
     uses_trial_suggestions,
@@ -138,13 +139,15 @@ class OptunaAskTellBackend:
         if self.shared_workers and spec.sampler_spec.type != "native_default":
             assert self.worker_id is not None
             assert self.worker_session_id is not None
-            # Optuna does not durably persist sampler RNG state. Include the
-            # process incarnation so restarting one logical worker cannot replay
-            # that worker's initial native TPE stream.
-            material = (
-                f"{spec.seed}\x1f{self.worker_id}\x1f{self.worker_session_id}"
-            ).encode("utf-8")
-            seed = int.from_bytes(hashlib.sha256(material).digest()[:4], "big")
+            # This is the ordinary stochastic-worker seed exposed in the build
+            # context. The component factory applies the exact sampler-specific
+            # policy; QMC/Grid do not receive it as their sequence/order seed and
+            # distributed BruteForce remains unseeded.
+            seed = worker_distinct_seed(
+                spec.seed,
+                worker_id=self.worker_id,
+                worker_session_id=self.worker_session_id,
+            )
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",

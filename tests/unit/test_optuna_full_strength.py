@@ -42,6 +42,12 @@ from auto_researcher.search.optuna.models import (
 from auto_researcher.search.optuna.naming import StudyIdentity, search_space_hash
 from auto_researcher.search.optuna.operational import OptunaOperationalRecordStore
 from auto_researcher.search.optuna.pruning import OptunaPruningAcknowledged
+from auto_researcher.search.optuna.seeding import (
+    DistributedSamplerSeedPolicy,
+    NATIVE_DISTRIBUTED_SEED_POLICIES,
+    native_sampler_seed_plan,
+    worker_distinct_seed,
+)
 from auto_researcher.search.optuna.space import suggest_parameters
 from auto_researcher.resources import (
     CourtesyResourceAdmissionPolicy,
@@ -373,6 +379,7 @@ def test_explicit_shared_worker_safe_custom_sampler_is_accepted() -> None:
         ),
         shared_worker_safe=True,
         supports_dynamic_space=True,
+        distributed_seed_policy=DistributedSamplerSeedPolicy.WORKER_DISTINCT,
     )
     spec = _spec()
     sampler = build_sampler(
@@ -386,6 +393,307 @@ def test_explicit_shared_worker_safe_custom_sampler_is_accepted() -> None:
         registry,
     )
     assert isinstance(sampler, optuna.samplers.RandomSampler)
+
+
+def test_shared_custom_sampler_seed_policy_is_explicit_and_factory_owned() -> None:
+    registry = ApprovedOptunaComponentRegistry()
+    with pytest.raises(ValueError, match="explicit distributed seed policy"):
+        registry.register_sampler(
+            "missing-seed-policy",
+            lambda _configuration, context: optuna.samplers.RandomSampler(
+                seed=context.seed
+            ),
+            shared_worker_safe=True,
+        )
+
+    observed: list[tuple[int, int]] = []
+
+    def study_shared_factory(_configuration, context):
+        observed.append((context.study_spec.seed, context.seed))
+        return optuna.samplers.RandomSampler(seed=context.study_spec.seed)
+
+    registry.register_sampler(
+        "study-shared-custom",
+        study_shared_factory,
+        shared_worker_safe=True,
+        supports_dynamic_space=True,
+        distributed_seed_policy=DistributedSamplerSeedPolicy.STUDY_SHARED,
+    )
+    spec = _spec().model_copy(
+        update={"sampler": OptunaSamplerSpec(type="study-shared-custom")}
+    )
+    storage = optuna.storages.InMemoryStorage()
+    first = OptunaAskTellBackend(
+        storage,
+        shared_workers=True,
+        coordination=object(),
+        worker_id="custom-a",
+        worker_session_id="custom-session-a",
+        component_registry=registry,
+    )
+    second = OptunaAskTellBackend(
+        storage,
+        shared_workers=True,
+        coordination=object(),
+        worker_id="custom-b",
+        worker_session_id="custom-session-b",
+        component_registry=registry,
+    )
+    first_sampler = first._sampler(spec)
+    second_sampler = second._sampler(spec)
+    assert observed[0][0] == observed[1][0] == spec.seed
+    assert observed[0][1] != observed[1][1]
+    assert first_sampler._rng.rng.random() == second_sampler._rng.rng.random()
+
+
+def test_exact_native_distributed_seed_policy_covers_every_sampler() -> None:
+    assert set(NATIVE_DISTRIBUTED_SEED_POLICIES) == NATIVE_SAMPLERS
+    assert NATIVE_DISTRIBUTED_SEED_POLICIES == {
+        "native_default": DistributedSamplerSeedPolicy.NATIVE_DEFAULT,
+        "tpe": DistributedSamplerSeedPolicy.WORKER_DISTINCT,
+        "random": DistributedSamplerSeedPolicy.WORKER_DISTINCT,
+        "cmaes": DistributedSamplerSeedPolicy.DISTRIBUTED_UNSUPPORTED,
+        "gp": DistributedSamplerSeedPolicy.WORKER_DISTINCT,
+        "nsgaii": DistributedSamplerSeedPolicy.WORKER_DISTINCT,
+        "nsgaiii": DistributedSamplerSeedPolicy.WORKER_DISTINCT,
+        "qmc": DistributedSamplerSeedPolicy.STUDY_SHARED,
+        "grid": DistributedSamplerSeedPolicy.STUDY_SHARED,
+        "brute_force": DistributedSamplerSeedPolicy.UNSEEDED_DISTRIBUTED,
+    }
+    first_worker_seed = worker_distinct_seed(
+        17,
+        worker_id="worker-a",
+        worker_session_id="session-a",
+    )
+    second_worker_seed = worker_distinct_seed(
+        17,
+        worker_id="worker-b",
+        worker_session_id="session-b",
+    )
+    assert first_worker_seed != second_worker_seed
+    for sampler_type in ("tpe", "random", "gp", "nsgaii", "nsgaiii"):
+        first = native_sampler_seed_plan(
+            sampler_type,
+            shared_workers=True,
+            study_seed=17,
+            worker_seed=first_worker_seed,
+        )
+        second = native_sampler_seed_plan(
+            sampler_type,
+            shared_workers=True,
+            study_seed=17,
+            worker_seed=second_worker_seed,
+        )
+        assert first.policy is DistributedSamplerSeedPolicy.WORKER_DISTINCT
+        assert first.sampler_seed == first_worker_seed
+        assert second.sampler_seed == second_worker_seed
+    native_default = native_sampler_seed_plan(
+        "native_default",
+        shared_workers=True,
+        study_seed=17,
+        worker_seed=first_worker_seed,
+    )
+    assert native_default.sampler_seed is None
+    with pytest.raises(ValueError, match="shared_worker_incompatible"):
+        native_sampler_seed_plan(
+            "cmaes",
+            shared_workers=True,
+            study_seed=17,
+            worker_seed=first_worker_seed,
+        )
+
+
+def _shared_sampler_backend(storage, worker_id: str) -> OptunaAskTellBackend:
+    return OptunaAskTellBackend(
+        storage,
+        shared_workers=True,
+        coordination=object(),
+        worker_id=worker_id,
+        worker_session_id=f"session-{worker_id}",
+    )
+
+
+@pytest.mark.parametrize("sampler_type", ("tpe", "random", "gp", "nsgaii", "nsgaiii"))
+def test_ordinary_stochastic_shared_samplers_keep_worker_distinct_rng(
+    sampler_type: str,
+) -> None:
+    spec = _spec(sampler=sampler_type)
+    storage = optuna.storages.InMemoryStorage()
+    first = _shared_sampler_backend(storage, "ordinary-a")._sampler(spec)
+    second = _shared_sampler_backend(storage, "ordinary-b")._sampler(spec)
+    assert first._rng.rng.random() != second._rng.rng.random()
+
+
+def test_distributed_qmc_uses_one_sequence_seed_and_distinct_independent_rng() -> None:
+    spec = _spec(sampler="qmc", dynamic=False).model_copy(
+        update={
+            "parameters": (
+                FloatParameterSpec(name="x", low=0.0, high=1.0),
+                IntParameterSpec(name="depth", low=1, high=4),
+            ),
+            "sampler": OptunaSamplerSpec(
+                type="qmc",
+                options={"scramble": True},
+            ),
+        }
+    )
+    storage = optuna.storages.InMemoryStorage()
+    first_backend = _shared_sampler_backend(storage, "qmc-a")
+    second_backend = _shared_sampler_backend(storage, "qmc-b")
+    first = first_backend._sampler(spec)
+    second = second_backend._sampler(spec)
+    assert first._seed == second._seed == spec.seed
+    assert (
+        first._independent_sampler._rng.rng.random()
+        != second._independent_sampler._rng.rng.random()
+    )
+
+    first_study = optuna.create_study(
+        study_name="shared-qmc-sequence",
+        storage=storage,
+        sampler=first,
+        direction="maximize",
+    )
+    second_study = optuna.load_study(
+        study_name="shared-qmc-sequence",
+        storage=storage,
+        sampler=second,
+    )
+    for study in (first_study, second_study):
+        trial = study.ask()
+        suggest_parameters(trial, spec)
+        study.tell(trial.number, float(trial.number))
+    assert first_study.study_name == second_study.study_name
+    assert len(first_study.trials) == 2
+
+
+def test_unscrambled_distributed_qmc_sequence_is_unseeded() -> None:
+    first_worker_seed = worker_distinct_seed(
+        17,
+        worker_id="qmc-a",
+        worker_session_id="session-a",
+    )
+    second_worker_seed = worker_distinct_seed(
+        17,
+        worker_id="qmc-b",
+        worker_session_id="session-b",
+    )
+    first = native_sampler_seed_plan(
+        "qmc",
+        shared_workers=True,
+        study_seed=17,
+        worker_seed=first_worker_seed,
+        qmc_scramble=False,
+    )
+    second = native_sampler_seed_plan(
+        "qmc",
+        shared_workers=True,
+        study_seed=17,
+        worker_seed=second_worker_seed,
+        qmc_scramble=False,
+    )
+    assert first.policy is second.policy is DistributedSamplerSeedPolicy.STUDY_SHARED
+    assert first.sampler_seed is second.sampler_seed is None
+    assert first.independent_sampler_seed == first_worker_seed
+    assert second.independent_sampler_seed == second_worker_seed
+
+    spec = _spec(sampler="qmc", dynamic=False).model_copy(
+        update={"sampler": OptunaSamplerSpec(type="qmc", options={"scramble": False})}
+    )
+    storage = optuna.storages.InMemoryStorage()
+    first_sampler = _shared_sampler_backend(storage, "unscrambled-qmc-a")._sampler(spec)
+    second_sampler = _shared_sampler_backend(storage, "unscrambled-qmc-b")._sampler(
+        spec
+    )
+    assert first_sampler._scramble is second_sampler._scramble is False
+    assert (
+        first_sampler._independent_sampler._rng.rng.random()
+        != second_sampler._independent_sampler._rng.rng.random()
+    )
+
+
+def test_distributed_grid_workers_reconstruct_one_native_grid_order() -> None:
+    spec = _spec(sampler="grid", dynamic=False).model_copy(
+        update={
+            "parameters": (IntParameterSpec(name="depth", low=0, high=3),),
+            "trial_budget": 4,
+        }
+    )
+    storage = optuna.storages.InMemoryStorage()
+    first = _shared_sampler_backend(storage, "grid-a")._sampler(spec)
+    second = _shared_sampler_backend(storage, "grid-b")._sampler(spec)
+    assert first._all_grids == second._all_grids
+
+    first_study = optuna.create_study(
+        study_name="shared-grid-order",
+        storage=storage,
+        sampler=first,
+        direction="maximize",
+    )
+    second_study = optuna.load_study(
+        study_name="shared-grid-order",
+        storage=storage,
+        sampler=second,
+    )
+    first_trial = first_study.ask()
+    second_trial = second_study.ask()
+    suggest_parameters(first_trial, spec)
+    suggest_parameters(second_trial, spec)
+    first_frozen = first_study.get_trials()[first_trial.number]
+    second_frozen = second_study.get_trials()[second_trial.number]
+    first_grid_id = first_frozen.system_attrs["grid_id"]
+    second_grid_id = second_frozen.system_attrs["grid_id"]
+    assert first_grid_id != second_grid_id
+    assert first._all_grids[first_grid_id] == second._all_grids[first_grid_id]
+    assert first._all_grids[second_grid_id] == second._all_grids[second_grid_id]
+    first_study.tell(first_trial.number, 0.0)
+    second_study.tell(second_trial.number, 1.0)
+    assert len(first_study.trials) == 2
+
+    duplicate_spec = spec.model_copy(
+        update={
+            "parameters": (IntParameterSpec(name="depth", low=0, high=0),),
+            "trial_budget": 2,
+        }
+    )
+    duplicate_storage = optuna.storages.InMemoryStorage()
+    duplicate_first = _shared_sampler_backend(
+        duplicate_storage, "grid-duplicate-a"
+    )._sampler(duplicate_spec)
+    duplicate_second = _shared_sampler_backend(
+        duplicate_storage, "grid-duplicate-b"
+    )._sampler(duplicate_spec)
+    duplicate_first_study = optuna.create_study(
+        study_name="shared-grid-native-duplicates",
+        storage=duplicate_storage,
+        sampler=duplicate_first,
+        direction="maximize",
+    )
+    duplicate_second_study = optuna.load_study(
+        study_name="shared-grid-native-duplicates",
+        storage=duplicate_storage,
+        sampler=duplicate_second,
+    )
+    duplicate_first_trial = duplicate_first_study.ask()
+    duplicate_second_trial = duplicate_second_study.ask()
+    first_parameters = suggest_parameters(duplicate_first_trial, duplicate_spec)
+    second_parameters = suggest_parameters(duplicate_second_trial, duplicate_spec)
+    assert first_parameters == second_parameters == {"depth": 0}
+    assert all(
+        trial.state == optuna.trial.TrialState.RUNNING
+        for trial in duplicate_first_study.trials
+    )
+
+
+def test_distributed_bruteforce_is_unseeded_while_sequential_remains_seeded() -> None:
+    spec = _spec(sampler="brute_force", dynamic=False)
+    storage = optuna.storages.InMemoryStorage()
+    first = _shared_sampler_backend(storage, "brute-a")._sampler(spec)
+    second = _shared_sampler_backend(storage, "brute-b")._sampler(spec)
+    sequential = OptunaAskTellBackend(storage)._sampler(spec)
+    assert first._rng._rng is None
+    assert second._rng._rng is None
+    assert sequential._rng._rng is not None
 
 
 def test_false_custom_sampler_combination_fails_before_study_ask() -> None:

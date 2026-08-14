@@ -1003,7 +1003,13 @@ def _v2_spec(*, sampler="random", multi=False, constrained=False):
         seed=505,
         sampler=OptunaSamplerSpec(
             type=sampler,
-            options={"population_size": 4} if sampler == "nsgaii" else {},
+            options=(
+                {"population_size": 4}
+                if sampler == "nsgaii"
+                else {"scramble": True}
+                if sampler == "qmc"
+                else {}
+            ),
         ),
         objective_metric="score",
         objectives=(
@@ -1289,3 +1295,49 @@ def test_acknowledged_prune_recovery_fences_lost_postgresql_owner() -> None:
         storage_b.engine.dispose()
         engine_a.dispose()
         engine_b.dispose()
+
+
+def test_sampler_specific_seed_policy_uses_one_postgresql_study() -> None:
+    import optuna
+
+    for sampler_type in ("qmc", "grid", "brute_force"):
+        study_name = f"ar-seed-{sampler_type}-{uuid4()}"
+        spec = _v2_spec(sampler=sampler_type)
+        first, storage_a, engine_a, identity = _v2_runtime(
+            study_name, f"{sampler_type}-a", spec, prepare=True
+        )
+        second, storage_b, engine_b, _ = _v2_runtime(
+            study_name, f"{sampler_type}-b", spec
+        )
+        try:
+            first_sampler = first._load_study(study_name, spec).sampler
+            second_sampler = second._load_study(study_name, spec).sampler
+            if sampler_type == "qmc":
+                assert first_sampler._seed == second_sampler._seed == spec.seed
+            elif sampler_type == "grid":
+                assert first_sampler._all_grids == second_sampler._all_grids
+            else:
+                assert first_sampler._rng._rng is None
+                assert second_sampler._rng._rng is None
+
+            first_reference, first_outcome = _complete_v2_trial(
+                first, identity, spec, 0
+            )
+            second_reference, second_outcome = _complete_v2_trial(
+                second, identity, spec, 1
+            )
+            assert (
+                first_reference.study_name == second_reference.study_name == study_name
+            )
+            assert first_outcome.status.value == "COMPLETE"
+            assert second_outcome.status.value == "COMPLETE"
+            assert (
+                len(optuna.load_study(study_name=study_name, storage=storage_b).trials)
+                == 2
+            )
+        finally:
+            optuna.delete_study(study_name=study_name, storage=storage_a)
+            storage_a.engine.dispose()
+            storage_b.engine.dispose()
+            engine_a.dispose()
+            engine_b.dispose()

@@ -63,12 +63,30 @@ never contain an arbitrary import path.
 
 A custom sampler registration carries runtime-reviewed capability metadata for
 single- and multi-objective use, native constraints, shared-worker safety, and
-dynamic spaces. Undeclared capabilities are unsupported. These claims cannot be
-supplied by YAML, and the adapter validates the complete study combination before
-constructing the sampler or creating/asking a study. A constraint-capable factory
-receives the durable constraint callback in `SamplerBuildContext` and must bind it
-explicitly; returning `BaseSampler` alone is insufficient and never triggers a
-fallback to TPE.
+dynamic spaces, including an explicit distributed seed policy whenever shared
+workers are allowed. Undeclared capabilities are unsupported. These claims cannot
+be supplied by YAML, and the adapter validates the complete study combination
+before constructing the sampler or creating/asking a study. A constraint-capable
+factory receives the durable constraint callback in `SamplerBuildContext` and
+must bind it explicitly; returning `BaseSampler` alone is insufficient and never
+triggers a fallback to TPE.
+
+Distributed seeding follows an exact Optuna 4.9.0 sampler policy rather than one
+universal worker hash. TPE, Random, GP, NSGA-II, and NSGA-III receive distinct
+worker/session seeds. CMA-ES remains disabled for shared workers. Scrambled QMC
+workers share the configured study seed for the QMC sequence, while the public
+independent `RandomSampler` receives the distinct worker seed; unscrambled QMC
+passes no sequence seed because the sequence does not use one. Grid workers share
+the configured seed and therefore reconstruct one shuffled grid ordering.
+Distributed BruteForce passes `seed=None`, following the pinned warning that a
+fixed seed may increase duplicates; sequential BruteForce retains the configured
+study seed. Native default construction remains delegated to Optuna.
+
+For a shared custom sampler, `ApprovedSamplerRegistration` must declare
+`WORKER_DISTINCT`, `STUDY_SHARED`, or `UNSEEDED_DISTRIBUTED`. Its reviewed factory
+owns the corresponding binding: `context.seed` is the ordinary distinct worker
+seed and `context.study_spec.seed` is the configured study seed. This is runtime
+registration metadata, never a YAML assertion.
 
 ### Search spaces and objectives
 
