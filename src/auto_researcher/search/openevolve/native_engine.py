@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -66,6 +67,7 @@ class ScientificCandidateIdentity(NativeEngineModel):
     source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     canonical_candidate_id: str = Field(pattern=r"^scientific-[0-9a-f]{24}$")
     evaluation_identity: str = Field(pattern=r"^evaluation-[0-9a-f]{24}$")
+    scientific_identity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     canonical_configuration: dict[str, Any]
 
 
@@ -75,6 +77,14 @@ class SafeEvolutionFeedback(NativeEngineModel):
     canonical_candidate_id: str = Field(pattern=r"^scientific-[0-9a-f]{24}$")
     evaluation_identity: str = Field(pattern=r"^evaluation-[0-9a-f]{24}$")
     evaluation_artifact_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluation_reuse_experiment_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$",
+    )
+    evaluation_reuse_identity_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     canonical_scientific_summary: dict[str, Any]
     parent_source_candidate_id: str | None = None
     generation: int = Field(ge=0)
@@ -145,6 +155,14 @@ class ScientificEvaluation(NativeEngineModel):
         default=None,
         pattern=r"^[0-9a-f]{64}$",
     )
+    evaluation_reuse_experiment_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$",
+    )
+    evaluation_reuse_identity_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class EmbeddedEvaluationRequest(NativeEngineModel):
@@ -178,6 +196,10 @@ class NativeEvolutionConfiguration(NativeEngineModel):
     checkpoint_interval: int = Field(gt=0)
     random_seed: int
     diff_based_evolution: bool = False
+    programs_as_changes_description: bool = False
+    initial_changes_description: str = ""
+    diff_summary_max_line_len: int = Field(default=100, gt=0)
+    diff_summary_max_lines: int = Field(default=30, gt=0)
     use_template_stochasticity: bool = True
     template_variations: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     num_top_programs: int = Field(default=3, ge=0)
@@ -189,6 +211,8 @@ class NativeEvolutionResult(NativeEngineModel):
     search_identity: str
     resumed_from_iteration: int = Field(ge=0)
     resumed_checkpoint_path: str | None = None
+    completed_iterations: int = Field(ge=0)
+    finished: bool
     best_source_candidate_id: str
     best_canonical_candidate_id: str
     programme_ids: tuple[str, ...]
@@ -197,6 +221,7 @@ class NativeEvolutionResult(NativeEngineModel):
     feature_cells: int
     expensive_evaluations: int
     reused_evaluations: int
+    resource_placements: tuple[tuple[str, str], ...]
     feedback: tuple[SafeEvolutionFeedback, ...]
     prompts: tuple[str, ...]
     checkpoint_paths: tuple[str, ...]
@@ -234,6 +259,12 @@ def native_configuration_from_search_space(
         checkpoint_interval=int(raw.get("checkpoint_interval", 10)),
         random_seed=int(raw["random_seed"]),
         diff_based_evolution=bool(raw.get("diff_based_evolution", False)),
+        programs_as_changes_description=bool(
+            raw.get("programs_as_changes_description", False)
+        ),
+        initial_changes_description=str(raw.get("initial_changes_description", "")),
+        diff_summary_max_line_len=int(raw.get("diff_summary_max_line_len", 100)),
+        diff_summary_max_lines=int(raw.get("diff_summary_max_lines", 30)),
         use_template_stochasticity=bool(raw.get("use_template_stochasticity", True)),
         template_variations={
             str(key): tuple(str(item) for item in values)
@@ -277,7 +308,20 @@ class ScientificEvaluationCoordinator(Protocol):
         self,
         experiment: ExperimentSpec,
         request: EmbeddedEvaluationRequest,
-    ) -> tuple[EvaluationResult, VerificationResult]: ...
+    ) -> "ScientificCoordinationOutcome": ...
+
+
+class ScientificCoordinationOutcome(NativeEngineModel):
+    evaluation: EvaluationResult
+    verification: VerificationResult
+    evaluation_reuse_experiment_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$",
+    )
+    evaluation_reuse_identity_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class SafeEmbeddingProvider(Protocol):
@@ -430,12 +474,22 @@ class TaskOwnedScientificEvaluator:
             self.metadata,
             run_id=self.run_id,
         )
-        evaluation, verification = self.coordinator(experiment, request)
-        if (
-            evaluation.experiment_id != experiment.experiment_id
-            or verification.experiment_id != experiment.experiment_id
+        outcome = self.coordinator(experiment, request)
+        evaluation = outcome.evaluation
+        verification = outcome.verification
+        if evaluation.experiment_id != verification.experiment_id or (
+            not outcome.evaluation_reuse_experiment_id
+            and evaluation.experiment_id != experiment.experiment_id
         ):
             raise ValueError("openevolve_scientific_coordinator_identity_conflict")
+        if not evaluation.success:
+            raise RuntimeError("openevolve_scientific_evaluation_failed")
+        if evaluation.primary_score is None or not math.isfinite(
+            evaluation.primary_score
+        ):
+            raise RuntimeError("openevolve_scientific_primary_score_invalid")
+        if not verification.verified:
+            raise RuntimeError("openevolve_scientific_verification_failed")
         artifact_identity = openevolve_hash(
             "openevolve-scientific-evaluation-artifact-v1",
             {
@@ -451,11 +505,7 @@ class TaskOwnedScientificEvaluator:
         }
         numeric_metrics = dict(tuple(sorted(numeric_metrics.items()))[:32])
         return ScientificEvaluation(
-            primary_score=(
-                float(evaluation.primary_score)
-                if evaluation.primary_score is not None
-                else 0.0
-            ),
+            primary_score=float(evaluation.primary_score),
             secondary_metrics=numeric_metrics,
             verified=verification.verified,
             constraint_compliant=verification.constraint_compliant,
@@ -463,10 +513,10 @@ class TaskOwnedScientificEvaluator:
                 f"evaluation artifacts {len(evaluation.artefact_references)}",
                 f"verification reasons {len(verification.reasons)}",
             ),
-            safe_failure_classification=(
-                None if evaluation.success else "scientific_evaluation_failed"
-            ),
+            safe_failure_classification=None,
             evaluation_artifact_identity=artifact_identity,
+            evaluation_reuse_experiment_id=(outcome.evaluation_reuse_experiment_id),
+            evaluation_reuse_identity_hash=(outcome.evaluation_reuse_identity_hash),
         )
 
 
@@ -598,6 +648,7 @@ def scientific_candidate_identity(
         source_hash=source_hash(source),
         canonical_candidate_id=canonical_id,
         evaluation_identity=f"evaluation-{evaluation_hash[:24]}",
+        scientific_identity_hash=evaluation_hash,
         canonical_configuration=dict(canonical_configuration),
     )
 
@@ -624,7 +675,10 @@ class AutoResearcherEvaluatorAdapter:
         resource_lease_ttl: timedelta = timedelta(hours=24),
         resource_lease_heartbeat_interval: timedelta | None = None,
         base_process_environment: Mapping[str, str] | None = None,
-        reuse_validator: Callable[[SafeEvolutionFeedback], None] | None = None,
+        reuse_validator: Callable[
+            [ScientificCandidateIdentity, SafeEvolutionFeedback], None
+        ]
+        | None = None,
     ) -> None:
         if (resource_broker is None) != (resource_request_factory is None):
             raise ValueError("resource broker and request factory must be paired")
@@ -783,7 +837,7 @@ class AutoResearcherEvaluatorAdapter:
     ) -> dict[str, float]:
         metrics, previous = cached
         if self.reuse_validator is not None:
-            self.reuse_validator(previous)
+            self.reuse_validator(identity, previous)
         feedback = previous.model_copy(
             update={
                 "source_candidate_id": program_id,
@@ -963,6 +1017,12 @@ class AutoResearcherEvaluatorAdapter:
                 canonical_candidate_id=identity.canonical_candidate_id,
                 evaluation_identity=identity.evaluation_identity,
                 evaluation_artifact_identity=evaluation_artifact_identity,
+                evaluation_reuse_experiment_id=(
+                    evaluation.evaluation_reuse_experiment_id
+                ),
+                evaluation_reuse_identity_hash=(
+                    evaluation.evaluation_reuse_identity_hash
+                ),
                 canonical_scientific_summary=identity.canonical_configuration,
                 parent_source_candidate_id=parent_id,
                 generation=generation,
@@ -1079,20 +1139,22 @@ class ResourceBrokerParallelController:
             island_id=target_island,
             num_inspirations=self.config.prompt.num_diverse_programs,
         )
+        database_snapshot = getattr(self, "_create_database_snapshot")()
+        database_snapshot["sampling_island"] = target_island
         return self.executor.submit(
             self._run_iteration,
             iteration,
-            parent,
-            inspirations,
-            target_island,
+            database_snapshot,
+            parent.id,
+            [item.id for item in inspirations],
         )
 
     def _run_iteration(
         self,
         iteration: int,
-        parent: Any,
-        inspirations: list[Any],
-        target_island: int,
+        database_snapshot: dict[str, Any],
+        parent_id: str,
+        inspiration_ids: list[str],
     ) -> Any:
         from openevolve.database import Program  # type: ignore[import-untyped]
         from openevolve.process_parallel import (  # type: ignore[import-untyped]
@@ -1100,26 +1162,56 @@ class ResourceBrokerParallelController:
         )
         from openevolve.utils.code_utils import (  # type: ignore[import-untyped]
             apply_diff,
+            apply_diff_blocks,
             extract_diffs,
             format_diff_summary,
             parse_full_rewrite,
+            split_diffs_by_target,
+        )
+        from openevolve.utils.metrics_utils import (  # type: ignore[import-untyped]
+            safe_numeric_average,
         )
 
         started = time.monotonic()
         try:
-            island_programs = [
-                self.database.get(program_id)
-                for program_id in self.database.islands[target_island]
+            programs = {
+                program_id: Program(**payload)
+                for program_id, payload in database_snapshot["programs"].items()
+            }
+            parent = programs[parent_id]
+            inspirations = [
+                programs[item] for item in inspiration_ids if item in programs
             ]
-            island_programs = [item for item in island_programs if item is not None]
+            parent_artifacts = database_snapshot["artifacts"].get(parent_id)
+            parent_island = parent.metadata.get(
+                "island",
+                database_snapshot["current_island"],
+            )
+            island_programs = [
+                programs[program_id]
+                for program_id in database_snapshot["islands"][parent_island]
+                if program_id in programs
+            ]
             island_programs.sort(
-                key=lambda item: item.metrics.get("combined_score", 0.0),
+                key=lambda item: item.metrics.get(
+                    "combined_score",
+                    safe_numeric_average(item.metrics),
+                ),
                 reverse=True,
             )
             visible = island_programs[
                 : self.config.prompt.num_top_programs
                 + self.config.prompt.num_diverse_programs
             ]
+            if self.config.prompt.programs_as_changes_description:
+                parent_changes_description = (
+                    parent.changes_description
+                    or self.config.prompt.initial_changes_description
+                )
+                child_changes_description = parent_changes_description
+            else:
+                parent_changes_description = None
+                child_changes_description = None
             prompt = self.prompt_sampler.build_prompt(
                 current_program=parent.code,
                 parent_program=parent.code,
@@ -1133,8 +1225,9 @@ class ResourceBrokerParallelController:
                 language=self.config.language,
                 evolution_round=iteration,
                 diff_based_evolution=self.config.diff_based_evolution,
-                program_artifacts=self.database.get_artifacts(parent.id),
-                feature_dimensions=self.config.database.feature_dimensions,
+                program_artifacts=parent_artifacts,
+                feature_dimensions=database_snapshot.get("feature_dimensions", []),
+                current_changes_description=parent_changes_description,
             )
             rendered_prompt = f"{prompt['system']}\n{prompt['user']}"
             self.prompt_observer(rendered_prompt)
@@ -1147,7 +1240,7 @@ class ResourceBrokerParallelController:
                             "iteration": iteration,
                             "parent_id": parent.id,
                             "parent_source_hash": source_hash(parent.code),
-                            "target_island": target_island,
+                            "target_island": database_snapshot["sampling_island"],
                         },
                     )[:24]
                 )
@@ -1171,8 +1264,54 @@ class ResourceBrokerParallelController:
                         error="No valid diffs found in response",
                         iteration=iteration,
                     )
-                child_code = apply_diff(parent.code, response, self.config.diff_pattern)
-                changes = format_diff_summary(blocks)
+                if self.config.prompt.programs_as_changes_description:
+                    try:
+                        code_blocks, description_blocks, _unmatched = (
+                            split_diffs_by_target(
+                                blocks,
+                                code_text=parent.code,
+                                changes_description_text=parent_changes_description,
+                            )
+                        )
+                    except Exception as exc:
+                        return SerializableResult(
+                            error=str(exc),
+                            iteration=iteration,
+                        )
+                    child_code, _ = apply_diff_blocks(parent.code, code_blocks)
+                    child_changes_description, description_count = apply_diff_blocks(
+                        parent_changes_description,
+                        description_blocks,
+                    )
+                    if (
+                        description_count == 0
+                        or not child_changes_description.strip()
+                        or child_changes_description.strip()
+                        == parent_changes_description.strip()
+                    ):
+                        return SerializableResult(
+                            error=(
+                                "changes_description was not updated or empty, "
+                                "program is discarded"
+                            ),
+                            iteration=iteration,
+                        )
+                    changes = format_diff_summary(
+                        code_blocks,
+                        max_line_len=(self.config.prompt.diff_summary_max_line_len),
+                        max_lines=self.config.prompt.diff_summary_max_lines,
+                    )
+                else:
+                    child_code = apply_diff(
+                        parent.code,
+                        response,
+                        self.config.diff_pattern,
+                    )
+                    changes = format_diff_summary(
+                        blocks,
+                        max_line_len=(self.config.prompt.diff_summary_max_line_len),
+                        max_lines=self.config.prompt.diff_summary_max_lines,
+                    )
             else:
                 child_code = parse_full_rewrite(response, self.config.language)
                 changes = "Full rewrite"
@@ -1202,14 +1341,14 @@ class ResourceBrokerParallelController:
             metadata = {
                 "changes": changes,
                 "parent_metrics": parent.metrics,
-                "island": target_island,
+                "island": parent_island,
                 "inspiration_ids": [item.id for item in inspirations],
                 **self.safe_evaluator.consume_metadata(child_id),
             }
             child = Program(
                 id=child_id,
                 code=child_code,
-                changes_description=changes,
+                changes_description=child_changes_description,
                 language=self.config.language,
                 parent_id=parent.id,
                 generation=parent.generation + 1,
@@ -1225,7 +1364,7 @@ class ResourceBrokerParallelController:
                 llm_response=response,
                 artifacts=artifacts,
                 iteration=iteration,
-                target_island=target_island,
+                target_island=database_snapshot["sampling_island"],
             )
         except Exception as exc:
             return SerializableResult(error=str(exc), iteration=iteration)
@@ -1344,6 +1483,16 @@ class EmbeddedOpenEvolveSearch:
                     key: list(values)
                     for key, values in self.configuration.template_variations.items()
                 },
+                programs_as_changes_description=(
+                    self.configuration.programs_as_changes_description
+                ),
+                initial_changes_description=(
+                    self.configuration.initial_changes_description
+                ),
+                diff_summary_max_line_len=(
+                    self.configuration.diff_summary_max_line_len
+                ),
+                diff_summary_max_lines=self.configuration.diff_summary_max_lines,
             ),
             database=DatabaseConfig(
                 in_memory=True,
@@ -1392,12 +1541,13 @@ class EmbeddedOpenEvolveSearch:
             self.limits.maximum_iterations,
             self.limits.maximum_model_calls,
         )
-        completed_iterations = self._checkpoint_iteration(checkpoint_path)
-        remaining_iterations = max(0, approved_iterations - completed_iterations)
+        resumed_from_iteration = self._checkpoint_iteration(checkpoint_path)
+        remaining_iterations = max(0, approved_iterations - resumed_from_iteration)
         if iterations is not None:
             if iterations <= 0:
                 raise ValueError("openevolve_requested_iterations_invalid")
             remaining_iterations = min(remaining_iterations, iterations)
+        requested_iterations = remaining_iterations
         initial_path = self.output_dir / "initial_program.py"
         evaluation_path = self.output_dir / "boundary_evaluator.py"
         initial_path.write_text(self.initial_source, encoding="utf-8")
@@ -1492,9 +1642,18 @@ class EmbeddedOpenEvolveSearch:
         )
         return NativeEvolutionResult(
             search_identity=self.configuration.search_identity,
-            resumed_from_iteration=completed_iterations,
+            resumed_from_iteration=resumed_from_iteration,
             resumed_checkpoint_path=(
                 None if checkpoint_path is None else str(checkpoint_path)
+            ),
+            completed_iterations=(resumed_from_iteration + requested_iterations),
+            finished=(
+                resumed_from_iteration + requested_iterations >= approved_iterations
+                or (
+                    self.limits.target_score is not None
+                    and best.metrics.get("combined_score", float("-inf"))
+                    >= self.limits.target_score
+                )
             ),
             best_source_candidate_id=best.id,
             best_canonical_candidate_id=canonical_id,
@@ -1509,6 +1668,7 @@ class EmbeddedOpenEvolveSearch:
             ),
             expensive_evaluations=self.evaluator.expensive_evaluations,
             reused_evaluations=self.evaluator.reused_evaluations,
+            resource_placements=tuple(self.evaluator.placements),
             feedback=tuple(self.evaluator.feedback),
             prompts=tuple(self.prompts),
             checkpoint_paths=checkpoints,

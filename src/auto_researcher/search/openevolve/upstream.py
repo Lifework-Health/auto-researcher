@@ -48,7 +48,9 @@ from auto_researcher.tasks.protocols import (
 
 DISABLED_UPSTREAM_FEATURES = (
     "arbitrary_package_installation",
+    "cascade_evaluation",
     "direct_provider_credential_access",
+    "embedding_novelty",
     "arbitrary_network_access",
     "unrestricted_host_filesystem",
 )

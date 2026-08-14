@@ -1,12 +1,14 @@
 """Evaluator invocation, durable reuse and budget accounting."""
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import EvaluationResult, ExperimentSpec
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.provenance.reuse import EvaluationReuseRecord
-from auto_researcher.runtime.dependencies import RuntimeDependencies
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.tasks.artifacts import (
     ARTEFACT_BUNDLE_SCHEMA_VERSION,
@@ -15,6 +17,9 @@ from auto_researcher.tasks.artifacts import (
     artefact_references,
 )
 from auto_researcher.tasks.scientific_json import SCIENTIFIC_JSON_ENCODING_VERSION
+
+if TYPE_CHECKING:
+    from auto_researcher.runtime.dependencies import RuntimeDependencies
 
 
 def _evaluator_version(dependencies: RuntimeDependencies) -> str:

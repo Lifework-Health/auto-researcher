@@ -1,10 +1,16 @@
 """Mandatory automatic verifier invocation."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.graph.nodes.evaluate import validate_reused_evaluation
 from auto_researcher.provenance.reuse import VerificationReuseRecord
-from auto_researcher.runtime.dependencies import RuntimeDependencies
 from auto_researcher.runtime.identity import payload_hash
+
+if TYPE_CHECKING:
+    from auto_researcher.runtime.dependencies import RuntimeDependencies
 
 
 def verify_evidence(

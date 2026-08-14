@@ -43,7 +43,12 @@ def search_router(
             code=capability.code,
             message=capability.message,
         )
-    return {
+    update = {
         "search_backend_result": result,
         "executed_nodes": ["search_router"],
     }
+    if request.search_type == SearchType.OPENEVOLVE and dependencies is not None:
+        update["openevolve_native_complete"] = (
+            False if dependencies.native_openevolve_runtime is not None else None
+        )
+    return update

@@ -35,6 +35,7 @@ REQUIRED_CAPABILITIES = {
     "edit_distance_diversity",
     "embedding_novelty",
     "evaluation_feedback_to_mutation",
+    "evaluation_reuse_v2_authority",
     "evaluation_retries_timeouts",
     "evaluator_artifacts",
     "evaluator_metrics",
@@ -52,12 +53,15 @@ REQUIRED_CAPABILITIES = {
     "map_elites_quality_diversity",
     "migration",
     "model_selection",
+    "model_generation_parallelism",
     "multiple_metrics",
     "native_evolution_controller",
+    "standard_runtime_native_controller_selection",
     "native_generation_lifecycle",
     "native_stopping",
     "outer_budget_ceiling",
     "parallel_candidate_evaluation",
+    "parallel_iteration_worker_execution",
     "parent_selection",
     "pareto_multi_objective",
     "population",
@@ -76,6 +80,7 @@ REQUIRED_CAPABILITIES = {
 
 RUNTIME_PROBES = {
     "test_a3_semantic_dedup_and_feedback_regression",
+    "test_approved_model_bridge_uses_durable_boundary_without_credentials",
     "test_evaluator_adapter_returns_verified_safe_metrics",
     "test_later_generation_prompt_contains_safe_evaluation_feedback",
     "test_map_elites_and_native_feature_dimensions_are_active",
@@ -87,6 +92,8 @@ RUNTIME_PROBES = {
     "test_native_template_stochasticity_is_seeded_and_traceable",
     "test_native_weighted_model_ensemble_uses_approved_adapters",
     "test_parallel_evaluations_use_three_simulated_gpus",
+    "test_parallel_worker_adapter_uses_submission_snapshot_and_exact_feature_configuration",
+    "test_standard_runtime_native_a4_like_start_resume_and_reuse_v2",
     "test_safe_embedding_adapter_never_receives_protected_context",
     "test_task_owned_normalizer_uses_hardened_component_projection",
     "test_task_owned_scientific_evaluator_invokes_verifier_and_evidence_sink",
@@ -98,11 +105,23 @@ ADAPTER_CONTRACTS = {
     "DurableOpenEvolveModelBridge",
     "HardenedDockerExecutor",
     "NativeEvolutionLimits",
+    "NativeScientificEvaluationCoordinator",
     "ResourceBrokerParallelController",
-    "SafeEmbeddingProvider",
     "SafeEvolutionFeedback",
     "TaskOwnedCandidateNormalizer",
     "TaskOwnedScientificEvaluator",
+    "StandardNativeOpenEvolveRuntime",
+}
+
+MATERIAL_RUNTIME_ADAPTER_PROBES = {
+    "evaluator_artifacts": "test_later_generation_prompt_contains_safe_evaluation_feedback",
+    "evaluation_reuse_v2_authority": "test_standard_runtime_native_a4_like_start_resume_and_reuse_v2",
+    "parallel_candidate_evaluation": "test_parallel_evaluations_use_three_simulated_gpus",
+    "parallel_iteration_worker_execution": "test_parallel_worker_adapter_uses_submission_snapshot_and_exact_feature_configuration",
+    "provider_network_access": "test_approved_model_bridge_uses_durable_boundary_without_credentials",
+    "scientific_evaluator_verifier_boundary": "test_standard_runtime_native_a4_like_start_resume_and_reuse_v2",
+    "semantic_scientific_dedup": "test_standard_runtime_native_a4_like_start_resume_and_reuse_v2",
+    "standard_runtime_native_controller_selection": "test_standard_runtime_native_a4_like_start_resume_and_reuse_v2",
 }
 
 
@@ -133,6 +152,11 @@ def test_manifest_preservation_claims_name_real_probes_and_contracts() -> None:
             assert capability.adapter_contract in ADAPTER_CONTRACTS
         if capability.classification is CapabilityClassification.CURRENTLY_DISABLED:
             assert capability.justification
+
+    actual = {item.capability: item.probe for item in manifest.capabilities}
+    assert {
+        capability: actual[capability] for capability in MATERIAL_RUNTIME_ADAPTER_PROBES
+    } == MATERIAL_RUNTIME_ADAPTER_PROBES
 
 
 def test_preserved_capability_cannot_be_silently_rethinned() -> None:

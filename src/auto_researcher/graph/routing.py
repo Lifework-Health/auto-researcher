@@ -66,6 +66,7 @@ def route_search_backend(
     "direct_search",
     "optuna_prepare_study",
     "initialise_openevolve",
+    "run_native_openevolve",
     "unavailable_backend",
 ]:
     backend = state["search_backend_result"]
@@ -78,8 +79,22 @@ def route_search_backend(
         and backend.available
         and backend.requested_type == SearchType.OPENEVOLVE
     ):
-        return "initialise_openevolve"
+        return (
+            "run_native_openevolve"
+            if state.get("openevolve_native_complete") is False
+            else "initialise_openevolve"
+        )
     return "unavailable_backend"
+
+
+def route_after_native_openevolve(
+    state: ResearchState,
+) -> Literal["run_native_openevolve", "__end__"]:
+    return (
+        "__end__"
+        if state.get("openevolve_native_complete")
+        else "run_native_openevolve"
+    )
 
 
 def route_after_optuna_prepare(

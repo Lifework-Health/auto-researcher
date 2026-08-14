@@ -56,7 +56,9 @@ def test_pinned_dependency_and_adapter_contract_are_valid():
     assert "provider_clients" not in contract.unsupported_features
     assert set(contract.unsupported_features) == {
         "arbitrary_package_installation",
+        "cascade_evaluation",
         "direct_provider_credential_access",
+        "embedding_novelty",
         "arbitrary_network_access",
         "unrestricted_host_filesystem",
     }

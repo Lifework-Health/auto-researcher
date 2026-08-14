@@ -648,6 +648,8 @@ def run(
             task_id,
             contract.task_version,
         )
+        if isinstance(raw_config.get("resources"), dict):
+            experiment["resources"] = dict(raw_config["resources"])
         runtime_options = dict(runtime.get("options", {}))
         if isinstance(raw_config.get("grounding"), dict):
             runtime_options["grounding"] = dict(raw_config["grounding"])
@@ -929,6 +931,8 @@ def resume_cli(
             contract.task_id,
             contract.task_version,
         )
+        if isinstance(raw_config.get("resources"), dict):
+            experiment["resources"] = dict(raw_config["resources"])
         runtime_options = dict(runtime.get("options", {}))
         if isinstance(raw_config.get("grounding"), dict):
             runtime_options["grounding"] = dict(raw_config["grounding"])

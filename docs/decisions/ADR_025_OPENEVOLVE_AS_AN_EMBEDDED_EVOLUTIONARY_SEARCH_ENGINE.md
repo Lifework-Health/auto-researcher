@@ -41,6 +41,15 @@ ResourceBroker and durable evaluator adapters remain usable. Auto Researcher
 observes upstream parent, inspiration, island, feature-map, archive, and champion
 decisions; it does not recompute and overwrite them.
 
+The standard runtime selects this path only when `search.type` is `OPENEVOLVE`
+and the typed `search.openevolve.native_controller` value is exactly `true`.
+Dependency assembly registers `StandardNativeOpenEvolveRuntime`, and the normal
+search router invokes `run_native_openevolve`. `false` or omission retains the
+legacy thin graph; other types fail configuration validation. Start and resume
+retain the CLI, ResearchContract, run/thread identity, Managed Secrets, durable
+stores, workspace/output paths, and LangGraph checkpoint lifecycle. There is no
+A4-specific driver.
+
 ## Scientific evaluator and identity boundary
 
 `AutoResearcherEvaluatorAdapter` normalises generated source through the
@@ -51,11 +60,17 @@ evaluation identity additionally includes evaluator, dataset, and code versions.
 FeTA uses validated canonical `TrainingPolicy` JSON, so formatting-only or
 source-level differences do not create new scientific experiments.
 
-The adapter checks an in-flight and durable safe reuse index before expensive
+The adapter checks an in-flight and durable safe lookup index before expensive
 execution. Concurrent duplicates wait for the first compatible result, then
-return that result with `evaluation_status=REUSED`. The index contains only safe
-metrics and the bounded feedback schema. It is Auto Researcher evaluation
-evidence, not a competing evolutionary population.
+attempt reuse. The index contains canonical/evaluation identity, bounded safe
+feedback, and a reference plus hash for an authoritative
+`evaluation-reuse-v2` record. It is not scientific authority. Every `REUSED`
+outcome loads that record from the provenance store and calls the existing
+`validate_reused_evaluation` path, which revalidates the published
+ExperimentSpec and EvaluationResult, expected references, bundle and manifest
+hashes, schema and encoding versions, and evaluator/dataset/code identity.
+Missing, replaced, tampered, or incompatible evidence fails closed before
+native metrics are returned.
 
 The native database receives scalar fitness, multiple metrics, verifier and
 constraint flags, resource placement, and a bounded
@@ -73,8 +88,11 @@ Native weighted ensemble/model selection is retained by injecting approved
 adapter invokes Auto Researcher's durable model bridge, so credentials resolve
 outside OpenEvolve, calls remain at-most-once, and upstream checkpoints contain
 no secret. Native prompt stochasticity and full/diff rewrite modes remain
-configurable. Optional algorithmic embeddings are preserved through a bounded
-adapter that accepts permitted candidate source only.
+configurable. A bounded embedding adapter exists, but the native database uses
+`embedding_model=None`, so embedding novelty is `CURRENTLY_DISABLED` rather
+than claimed as wired. Likewise `cascade_evaluation=False`; task evaluation plus
+verification remains mandatory, but that is not mislabelled as OpenEvolve's
+staged cascade semantics.
 
 Parallel scientific evaluations acquire whole-candidate ResourceBroker leases.
 Equivalent NVIDIA/FeTA GPUs remain operational placements and do not enter
@@ -90,6 +108,21 @@ classification and justification. Per-evaluation retry/timeout behavior is
 explicitly weakened: the outer wall ceiling remains, but upstream retries are
 zero to preserve durable at-most-once boundaries, and an already-running Python
 evaluator is not preemptively killed.
+
+The parallel controller retains pinned `run_evolution` and adapts only iteration
+execution to threads because approved model/evaluator/resource objects are
+process-local runtime services. Submission samples parent/inspirations and
+creates the same bounded database snapshot as the pinned worker. The thread
+reconstructs programs from that snapshot and retains parent artifacts,
+top/diverse context, `programs_as_changes_description`, current changes
+description, diff target splitting, configured diff-summary limits, full
+rewrites, prompt/result shape, target-island placement, and prompt logging. This
+worker is `PRESERVED_VIA_ADAPTER`; the controller lifecycle remains
+`PRESERVED_NATIVE`.
+
+Model generation is deliberately serialized because the durable bridge's
+request-binding context is mutable. Scientific evaluations remain parallel. The
+manifest therefore marks model-generation parallelism `CURRENTLY_WEAKENED`.
 
 ## Checkpoint and provenance ownership
 
@@ -110,6 +143,18 @@ and the native final champion. OpenEvolve 0.3.2 does not persist Python/NumPy RN
 state; that limitation is classified as not present in the pinned upstream,
 rather than claimed as restored behavior.
 
+The standard native result is checkpoint-allowlisted. If a process ends after a
+native checkpoint but before the graph node commits its result, standard
+`run resume` re-enters the node, discovers the highest checkpoint under the
+same search envelope, and restores native state. The offline A4-like gate uses
+a bounded iteration chunk to prove this exact start/resume transition.
+
+An unsuccessful evaluation, missing or non-finite primary score, or invalidating
+verification failure raises a bounded iteration error and produces no admitted
+fitness/MAP-Elites child. The adapter never fabricates `0.0`. A verified measured
+result with failed constraints remains distinct through
+`constraint_compliant=0`; a penalty would have to be task-owned and explicit.
+
 ## Consequences and acceptance
 
 The permanent A3 regression generates one seed plus four distinct child sources
@@ -124,3 +169,6 @@ parallel placement across three simulated equivalent GPUs. The bounded FeTA A4
 template is ready for the explicit post-merge acceptance campaign. PR 11.6 does
 not perform paid calls, use live secrets, require GPU/data, alter the active L4
 runtime, or implement Planner v2.
+
+The exact standard launch and resume commands are in
+`docs/runbooks/OPENEVOLVE_A4_STANDARD_RUNTIME.md`.

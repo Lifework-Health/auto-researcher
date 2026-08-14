@@ -38,6 +38,7 @@ from auto_researcher.search.openevolve.models import (
 from auto_researcher.search.openevolve.upstream_models import (
     UpstreamOpenEvolveAdapterState,
 )
+from auto_researcher.search.openevolve.native_engine import NativeEvolutionResult
 
 
 class ResearchState(TypedDict):
@@ -82,3 +83,5 @@ class ResearchState(TypedDict):
     upstream_openevolve_adapter_state: NotRequired[
         UpstreamOpenEvolveAdapterState | None
     ]
+    openevolve_native_result: NotRequired[NativeEvolutionResult | None]
+    openevolve_native_complete: NotRequired[bool]

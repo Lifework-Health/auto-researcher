@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import importlib.util
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from auto_researcher.agents.mock import (
@@ -55,9 +55,24 @@ from auto_researcher.search.openevolve.live_runtime import (
     MetadataOnlyLiveOpenEvolveRuntime,
     assemble_metadata_only_live_openevolve,
 )
+from auto_researcher.search.openevolve.native_engine import (
+    ApprovedModel,
+    ScientificCandidateIdentity,
+)
+from auto_researcher.search.openevolve.native_runtime import (
+    StandardNativeOpenEvolveRuntime,
+)
 from auto_researcher.search.openevolve.protocols import MutationOperator
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
 from auto_researcher.search.openevolve.sandbox import LocalSandboxRunner
+from auto_researcher.resources import (
+    CourtesyResourceAdmissionPolicy,
+    InMemoryResourceLeaseStore,
+    NvidiaGPUResourceProvider,
+    ResourceBroker,
+    ResourceRequest,
+    ResourceRequirement,
+)
 from auto_researcher.search.protocols import SearchBackend, SearchCapability
 from auto_researcher.search.registry import SearchBackendRegistry
 from auto_researcher.search.optuna.backend import OptunaAskTellBackend
@@ -117,6 +132,7 @@ class RuntimeDependencies:
     optuna_backend: OptunaAskTellBackend | None = None
     optuna_storage_handle: OptunaStorageHandle | None = None
     openevolve_backend: OpenEvolveBackend | None = None
+    native_openevolve_runtime: StandardNativeOpenEvolveRuntime | None = None
 
 
 def utc_now() -> datetime:
@@ -173,6 +189,8 @@ def _assemble_task_dependencies(
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
     openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
+    native_openevolve_models: tuple[ApprovedModel, ...] = (),
+    native_openevolve_resource_broker: ResourceBroker | None = None,
 ) -> RuntimeDependencies:
     task.validate_contract(contract)
     context = _context_for_contract(runtime_context, contract, clock())
@@ -221,7 +239,10 @@ def _assemble_task_dependencies(
             ),
             rationale="Validate the task capability before graph execution.",
         )
-        task.create_optuna_study_spec(contract, validation_request)
+        cast(OptunaCapableTask, task).create_optuna_study_spec(
+            contract,
+            validation_request,
+        )
     if (
         search_type == SearchType.OPTUNA
         and optuna_installed
@@ -238,10 +259,20 @@ def _assemble_task_dependencies(
     )
     openevolve_capable = isinstance(task, OpenEvolveCapableTask)
     openevolve_permitted = SearchType.OPENEVOLVE in contract.allowed_search_types
+    raw_openevolve = experiment_configuration.get("openevolve", {})
+    if not isinstance(raw_openevolve, dict):
+        raise ValueError("openevolve_finite_configuration_required")
+    native_mode_value = raw_openevolve.get("native_controller")
+    if native_mode_value is not None and type(native_mode_value) is not bool:
+        raise ValueError("openevolve_native_controller_must_be_boolean")
+    native_mode = search_type == SearchType.OPENEVOLVE and native_mode_value is True
     openevolve_backend: OpenEvolveBackend | None = None
     call_store = agent_call_store or InMemoryAgentCallStore()
     if openevolve_capable and openevolve_permitted:
-        component = task.create_evolvable_component(contract, context)
+        component = cast(OpenEvolveCapableTask, task).create_evolvable_component(
+            contract,
+            context,
+        )
         verifier_identity = f"{selected_verifier.version}@{policy.policy_id}"
         workspace_root = (
             context.workspace_dir / "openevolve-sandboxes"
@@ -299,6 +330,103 @@ def _assemble_task_dependencies(
                 rationale="Validate finite OpenEvolve configuration before execution.",
             )
             openevolve_backend.create_search_contract(validation_request, contract)
+    native_runtime: StandardNativeOpenEvolveRuntime | None = None
+    if native_mode:
+        if openevolve_backend is None or context.run_id is None:
+            raise ValueError("native_openevolve_runtime_context_invalid")
+        approved_bridge = getattr(openevolve_mutation_operator, "bridge", None)
+        if approved_bridge is None and not native_openevolve_models:
+            raise ValueError("native_openevolve_approved_model_bridge_required")
+        resource_configuration = experiment_configuration.get("resources")
+        request_factory = None
+        if resource_configuration is not None:
+            if not isinstance(resource_configuration, dict):
+                raise ValueError("openevolve_resource_configuration_invalid")
+            if resource_configuration.get("resource_type", "gpu") != "gpu":
+                raise ValueError("openevolve_resource_type_not_supported")
+            equivalence = frozenset(
+                str(item)
+                for item in resource_configuration.get(
+                    "equivalence_requirements",
+                    ("nvidia-cuda", "whole-physical-gpu"),
+                )
+            )
+            native_openevolve_resource_broker = (
+                native_openevolve_resource_broker
+                or ResourceBroker(
+                    NvidiaGPUResourceProvider(equivalence_tags=equivalence),
+                    CourtesyResourceAdmissionPolicy(
+                        maximum_utilization_percent=float(
+                            resource_configuration.get(
+                                "maximum_utilization_percent",
+                                100,
+                            )
+                        )
+                    ),
+                    lease_store=InMemoryResourceLeaseStore(),
+                )
+            )
+
+            def request_factory(
+                identity: ScientificCandidateIdentity,
+            ) -> ResourceRequest:
+                return ResourceRequest(
+                    request_id=f"native-{identity.evaluation_identity}",
+                    requirements=(
+                        ResourceRequirement(
+                            resource_type="gpu",
+                            quantity=int(
+                                resource_configuration.get(
+                                    "quantity_per_candidate",
+                                    1,
+                                )
+                            ),
+                        ),
+                    ),
+                    maximum_wait_seconds=float(
+                        resource_configuration.get(
+                            "maximum_wait_seconds",
+                            14_400,
+                        )
+                    ),
+                    stable_idle_seconds=float(
+                        resource_configuration.get("stable_idle_seconds", 0)
+                    ),
+                    equivalence_requirements=equivalence,
+                )
+
+        if native_openevolve_resource_broker is not None and request_factory is None:
+            raise ValueError("native_openevolve_resource_configuration_required")
+        if context.output_dir is None:
+            raise ValueError("native_openevolve_output_directory_required")
+        model_name = None
+        if approved_bridge is not None:
+            model_name = approved_bridge.contract.model_config_contract.model_id
+        native_runtime = StandardNativeOpenEvolveRuntime(
+            backend=openevolve_backend,
+            component=openevolve_backend.component,
+            metadata=metadata,
+            contract=contract,
+            run_id=context.run_id,
+            output_root=(
+                context.output_dir.expanduser().resolve()
+                / "runs"
+                / context.run_id
+                / "openevolve-native"
+            ),
+            evaluator=task_evaluator,
+            verifier=selected_verifier,
+            provenance_store=provenance_store,
+            runtime_context=context,
+            dataset_manifest=manifest,
+            verification_policy=policy,
+            clock=clock,
+            approved_models=native_openevolve_models,
+            approved_bridge=approved_bridge,
+            approved_bridge_model_name=model_name,
+            resource_broker=native_openevolve_resource_broker,
+            resource_request_factory=request_factory,
+        )
     openevolve_available = openevolve_backend is not None
     direct_backend = DirectSearchBackend(
         metadata,
@@ -495,6 +623,7 @@ def _assemble_task_dependencies(
         ),
         optuna_storage_handle=optuna_storage_handle,
         openevolve_backend=openevolve_backend,
+        native_openevolve_runtime=native_runtime,
     )
 
 
@@ -525,6 +654,8 @@ def task_memory_dependencies(
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
     openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
+    native_openevolve_models: tuple[ApprovedModel, ...] = (),
+    native_openevolve_resource_broker: ResourceBroker | None = None,
 ) -> RuntimeDependencies:
     if openevolve_live_runtime is not None:
         raise ValueError("live_mutation_durable_runtime_required")
@@ -555,6 +686,8 @@ def task_memory_dependencies(
         openevolve_mutation_operator=openevolve_mutation_operator,
         openevolve_sandbox_runner=openevolve_sandbox_runner,
         openevolve_live_runtime=openevolve_live_runtime,
+        native_openevolve_models=native_openevolve_models,
+        native_openevolve_resource_broker=native_openevolve_resource_broker,
     )
 
 
@@ -588,6 +721,8 @@ def task_sqlite_dependencies(
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
     openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
+    native_openevolve_models: tuple[ApprovedModel, ...] = (),
+    native_openevolve_resource_broker: ResourceBroker | None = None,
 ) -> Iterator[RuntimeDependencies]:
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     provenance = Path(provenance_path).expanduser().resolve()
@@ -672,6 +807,8 @@ def task_sqlite_dependencies(
             openevolve_mutation_operator=openevolve_mutation_operator,
             openevolve_sandbox_runner=openevolve_sandbox_runner,
             openevolve_live_runtime=openevolve_live_runtime,
+            native_openevolve_models=native_openevolve_models,
+            native_openevolve_resource_broker=(native_openevolve_resource_broker),
         )
     finally:
         if optuna_handle is not None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import threading
 import time
@@ -8,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -32,8 +34,10 @@ from auto_researcher.search.openevolve.native_engine import (
     NativeEvolutionResult,
     SafeEmbeddingAdapter,
     ScientificEvaluation,
+    ScientificCoordinationOutcome,
     TaskOwnedCandidateNormalizer,
     TaskOwnedScientificEvaluator,
+    ResourceBrokerParallelController,
     native_configuration_from_search_space,
     native_limits_from_search_space,
     scientific_candidate_identity,
@@ -416,7 +420,10 @@ def test_task_owned_scientific_evaluator_invokes_verifier_and_evidence_sink() ->
             claimed_score=evaluation.primary_score,
         )
         evidence.append((experiment, evaluation, verification, embedded_request))
-        return evaluation, verification
+        return ScientificCoordinationOutcome(
+            evaluation=evaluation,
+            verification=verification,
+        )
 
     evaluator = TaskOwnedScientificEvaluator(
         normalizer=normalizer,
@@ -445,6 +452,214 @@ def test_task_owned_scientific_evaluator_invokes_verifier_and_evidence_sink() ->
     assert experiment.experiment_id == evaluation.experiment_id
     assert verification.experiment_id == evaluation.experiment_id
     assert embedded_request.identity == identity
+
+
+@pytest.mark.parametrize("failure_kind", ["unsuccessful", "missing_score"])
+def test_scientific_evaluation_failure_never_becomes_measured_zero(
+    failure_kind: str,
+) -> None:
+    from auto_researcher.contracts.enums import ProvenanceKind, SearchType
+    from auto_researcher.contracts.models import EvaluationResult, VerificationResult
+    from auto_researcher.runtime.dependencies import memory_dependencies
+    from tests.unit.test_openevolve_contracts import _contract, _request
+
+    dependencies = memory_dependencies(search_type=SearchType.OPENEVOLVE)
+    backend = dependencies.openevolve_backend
+    assert backend is not None
+    search_request = _request()
+    research_contract = _contract()
+    normalizer = TaskOwnedCandidateNormalizer(
+        backend,
+        backend.create_search_contract(search_request, research_contract),
+    )
+    source = backend.component_spec.seed_source
+    identity = scientific_candidate_identity(
+        source_candidate_id="failed-native-source",
+        source=source,
+        canonical_configuration=normalizer(source),
+        component_identity=backend.interface_hash,
+        evaluator_identity=backend.evaluator_identity,
+        dataset_version=dependencies.experiment_metadata.dataset_version,
+        code_version=dependencies.experiment_metadata.code_version,
+    )
+
+    def coordinate(experiment: Any, _request: Any):
+        payload = {
+            "experiment_id": experiment.experiment_id,
+            "success": False,
+            "primary_score": None,
+            "metrics": {},
+            "constraint_results": {},
+            "artefact_references": (),
+            "evaluator_version": "failed-evaluator-v1",
+            "provenance": ProvenanceKind.SIMULATED,
+            "error": "bounded_failure",
+        }
+        evaluation = (
+            EvaluationResult.model_construct(
+                **{**payload, "success": True, "error": None}
+            )
+            if failure_kind == "missing_score"
+            else EvaluationResult(**payload)
+        )
+        verification = VerificationResult(
+            experiment_id=experiment.experiment_id,
+            verified=True,
+            claimed_score=None,
+            measured_score=None,
+            constraint_compliant=True,
+            evidence_status="INCONCLUSIVE",
+            reasons=("evaluation failed",),
+            provenance=ProvenanceKind.SIMULATED,
+        )
+        if failure_kind == "missing_score":
+            return SimpleNamespace(
+                evaluation=evaluation,
+                verification=verification,
+                evaluation_reuse_experiment_id=None,
+                evaluation_reuse_identity_hash=None,
+            )
+        return ScientificCoordinationOutcome(
+            evaluation=evaluation,
+            verification=verification,
+        )
+
+    evaluator = TaskOwnedScientificEvaluator(
+        normalizer=normalizer,
+        search_request=search_request,
+        research_contract=research_contract,
+        metadata=dependencies.experiment_metadata,
+        run_id="failed-native-run",
+        coordinator=coordinate,
+    )
+    with pytest.raises(
+        RuntimeError, match="scientific_(evaluation_failed|primary_score_invalid)"
+    ):
+        evaluator(
+            EmbeddedEvaluationRequest(
+                source_candidate_id="failed-native-source",
+                parent_source_candidate_id=None,
+                generation=0,
+                source=source,
+                identity=identity,
+            )
+        )
+
+
+def test_constraint_non_compliance_remains_a_measured_non_failure() -> None:
+    class NonCompliantEvaluator:
+        def __call__(self, request: EmbeddedEvaluationRequest) -> ScientificEvaluation:
+            return ScientificEvaluation(
+                primary_score=0.42,
+                verified=True,
+                constraint_compliant=False,
+                safe_failure_classification=None,
+            )
+
+    adapter = AutoResearcherEvaluatorAdapter(
+        normalizer=_normalise,
+        evaluator=NonCompliantEvaluator(),
+        component_identity="constraint-test-component-v1",
+        evaluator_identity="constraint-test-evaluator-v1",
+        dataset_version="constraint-test-dataset-v1",
+        code_version="constraint-test-code-v1",
+        maximum_evaluations=1,
+    )
+    metrics = asyncio.run(adapter.evaluate_program("POLICY = 1", "constraint-child"))
+
+    assert metrics["primary_score"] == 0.42
+    assert metrics["constraint_compliant"] == 0.0
+    assert adapter.feedback[0].safe_failure_classification is None
+
+
+def test_parallel_worker_adapter_uses_submission_snapshot_and_exact_feature_configuration(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("openevolve")
+    runtime = EmbeddedOpenEvolveSearch(
+        output_dir=tmp_path,
+        initial_source="POLICY = 0\n",
+        configuration=_configuration("worker-feature-parity-v1").model_copy(
+            update={
+                "diff_based_evolution": True,
+                "programs_as_changes_description": True,
+                "initial_changes_description": "seed description",
+                "diff_summary_max_line_len": 71,
+                "diff_summary_max_lines": 13,
+            }
+        ),
+        limits=_limits(),
+        models=(
+            ApprovedModel(
+                name="offline-worker-parity",
+                weight=1.0,
+                adapter=ScriptedModel(("POLICY = 1",)),
+            ),
+        ),
+        evaluator=_adapter(RecordingEvaluator()),
+    )
+    native = runtime._native_config()
+    assert native.prompt.programs_as_changes_description is True
+    assert native.prompt.initial_changes_description == "seed description"
+    assert native.prompt.diff_summary_max_line_len == 71
+    assert native.prompt.diff_summary_max_lines == 13
+
+    source = inspect.getsource(ResourceBrokerParallelController._run_iteration)
+    for exact_feature in (
+        "current_changes_description",
+        "split_diffs_by_target",
+        "apply_diff_blocks",
+        "diff_summary_max_line_len",
+        "diff_summary_max_lines",
+        'database_snapshot["artifacts"]',
+        'database_snapshot["sampling_island"]',
+    ):
+        assert exact_feature in source
+
+    from openevolve.database import Program
+    from openevolve.prompt.sampler import PromptSampler
+
+    parent = Program(
+        id="snapshot-parent",
+        code="POLICY = 0\n",
+        changes_description="seed description",
+        generation=0,
+        metrics={"combined_score": 0.5},
+        metadata={"island": 0},
+    )
+    snapshot = {
+        "programs": {parent.id: parent.to_dict()},
+        "islands": [[parent.id], [], []],
+        "current_island": 0,
+        "sampling_island": 0,
+        "feature_dimensions": ["primary_score"],
+        "artifacts": {parent.id: {"safe.txt": "aggregate score 0.5"}},
+    }
+
+    class DiffModel:
+        async def generate_with_context(self, **_kwargs: Any) -> str:
+            marker = "<" * 7
+            replacement = ">" * 7
+            return (
+                f"{marker} SEARCH\nPOLICY = 0\n=======\nPOLICY = 1\n"
+                f"{replacement} REPLACE\n{marker} SEARCH\nseed description\n"
+                f"=======\nupdated description\n{replacement} REPLACE"
+            )
+
+    controller = object.__new__(ResourceBrokerParallelController)
+    controller.config = native
+    controller.prompt_sampler = PromptSampler(native.prompt)
+    controller.llm_ensemble = DiffModel()
+    controller.safe_evaluator = _adapter(RecordingEvaluator())
+    controller.prompt_observer = lambda _prompt: None
+    controller._model_lock = threading.Lock()
+    result = controller._run_iteration(1, snapshot, parent.id, [])
+
+    assert result.error is None
+    assert result.child_program_dict["code"].strip() == "POLICY = 1"
+    assert result.child_program_dict["changes_description"] == "updated description"
+    assert result.target_island == 0
+    assert "seed description" in result.prompt["user"]
 
 
 def test_feta_a4_template_maps_to_executable_native_configuration() -> None:

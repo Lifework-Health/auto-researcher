@@ -246,10 +246,9 @@ def default_feta_evolve_openevolve_configuration() -> dict[str, Any]:
 def default_feta_evolve_a4_openevolve_configuration() -> dict[str, Any]:
     """Bounded full-strength A4 acceptance profile; it performs no work by itself."""
 
-    dataset_version = f"{DATASET_RELEASE}+{EXPECTED_MANIFEST_HASH}"
-    return {
-        "profile": "feta-a4-full-strength-acceptance-v1",
-        "openevolve": {
+    openevolve = dict(default_feta_evolve_openevolve_configuration()["openevolve"])
+    openevolve.update(
+        {
             "population_size": 12,
             "archive_size": 12,
             "num_islands": 3,
@@ -275,11 +274,9 @@ def default_feta_evolve_a4_openevolve_configuration() -> dict[str, Any]:
             "resource_quantity": 1,
             "native_controller": True,
             "native_checkpoint_resume": True,
-            "evaluator_identity": (
-                f"{EVALUATOR_ID}@{evaluator_code_version(dataset_version)}"
-            ),
-            "verifier_identity": (
-                "deterministic-verifier-v1@feta-seg-evolve-evidence-policy-v2"
-            ),
-        },
+        }
+    )
+    return {
+        "profile": "feta-a4-full-strength-acceptance-v1",
+        "openevolve": openevolve,
     }

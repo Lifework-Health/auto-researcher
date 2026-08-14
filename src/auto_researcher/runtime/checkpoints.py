@@ -67,6 +67,18 @@ ALLOWED_CHECKPOINT_TYPES = [
         "auto_researcher.search.openevolve.upstream_models",
         "UpstreamOpenEvolveAdapterState",
     ),
+    (
+        "auto_researcher.search.openevolve.native_engine",
+        "SafeEvolutionFeedback",
+    ),
+    (
+        "auto_researcher.search.openevolve.native_engine",
+        "NativeEvolutionDecision",
+    ),
+    (
+        "auto_researcher.search.openevolve.native_engine",
+        "NativeEvolutionResult",
+    ),
 ]
 
 
