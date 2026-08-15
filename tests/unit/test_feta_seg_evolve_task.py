@@ -394,6 +394,27 @@ def test_mutation_context_is_metadata_only_and_reaches_generic_constraints():
     )
 
 
+def test_mutation_context_uses_runtime_observations_for_hpo_outcomes():
+    observation = (
+        "Six 25-epoch trials completed; trial 3 achieved mean macro Dice 0.661794."
+    )
+    component = FeTASegEvolvableComponent(
+        EvolveBaseConfiguration(),
+        "optuna",
+        task_options={"hpo_observations": [observation]},
+    )
+    context = component.component_spec().task_mutation_context
+
+    assert context["aggregate_hpo_observations"] == [observation]
+    assert context["domain_guidance"][0] == (
+        "Treat aggregate_hpo_observations as the only evidence about preceding "
+        "search outcomes."
+    )
+    encoded_guidance = json.dumps(context["domain_guidance"]).casefold()
+    assert "underperformed" not in encoded_guidance
+    assert "outperformed" not in encoded_guidance
+
+
 @pytest.mark.parametrize(
     "observation",
     (

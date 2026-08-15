@@ -72,7 +72,7 @@ def metadata_only_evidence():
         TaskRuntimeContext(
             data_dir=Path("/must-not-cross-boundary/feta"),
             task_options={
-                "hpo_observations": ["Aggregate strong augmentation underperformed."]
+                "hpo_observations": ["Aggregate HPO summary available."]
             },
         ),
     )
