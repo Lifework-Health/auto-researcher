@@ -38,6 +38,7 @@ from auto_researcher.tasks.feta_unet_direct.evaluator import (
 )
 from auto_researcher.tasks.feta_unet_direct.identities import (
     BASELINE_RUNNER_ID,
+    DEVELOPMENT_BASELINE_RUNNER_ID,
     ENGINEERING_SMOKE_RUNNER_ID,
 )
 from auto_researcher.tasks.feta_unet_direct.model import (
@@ -68,11 +69,11 @@ class FeTAUNetDirectTask:
         return TaskDescriptor(
             task_id=self.task_id,
             task_version=self.task_version,
-            display_name="FeTA Frozen BasicUNet DIRECT Baseline",
+            display_name="FeTA BasicUNet DIRECT Baselines",
             domain="fetal MRI segmentation",
             description=(
-                "Real-data engineering smoke or development-only five-fold FeTA 2.1 "
-                "BasicUNet evaluation with a sealed holdout."
+                "Real-data engineering smoke, fold-0 development baseline, or "
+                "five-fold FeTA 2.1 BasicUNet evaluation with a sealed holdout."
             ),
             supported_search_types=frozenset({SearchType.DIRECT}),
             evaluator_id=EVALUATOR_ID,
@@ -318,12 +319,13 @@ class FeTAUNetDirectTask:
         return TaskAgentContext(
             task_id=self.task_id,
             task_version=self.task_version,
-            display_name="FeTA Frozen BasicUNet DIRECT Baseline",
+            display_name="FeTA BasicUNet DIRECT Baselines",
             domain="fetal MRI segmentation",
             task_description="Execute one frozen MONAI BasicUNet profile on FeTA development data.",
             safe_scientific_vocabulary=("macro Dice", "BasicUNet", "MIAL", "IRTK"),
             primary_metric_description=(
-                "Mean subject-level macro Dice over tissue labels 1–7; the baseline "
+                "Mean subject-level macro Dice over tissue labels 1–7; the fold-0 "
+                "development profile evaluates 14 subjects and the scientific baseline "
                 "aggregates 68 out-of-fold development predictions."
             ),
             scientific_constraint_summary=(
@@ -339,7 +341,11 @@ class FeTAUNetDirectTask:
             },
             available_search_types=(SearchType.DIRECT,),
             direct_configuration_schema={
-                "profiles": ["engineering_smoke", "frozen_baseline"]
+                "profiles": [
+                    "engineering_smoke",
+                    "development_baseline",
+                    "frozen_baseline",
+                ]
             },
             optuna_space_summary={},
             fixed_scientific_context={
@@ -353,6 +359,7 @@ class FeTAUNetDirectTask:
                 "optimiser_identity": OPTIMISER_ID,
                 "inference_identity": INFERENCE_ID,
                 "smoke_runner_identity": ENGINEERING_SMOKE_RUNNER_ID,
+                "development_runner_identity": DEVELOPMENT_BASELINE_RUNNER_ID,
                 "baseline_runner_identity": BASELINE_RUNNER_ID,
                 "result_identity": RESULT_ID,
             },

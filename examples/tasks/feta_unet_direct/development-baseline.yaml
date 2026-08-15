@@ -1,0 +1,13 @@
+task: {id: feta_unet_direct, version: "1.0"}
+agents: {mode: mock}
+experiment:
+  profile: development_baseline
+  maximum_epochs: 25
+  validation_every: 5
+  fold_count: 1
+runtime:
+  data_dir: /absolute/protected/feta-2.1
+  workspace_dir: /absolute/protected/feta-unet-development-workspace
+  output_dir: /absolute/protected/feta-unet-development-results
+  options:
+    protected_storage_acknowledged: true

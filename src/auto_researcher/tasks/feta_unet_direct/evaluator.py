@@ -43,6 +43,7 @@ from auto_researcher.tasks.feta_unet_direct.configuration import (
 from auto_researcher.tasks.feta_unet_direct.identities import (
     BASELINE_RUNNER_ID,
     DATA_LOADER_ID,
+    DEVELOPMENT_BASELINE_RUNNER_ID,
     ENGINEERING_SMOKE_RUNNER_ID,
 )
 from auto_researcher.tasks.feta_unet_direct.model import (
@@ -130,6 +131,7 @@ def evaluator_code_version(dataset_version: str) -> str:
             EMPTY_PREDICTION_VERSION,
             TOPOLOGY_VERSION,
             ENGINEERING_SMOKE_RUNNER_ID,
+            DEVELOPMENT_BASELINE_RUNNER_ID,
             BASELINE_RUNNER_ID,
             DATA_LOADER_ID,
             RESULT_ID,
@@ -284,9 +286,17 @@ class FeTAUNetDirectEvaluator:
             return self._failure(experiment, "feta_unet_shareable_evidence_invalid")
 
         scientific_baseline = configuration.profile == "frozen_baseline"
+        development_baseline = configuration.profile == "development_baseline"
+        validation_scope = {
+            "engineering_smoke": "single-subject-engineering-smoke",
+            "development_baseline": "fold0-development-oof",
+            "frozen_baseline": "five-fold-development-oof",
+        }[configuration.profile]
         metrics.update(
             {
                 "scientific_baseline": scientific_baseline,
+                "development_baseline": development_baseline,
+                "validation_scope": validation_scope,
                 "profile": configuration.profile,
                 "scientific_identity": SCIENTIFIC_ID,
                 "architecture_identity": ARCHITECTURE_ID,
@@ -351,6 +361,8 @@ class FeTAUNetDirectEvaluator:
             "holdout_subjects_evaluated",
             "failed_training_folds",
             "valid_prediction_labels",
+            "development_baseline",
+            "validation_scope",
         }
         if not required_metrics.issubset(metrics):
             return self._failure(experiment, "feta_unet_metrics_incomplete")
@@ -359,7 +371,15 @@ class FeTAUNetDirectEvaluator:
             empty_prediction_count = int(metrics["empty_prediction_count"])
         except (TypeError, ValueError):
             return self._failure(experiment, "feta_unet_metrics_invalid")
-        expected_folds, expected_subjects = (5, 68) if scientific_baseline else (1, 1)
+        if scientific_baseline:
+            expected_folds, expected_subjects = 5, 68
+            expected_runner = BASELINE_RUNNER_ID
+        elif development_baseline:
+            expected_folds, expected_subjects = 1, 14
+            expected_runner = DEVELOPMENT_BASELINE_RUNNER_ID
+        else:
+            expected_folds, expected_subjects = 1, 1
+            expected_runner = ENGINEERING_SMOKE_RUNNER_ID
         constraint_results = {
             "score_finite_and_bounded": math.isfinite(score) and 0 <= score <= 1,
             "profile_fold_count_exact": metrics["folds_completed"] == expected_folds,
@@ -382,12 +402,7 @@ class FeTAUNetDirectEvaluator:
             == TRAINABLE_PARAMETER_COUNT,
             "evaluator_identity_exact": metrics["evaluator_version"] == self.version
             and metrics["evaluator_code_version"] == self.metadata.code_version,
-            "runner_identity_exact": metrics["runner_id"]
-            == (
-                BASELINE_RUNNER_ID
-                if scientific_baseline
-                else ENGINEERING_SMOKE_RUNNER_ID
-            ),
+            "runner_identity_exact": metrics["runner_id"] == expected_runner,
             "data_loader_identity_exact": metrics["data_loader_id"] == DATA_LOADER_ID,
             "oof_subject_count_exact": metrics["oof_subject_count"]
             == expected_subjects,
@@ -395,6 +410,9 @@ class FeTAUNetDirectEvaluator:
             and "subject_metrics" not in metrics,
             "scientific_identity_correct": metrics["scientific_baseline"]
             is scientific_baseline,
+            "development_identity_correct": metrics["development_baseline"]
+            is development_baseline,
+            "validation_scope_exact": metrics["validation_scope"] == validation_scope,
         }
         success = all(constraint_results.values())
         result = EvaluationResult(

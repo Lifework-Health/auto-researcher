@@ -9,6 +9,7 @@ This built-in is `feta_unet_direct@1.0`. It does not change or reinterpret
 - Architecture: `monai-basic-unet-3d-v1`
 - Evaluator: `feta-basic-unet-direct-evaluator-v1`
 - Smoke runner: `feta-basic-unet-engineering-smoke-runner-v1`
+- Development runner: `feta-basic-unet-fold0-25epoch-development-runner-v1`
 - Baseline runner: `feta-basic-unet-five-fold-oof-runner-v1`
 - Result: `feta-basic-unet-direct-result-v1`
 - Loss: `dice-ce-softmax-onehot-no-background-equal-v1`
@@ -31,8 +32,11 @@ fold state only below `workspace_dir`.
 The smoke uses one locked fold-0 training subject and one locked fold-0
 validation subject for one epoch. It exercises training, validation, a hashed
 checkpoint and the complete metric panel but is marked non-baseline. The
-baseline uses all five fixed development folds and reports aggregate OOF Dice;
-the holdout remains sealed in both profiles.
+development baseline uses all 54 fold-0 training subjects and all 14 fold-0
+validation subjects for 25 epochs. It is intended as a quick first-run
+comparison and is explicitly not the five-fold scientific baseline. The
+scientific baseline uses all five fixed development folds and reports aggregate
+OOF Dice; the holdout remains sealed in every profile.
 
 ## Standard runtime commands
 
@@ -49,6 +53,21 @@ auto-researcher run start \
   --provenance-db /absolute/protected/control/smoke-provenance.sqlite \
   --agent-calls-db /absolute/protected/control/smoke-agent-calls.sqlite \
   --knowledge-retrievals-db /absolute/protected/control/smoke-knowledge.sqlite
+```
+
+Development baseline:
+
+```bash
+auto-researcher run start \
+  --task feta_unet_direct \
+  --contract examples/tasks/feta_unet_direct/contract.yaml \
+  --task-config /absolute/protected/config/development-baseline.yaml \
+  --run-id feta-unet-development-001 \
+  --thread-id feta-unet-development-001 \
+  --checkpoint-db /absolute/protected/control/development-checkpoints.sqlite \
+  --provenance-db /absolute/protected/control/development-provenance.sqlite \
+  --agent-calls-db /absolute/protected/control/development-agent-calls.sqlite \
+  --knowledge-retrievals-db /absolute/protected/control/development-knowledge.sqlite
 ```
 
 Frozen baseline:
@@ -76,7 +95,8 @@ experiment root. Checkpoint size and SHA-256 are verified before import.
 Allow approximately 70 MiB per active AdamW checkpoint (about 350 MiB for five
 folds), plus 10–25 GiB for the MONAI deterministic preprocessing cache,
 temporary validation tensors and fold-state headroom. The smoke typically needs
-under 1 GiB beyond the source dataset. Site-specific volume geometry and cache
-serialization can change these estimates; provision at least 30 GiB protected
-workspace capacity for the baseline. Identifier-free JSON output and control
-databases are normally under 100 MiB.
+under 1 GiB beyond the source dataset. The fold-0 development baseline may still
+populate most of the deterministic preprocessing cache. Site-specific volume
+geometry and cache serialization can change these estimates; provision at least
+30 GiB protected workspace capacity for either baseline profile. Identifier-free
+JSON output and control databases are normally under 100 MiB.

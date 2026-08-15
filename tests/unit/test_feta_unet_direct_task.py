@@ -29,6 +29,7 @@ from auto_researcher.tasks.feta_unet_direct import (
     FeTAUNetDirectConfiguration,
     FeTAUNetDirectTask,
     default_feta_unet_direct_contract,
+    development_baseline_configuration,
     engineering_smoke_configuration,
 )
 from auto_researcher.tasks.feta_unet_direct.evaluator import (
@@ -44,7 +45,10 @@ from auto_researcher.tasks.feta_unet_direct.fold_resume import (
     load_fold_result,
     persist_fold_result,
 )
-from auto_researcher.tasks.feta_unet_direct.identities import DATA_LOADER_ID
+from auto_researcher.tasks.feta_unet_direct.identities import (
+    DATA_LOADER_ID,
+    DEVELOPMENT_BASELINE_RUNNER_ID,
+)
 from auto_researcher.tasks.feta_unet_direct.model import (
     ARCHITECTURE_ID,
     TRAINABLE_PARAMETER_COUNT,
@@ -184,14 +188,22 @@ def _evaluator(
     return evaluator, experiment
 
 
-def test_configuration_freezes_both_profiles_and_architecture():
+def test_configuration_freezes_all_profiles_and_architecture():
     baseline = FeTAUNetDirectConfiguration()
+    development = FeTAUNetDirectConfiguration.model_validate(
+        development_baseline_configuration()
+    )
     smoke = FeTAUNetDirectConfiguration.model_validate(
         engineering_smoke_configuration()
     )
     assert baseline.features == (32, 32, 64, 128, 256, 32)
     assert baseline.profile == "frozen_baseline"
     assert (baseline.maximum_epochs, baseline.fold_count) == (300, 5)
+    assert (
+        development.maximum_epochs,
+        development.validation_every,
+        development.fold_count,
+    ) == (25, 5, 1)
     assert (smoke.maximum_epochs, smoke.validation_every, smoke.fold_count) == (
         1,
         1,
@@ -203,6 +215,13 @@ def test_configuration_freezes_both_profiles_and_architecture():
         FeTAUNetDirectConfiguration(learning_rate=0.001)
     with pytest.raises(ValueError, match="feta_unet_baseline_profile_is_locked"):
         FeTAUNetDirectConfiguration(maximum_epochs=1)
+    with pytest.raises(ValueError, match="feta_unet_development_profile_is_locked"):
+        FeTAUNetDirectConfiguration(
+            profile="development_baseline",
+            maximum_epochs=50,
+            validation_every=5,
+            fold_count=1,
+        )
 
 
 def test_task_is_separately_registered_without_reinterpreting_feta_seg():
@@ -286,6 +305,20 @@ def test_profile_selection_enforces_locked_fold_zero_and_sealed_holdout():
     assert exposed.isdisjoint(partition.holdout)
     assert partition.folds[validation[0].subject_id] == 0
     assert partition.folds[training[0].subject_id] != 0
+
+
+def test_development_profile_uses_full_fold_zero_and_seals_holdout():
+    partition = locked_partition(_methods())
+    development = FeTAUNetDirectConfiguration.model_validate(
+        development_baseline_configuration()
+    )
+    selections = select_profile_folds(development, _subjects(), partition)
+    assert len(selections) == 1
+    fold, training, validation = selections[0]
+    assert fold == 0 and len(training) == 54 and len(validation) == 14
+    exposed = {subject.subject_id for subject in training + validation}
+    assert exposed == set(partition.development)
+    assert exposed.isdisjoint(partition.holdout)
 
 
 def test_baseline_orchestration_requires_exact_68_subject_oof_membership():
@@ -386,6 +419,24 @@ def test_result_identity_is_complete_finite_and_identifier_free(tmp_path):
     encoded = result.model_dump_json().casefold()
     assert "protected-only" not in encoded
     assert '"subject_id":' not in encoded
+
+
+def test_development_baseline_is_supported_but_not_scientific_baseline(tmp_path):
+    metrics = {
+        **_complete_smoke_metrics(),
+        "runner_id": DEVELOPMENT_BASELINE_RUNNER_ID,
+        "oof_subject_count": 14,
+    }
+    evaluator, experiment = _evaluator(tmp_path, lambda *_: metrics)
+    experiment = experiment.model_copy(
+        update={"configuration": development_baseline_configuration()}
+    )
+    result = evaluator.evaluate(experiment, default_feta_unet_direct_contract())
+    assert result.success is True
+    assert result.metrics["profile"] == "development_baseline"
+    assert result.metrics["development_baseline"] is True
+    assert result.metrics["scientific_baseline"] is False
+    assert result.metrics["validation_scope"] == "fold0-development-oof"
 
 
 def test_identifier_bearing_runner_output_fails_before_publication(tmp_path):
@@ -496,9 +547,13 @@ def test_example_profiles_use_standard_direct_runtime_and_explicit_paths():
     baseline, baseline_runtime = _load_task_configuration(
         root / "frozen-baseline.yaml", "feta_unet_direct", "1.0"
     )
+    development, development_runtime = _load_task_configuration(
+        root / "development-baseline.yaml", "feta_unet_direct", "1.0"
+    )
     assert smoke == engineering_smoke_configuration()
+    assert development == development_baseline_configuration()
     assert baseline["profile"] == "frozen_baseline"
-    for runtime in (smoke_runtime, baseline_runtime):
+    for runtime in (smoke_runtime, development_runtime, baseline_runtime):
         assert Path(runtime["data_dir"]).is_absolute()
         assert Path(runtime["workspace_dir"]).is_absolute()
         assert Path(runtime["output_dir"]).is_absolute()

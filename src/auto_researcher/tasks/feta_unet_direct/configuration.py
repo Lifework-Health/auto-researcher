@@ -10,7 +10,9 @@ class FeTAUNetDirectConfiguration(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    profile: Literal["engineering_smoke", "frozen_baseline"] = "frozen_baseline"
+    profile: Literal["engineering_smoke", "development_baseline", "frozen_baseline"] = (
+        "frozen_baseline"
+    )
     spatial_dims: Literal[3] = 3
     in_channels: Literal[1] = 1
     out_channels: Literal[8] = 8
@@ -72,6 +74,15 @@ class FeTAUNetDirectConfiguration(BaseModel):
             or self.smoke_validation_subjects != 1
         ):
             raise ValueError("feta_unet_smoke_profile_is_locked")
+        if self.profile == "development_baseline" and (
+            self.maximum_epochs != 25
+            or self.validation_every != 5
+            or self.fold_count != 1
+            or self.smoke_fold != 0
+            or self.smoke_training_subjects != 1
+            or self.smoke_validation_subjects != 1
+        ):
+            raise ValueError("feta_unet_development_profile_is_locked")
         return self
 
     def scientific_configuration(self) -> dict:
@@ -92,5 +103,14 @@ def engineering_smoke_configuration() -> dict:
         "profile": "engineering_smoke",
         "maximum_epochs": 1,
         "validation_every": 1,
+        "fold_count": 1,
+    }
+
+
+def development_baseline_configuration() -> dict:
+    return {
+        "profile": "development_baseline",
+        "maximum_epochs": 25,
+        "validation_every": 5,
         "fold_count": 1,
     }

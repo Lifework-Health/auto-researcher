@@ -326,9 +326,9 @@ def select_profile_folds(
         raise ValueError("feta_unet_split_subject_identity_mismatch")
     selected = []
     fold_ids = (
-        (configuration.smoke_fold,)
-        if configuration.profile == "engineering_smoke"
-        else tuple(range(5))
+        tuple(range(5))
+        if configuration.profile == "frozen_baseline"
+        else (configuration.smoke_fold,)
     )
     for fold in fold_ids:
         training = tuple(

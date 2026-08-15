@@ -56,6 +56,8 @@ class FeTAUNetDirectVerificationPolicy:
             "failed_training_folds",
             "valid_prediction_labels",
             "scientific_baseline",
+            "development_baseline",
+            "validation_scope",
             "contains_subject_identifiers",
         }
     )
@@ -100,7 +102,18 @@ class FeTAUNetDirectVerificationPolicy:
         if evaluation.metrics.get("failed_training_folds") != 0:
             reasons.append("feta_unet_training_fold_failed")
         profile = evaluation.metrics.get("profile")
-        expected = (5, 68) if profile == "frozen_baseline" else (1, 1)
+        expected = (
+            {
+                "engineering_smoke": (1, 1),
+                "development_baseline": (1, 14),
+                "frozen_baseline": (5, 68),
+            }.get(profile)
+            if isinstance(profile, str)
+            else None
+        )
+        if expected is None:
+            reasons.append("feta_unet_profile_invalid")
+            expected = (-1, -1)
         if (
             evaluation.metrics.get("folds_completed") != expected[0]
             or evaluation.metrics.get("oof_subject_count") != expected[1]
