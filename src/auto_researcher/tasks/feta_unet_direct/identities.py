@@ -2,10 +2,11 @@
 
 from typing import Literal
 
-ENGINEERING_SMOKE_RUNNER_ID = "feta-basic-unet-engineering-smoke-runner-v1"
-DEVELOPMENT_BASELINE_RUNNER_ID = "feta-basic-unet-fold0-150epoch-development-runner-v1"
-BASELINE_RUNNER_ID = "feta-basic-unet-five-fold-oof-runner-v1"
+ENGINEERING_SMOKE_RUNNER_ID = "feta-basic-unet-engineering-smoke-runner-v2"
+DEVELOPMENT_BASELINE_RUNNER_ID = "feta-basic-unet-fold0-150epoch-development-runner-v2"
+BASELINE_RUNNER_ID = "feta-basic-unet-five-fold-oof-runner-v2"
 DATA_LOADER_ID = "monai-persistent-train-spawn4-uncached-validation-v3"
+AMP_POLICY_ID = "torch-gradscaler-skip-backoff-consecutive16-v1"
 
 
 def runner_id(

@@ -17,7 +17,10 @@ from auto_researcher.tasks.feta_unet_direct.evaluator import (
     EVALUATOR_VERSION,
     RESULT_ID,
 )
-from auto_researcher.tasks.feta_unet_direct.identities import DATA_LOADER_ID
+from auto_researcher.tasks.feta_unet_direct.identities import (
+    AMP_POLICY_ID,
+    DATA_LOADER_ID,
+)
 from auto_researcher.tasks.feta_unet_direct.model import (
     ARCHITECTURE_ID,
     TRAINABLE_PARAMETER_COUNT,
@@ -59,6 +62,7 @@ class FeTAUNetDirectVerificationPolicy:
             "development_baseline",
             "validation_scope",
             "contains_subject_identifiers",
+            "amp_policy_identity",
         }
     )
 
@@ -106,6 +110,8 @@ class FeTAUNetDirectVerificationPolicy:
             reasons.append("feta_unet_result_identity_mismatch")
         if evaluation.metrics.get("data_loader_id") != DATA_LOADER_ID:
             reasons.append("feta_unet_data_loader_identity_mismatch")
+        if evaluation.metrics.get("amp_policy_identity") != AMP_POLICY_ID:
+            reasons.append("feta_unet_amp_policy_identity_mismatch")
         if evaluation.metrics.get("holdout_subjects_evaluated") != 0:
             reasons.append("feta_unet_holdout_accessed")
         if evaluation.metrics.get("failed_training_folds") != 0:

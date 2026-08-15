@@ -41,6 +41,7 @@ from auto_researcher.tasks.feta_unet_direct.configuration import (
     FeTAUNetDirectConfiguration,
 )
 from auto_researcher.tasks.feta_unet_direct.identities import (
+    AMP_POLICY_ID,
     BASELINE_RUNNER_ID,
     DATA_LOADER_ID,
     DEVELOPMENT_BASELINE_RUNNER_ID,
@@ -134,6 +135,7 @@ def evaluator_code_version(dataset_version: str) -> str:
             DEVELOPMENT_BASELINE_RUNNER_ID,
             BASELINE_RUNNER_ID,
             DATA_LOADER_ID,
+            AMP_POLICY_ID,
             RESULT_ID,
             SCIENTIFIC_JSON_ENCODING_VERSION,
             ARTEFACT_BUNDLE_SCHEMA_VERSION,
@@ -196,6 +198,7 @@ class FeTAUNetDirectEvaluator:
             "metric_panel_version": METRIC_PANEL_VERSION,
             "result_encoding_version": SCIENTIFIC_JSON_ENCODING_VERSION,
             "artefact_bundle_schema_version": ARTEFACT_BUNDLE_SCHEMA_VERSION,
+            "amp_policy_identity": AMP_POLICY_ID,
             "holdout_evaluator_calls": 0,
             "contains_subject_identifiers": False,
         }
@@ -283,6 +286,7 @@ class FeTAUNetDirectEvaluator:
                 "feta_unet_oof_coverage_invalid",
                 "feta_unet_training_loss_non_finite",
                 "feta_unet_training_gradient_non_finite",
+                "feta_unet_repeated_amp_overflow",
                 "feta_unet_prediction_non_finite",
                 "feta_unet_validation_metric_non_finite",
                 "feta_unet_checkpoint_identity_mismatch",
@@ -348,6 +352,7 @@ class FeTAUNetDirectEvaluator:
                 "hd95_version": HD95_VERSION,
                 "empty_prediction_version": EMPTY_PREDICTION_VERSION,
                 "topology_version": TOPOLOGY_VERSION,
+                "amp_policy_identity": AMP_POLICY_ID,
                 "contains_subject_identifiers": False,
             }
         )

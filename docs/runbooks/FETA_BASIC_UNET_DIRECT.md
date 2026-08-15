@@ -8,13 +8,19 @@ This built-in is `feta_unet_direct@1.0`. It does not change or reinterpret
 - Scientific: `feta-development-oof-subject-macro-dice-v1`
 - Architecture: `monai-basic-unet-3d-v1`
 - Evaluator: `feta-basic-unet-direct-evaluator-v1`
-- Smoke runner: `feta-basic-unet-engineering-smoke-runner-v1`
-- Development runner: `feta-basic-unet-fold0-150epoch-development-runner-v1`
-- Baseline runner: `feta-basic-unet-five-fold-oof-runner-v1`
+- Smoke runner: `feta-basic-unet-engineering-smoke-runner-v2`
+- Development runner: `feta-basic-unet-fold0-150epoch-development-runner-v2`
+- Baseline runner: `feta-basic-unet-five-fold-oof-runner-v2`
 - Result: `feta-basic-unet-direct-result-v1`
 - Loss: `dice-ce-softmax-onehot-no-background-equal-v1`
 - Optimiser: `adamw-lr1e-4-wd1e-5-v1`
 - Inference: `sliding-window-128-overlap0.5-gaussian-native-restore-v2`
+- AMP: `torch-gradscaler-skip-backoff-consecutive16-v1`
+
+The AMP policy lets PyTorch skip an isolated overflowing optimiser step and
+reduce its gradient scale. It records every skipped step and fails a candidate
+after 16 consecutive skips, distinguishing normal
+mixed-precision recovery from sustained numerical divergence.
 
 The model is MONAI `BasicUNet` with 5,749,608 trainable parameters. The
 recorded acceptance probe is `1x1x128x128x128` to `1x8x128x128x128`, with

@@ -46,6 +46,7 @@ from auto_researcher.tasks.feta_unet_direct.fold_resume import (
     persist_fold_result,
 )
 from auto_researcher.tasks.feta_unet_direct.identities import (
+    AMP_POLICY_ID,
     DATA_LOADER_ID,
     DEVELOPMENT_BASELINE_RUNNER_ID,
 )
@@ -55,6 +56,7 @@ from auto_researcher.tasks.feta_unet_direct.model import (
 )
 from auto_researcher.tasks.feta_unet_direct.runner import (
     FoldExecutionResult,
+    _amp_step_was_skipped,
     _is_progress_milestone,
     orchestrate_profile_folds,
     select_profile_folds,
@@ -159,6 +161,7 @@ def _complete_smoke_metrics() -> dict:
             "failed_training_folds": 0,
             "valid_prediction_labels": list(range(8)),
             "contains_subject_identifiers": False,
+            "amp_policy_identity": AMP_POLICY_ID,
         }
     )
     return metrics
@@ -224,6 +227,12 @@ def test_configuration_freezes_all_profiles_and_architecture():
             validation_every=5,
             fold_count=1,
         )
+
+
+def test_amp_overflow_detection_uses_gradscaler_backoff():
+    assert _amp_step_was_skipped(65_536.0, 32_768.0) is True
+    assert _amp_step_was_skipped(32_768.0, 32_768.0) is False
+    assert _amp_step_was_skipped(32_768.0, 65_536.0) is False
 
 
 def test_task_is_separately_registered_without_reinterpreting_feta_seg():
