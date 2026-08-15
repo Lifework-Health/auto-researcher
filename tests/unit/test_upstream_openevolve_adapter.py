@@ -217,6 +217,13 @@ def test_development_v2_request_includes_bounded_campaign_feedback():
         "objective_value": 0.8,
         "constraint_compliant": True,
     }
+    rules = captured[0]["static_validation_rules"]
+    assert any(
+        "exactly one synchronous `def evolve(configuration)`" in rule
+        for rule in rules
+    )
+    assert any("Never assign or augmented-assign through" in rule for rule in rules)
+    assert any("return a new dictionary" in rule for rule in rules)
 
 
 def test_historical_v1_request_preserves_the_documented_constraint_omissions():

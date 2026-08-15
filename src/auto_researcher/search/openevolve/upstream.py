@@ -34,6 +34,9 @@ from auto_researcher.search.openevolve.upstream_models import (
     UpstreamOpenEvolveAdapterContract,
     UpstreamOpenEvolveAdapterState,
 )
+from auto_researcher.search.openevolve.validation import (
+    candidate_static_validation_guidance,
+)
 from auto_researcher.search.openevolve.hardened_executor import (
     HardenedDockerExecutor,
 )
@@ -207,6 +210,9 @@ class UpstreamOpenEvolveAdapter:
                 request["feedback_instruction"] = (
                     "Treat campaign_context and parent_feedback as the only "
                     "evidence about earlier results; do not invent results."
+                )
+                request["static_validation_rules"] = list(
+                    candidate_static_validation_guidance(component)
                 )
                 request["campaign_context"] = dict(reservation.campaign_context)
                 request["parent_feedback"] = dict(reservation.parent_feedback)
