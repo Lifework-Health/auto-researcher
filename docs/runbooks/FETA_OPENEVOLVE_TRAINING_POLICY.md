@@ -6,6 +6,23 @@
 
 Pure OpenEvolve uses the registered base configuration and seed policy in `openevolve-deterministic-smoke.yaml`. A hybrid run uses `openevolve-hybrid-template.yaml`; replace only `runtime.options.base_configuration` with the selected bounded Optuna configuration. This inherits configuration values, not checkpoints. The recorded `seeding_mode`, base identity, policy identity, candidate source hash and OpenEvolve lineage distinguish pure and hybrid runs.
 
+## Public-data development canary
+
+`openevolve-development-native-template.yaml` is an explicitly non-production
+host-run canary for the public FeTA development data. It runs one seed and two
+live mutations through the existing local source sandbox and trusted host GPU
+evaluator. It does not select the hardened Docker executor and cannot be
+configured alongside `openevolve_live_mutation`. The template fixes the live
+budget at two Anthropic calls and writes a source-free JSONL usage ledger.
+
+Before launch, replace `runtime.options.base_configuration` with the completed
+Optuna winner and render the absolute data, workspace, output and usage-ledger
+paths. The canary may continue from a verified seed that misses the production
+per-tissue feasibility threshold. Such candidates remain marked scientifically
+ineligible and are labelled `development_population_only`; this relaxation
+exists only to exercise two development mutations and does not produce a
+scientific or production champion.
+
 The budget includes generation zero. Three candidate evaluations mean one seed plus two evolved candidates. `maximum_candidate_evaluations`, the `SearchRequest` experiment budget and the contract's `maximum_experiments` must agree.
 
 Macro Dice remains the optimization objective, but scientific feasibility is a hard eligibility gate before parent selection and population replacement. `feta-evolve-scientific-feasibility-v1` requires zero empty predictions and Dice of at least 0.50 for every one of the seven foreground tissues at screen and full fidelity. The threshold is inclusive. Reconstruction gap remains diagnostic rather than a hard gate. Scientifically infeasible candidates remain archived with their evaluation, verification and lineage evidence, but cannot enter the active/best population or become parents.

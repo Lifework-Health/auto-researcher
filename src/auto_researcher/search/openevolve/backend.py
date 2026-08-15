@@ -56,6 +56,7 @@ class OpenEvolveBackend:
         self.verifier_identity = verifier_identity
         self.mutation_operator = mutation_operator
         self.sandbox_runner = sandbox_runner
+        self.development_allow_verified_infeasible_parents = False
 
     @property
     def interface_hash(self) -> str:
@@ -101,6 +102,17 @@ class OpenEvolveBackend:
             raw.setdefault("sandbox_policy_id", expected_sandbox)
             raw.setdefault("evaluator_identity", self.evaluator_identity)
             raw.setdefault("verifier_identity", self.verifier_identity)
+        development_relaxation = raw.get(
+            "development_allow_verified_infeasible_parents", False
+        )
+        if type(development_relaxation) is not bool:
+            raise ValueError("openevolve_development_relaxation_must_be_boolean")
+        if development_relaxation and (
+            expected_sandbox != "openevolve-sandbox-v1"
+            or self.mutation_operator.provenance != "LIVE_MODEL"
+        ):
+            raise ValueError("openevolve_development_relaxation_unavailable")
+        self.development_allow_verified_infeasible_parents = development_relaxation
         required = {
             "population_size",
             "maximum_generations",
@@ -325,20 +337,22 @@ class OpenEvolveBackend:
             outcome.candidate_id,
         )
 
-    @staticmethod
-    def parent_eligible(outcome: CandidateOutcome) -> bool:
+    def parent_eligible(self, outcome: CandidateOutcome) -> bool:
         """Return whether an outcome may be active, best-known, or a parent."""
 
         return (
             outcome.status == CandidateStatus.VERIFIED
-            and outcome.constraint_compliant is True
+            and (
+                outcome.constraint_compliant is True
+                or self.development_allow_verified_infeasible_parents
+            )
             and outcome.verified is True
             and outcome.objective_value is not None
             and math.isfinite(outcome.objective_value)
         )
 
-    @staticmethod
     def selection_disposition(
+        self,
         *,
         verified: bool,
         constraint_compliant: bool,
@@ -355,6 +369,12 @@ class OpenEvolveBackend:
         ):
             return "ranked", "eligible_for_bounded_population", None
         if verified and not constraint_compliant:
+            if self.development_allow_verified_infeasible_parents:
+                return (
+                    "development_ranked_scientifically_ineligible",
+                    "development_population_only",
+                    next(iter(reasons), "candidate_constraints_not_compliant"),
+                )
             return (
                 "scientifically_ineligible",
                 "archive_only",
