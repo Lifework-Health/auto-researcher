@@ -178,12 +178,20 @@ def _run_cuda_fold(
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     model = create_basic_unet(configuration).to("cuda")
-    loss_function = create_loss()
+    loss_function = create_loss(configuration)
     optimizer = create_optimizer(model, configuration)
     scaler = torch.amp.GradScaler("cuda")
     training_dataset = PersistentDataset(
         _dataset_records(training_subjects),
-        transform=create_transforms(training=True),
+        transform=create_transforms(
+            training=True,
+            positive_negative_ratio=str(
+                getattr(configuration, "positive_negative_ratio", "1:1")
+            ),
+            augmentation_strength=str(
+                getattr(configuration, "augmentation_strength", "baseline")
+            ),
+        ),
         cache_dir=cache_root / "training",
     )
     validation_dataset = Dataset(
@@ -458,9 +466,20 @@ def run_profile(
     partition = locked_partition(
         {subject.subject_id: subject.reconstruction_method for subject in subjects}
     )
-    root = context.workspace_dir / "feta_unet_direct" / experiment_id
+    raw_namespace = context.task_options.get("workspace_namespace", "feta_unet_direct")
+    if (
+        not isinstance(raw_namespace, str)
+        or not raw_namespace
+        or any(item in raw_namespace for item in ("/", "\\", ".."))
+    ):
+        raise ValueError("feta_unet_workspace_namespace_invalid")
+    root = context.workspace_dir / raw_namespace / experiment_id
     checkpoint_root = root / "checkpoints"
-    cache_root = root / "cache"
+    cache_root = (
+        context.workspace_dir / raw_namespace / "_shared_cache"
+        if context.task_options.get("shared_preprocessing_cache") is True
+        else root / "cache"
+    )
 
     resume_value = context.task_options.get("resume_root")
     resume_root = (

@@ -710,11 +710,6 @@ def run(
             and openevolve_development_configuration is not None
         ):
             raise ValueError("openevolve_mutation_runtime_conflict")
-        if (
-            openevolve_development_configuration is not None
-            and search_type != SearchType.OPENEVOLVE
-        ):
-            raise ValueError("development_mutation_requires_openevolve_search")
         openevolve_development_operator = None
         openevolve_development_client = None
         if openevolve_development_configuration is not None:
@@ -1022,11 +1017,6 @@ def resume_cli(
             and openevolve_development_configuration is not None
         ):
             raise ValueError("openevolve_mutation_runtime_conflict")
-        if (
-            openevolve_development_configuration is not None
-            and search_type != SearchType.OPENEVOLVE
-        ):
-            raise ValueError("development_mutation_requires_openevolve_search")
         openevolve_development_operator = None
         if openevolve_development_configuration is not None:
             openevolve_development_operator, _ = assemble_development_live_openevolve(

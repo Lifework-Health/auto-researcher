@@ -153,21 +153,35 @@ class FeTAUNetDirectEvaluator:
         manifest: DatasetManifest,
         *,
         profile_runner: ProfileRunner = run_profile,
+        configuration_model: type = FeTAUNetDirectConfiguration,
+        task_id: str = "feta_unet_direct",
+        scientific_identity: str = SCIENTIFIC_ID,
+        result_identity: str = RESULT_ID,
+        augmentation_identity: str = AUGMENTATION_VERSION,
+        loss_identity: str = LOSS_ID,
+        optimiser_identity: str = OPTIMISER_ID,
     ) -> None:
         self.context = context
         self.metadata = metadata
         self.manifest = manifest
         self.profile_runner = profile_runner
+        self.configuration_model = configuration_model
+        self.task_id = task_id
+        self.scientific_identity = scientific_identity
+        self.result_identity = result_identity
+        self.augmentation_identity = augmentation_identity
+        self.loss_identity = loss_identity
+        self.optimiser_identity = optimiser_identity
 
     def _evaluator_manifest(self) -> dict[str, Any]:
         return {
-            "task_id": "feta_unet_direct",
+            "task_id": self.task_id,
             "task_version": "1.0",
-            "scientific_identity": SCIENTIFIC_ID,
+            "scientific_identity": self.scientific_identity,
             "architecture_identity": ARCHITECTURE_ID,
             "evaluator_id": self.evaluator_id,
             "evaluator_version": self.version,
-            "result_identity": RESULT_ID,
+            "result_identity": self.result_identity,
             "code_version": self.metadata.code_version,
             "dataset_version": self.metadata.dataset_version,
             "dataset_manifest_hash": self.manifest.metadata.get("manifest_hash"),
@@ -175,8 +189,9 @@ class FeTAUNetDirectEvaluator:
             "split_hash": EXPECTED_SPLIT_HASH,
             "fold_identity": FOLD_ID,
             "fold_hash": EXPECTED_FOLD_HASH,
-            "loss_identity": LOSS_ID,
-            "optimiser_identity": OPTIMISER_ID,
+            "augmentation_identity": self.augmentation_identity,
+            "loss_identity": self.loss_identity,
+            "optimiser_identity": self.optimiser_identity,
             "inference_identity": INFERENCE_ID,
             "metric_panel_version": METRIC_PANEL_VERSION,
             "result_encoding_version": SCIENTIFIC_JSON_ENCODING_VERSION,
@@ -245,7 +260,7 @@ class FeTAUNetDirectEvaluator:
         ):
             return self._failure(experiment, "feta_unet_experiment_metadata_mismatch")
         try:
-            configuration = FeTAUNetDirectConfiguration.model_validate(
+            configuration = self.configuration_model.model_validate(
                 experiment.configuration
             )
         except Exception:
@@ -298,7 +313,7 @@ class FeTAUNetDirectEvaluator:
                 "development_baseline": development_baseline,
                 "validation_scope": validation_scope,
                 "profile": configuration.profile,
-                "scientific_identity": SCIENTIFIC_ID,
+                "scientific_identity": self.scientific_identity,
                 "architecture_identity": ARCHITECTURE_ID,
                 "architecture_trainable_parameters": TRAINABLE_PARAMETER_COUNT,
                 "architecture_measured_input_shape": list(MEASURED_INPUT_SHAPE),
@@ -323,11 +338,11 @@ class FeTAUNetDirectEvaluator:
                 "fold_hash": EXPECTED_FOLD_HASH,
                 "evaluator_version": self.version,
                 "evaluator_code_version": self.metadata.code_version,
-                "result_identity": RESULT_ID,
+                "result_identity": self.result_identity,
                 "preprocessing_version": PREPROCESSING_VERSION,
-                "augmentation_version": AUGMENTATION_VERSION,
-                "loss_identity": LOSS_ID,
-                "optimiser_identity": OPTIMISER_ID,
+                "augmentation_version": self.augmentation_identity,
+                "loss_identity": self.loss_identity,
+                "optimiser_identity": self.optimiser_identity,
                 "inference_identity": INFERENCE_ID,
                 "metric_version": METRIC_PANEL_VERSION,
                 "hd95_version": HD95_VERSION,

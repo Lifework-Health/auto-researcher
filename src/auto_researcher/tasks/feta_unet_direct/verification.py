@@ -62,6 +62,15 @@ class FeTAUNetDirectVerificationPolicy:
         }
     )
 
+    def __init__(
+        self,
+        *,
+        evaluator_version: str = EVALUATOR_VERSION,
+        result_identity: str = RESULT_ID,
+    ) -> None:
+        self.evaluator_version = evaluator_version
+        self.result_identity = result_identity
+
     def evaluate_constraints(
         self, evaluation: EvaluationResult, contract: ResearchContract
     ) -> PolicyDecision:
@@ -91,9 +100,9 @@ class FeTAUNetDirectVerificationPolicy:
             != TRAINABLE_PARAMETER_COUNT
         ):
             reasons.append("feta_unet_architecture_identity_mismatch")
-        if evaluation.metrics.get("evaluator_version") != EVALUATOR_VERSION:
+        if evaluation.metrics.get("evaluator_version") != self.evaluator_version:
             reasons.append("feta_unet_evaluator_identity_mismatch")
-        if evaluation.metrics.get("result_identity") != RESULT_ID:
+        if evaluation.metrics.get("result_identity") != self.result_identity:
             reasons.append("feta_unet_result_identity_mismatch")
         if evaluation.metrics.get("data_loader_id") != DATA_LOADER_ID:
             reasons.append("feta_unet_data_loader_identity_mismatch")

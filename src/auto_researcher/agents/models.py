@@ -169,6 +169,7 @@ class TaskAgentContext(AgentModel):
     available_search_types: tuple[SearchType, ...]
     direct_configuration_schema: FrozenJsonDict
     optuna_space_summary: FrozenJsonDict
+    openevolve_space_summary: FrozenJsonDict = Field(default_factory=dict)
     fixed_scientific_context: FrozenJsonDict = Field(default_factory=dict)
     task_limitations: tuple[str, ...] = ()
     safety_notes: tuple[str, ...] = ()
@@ -183,6 +184,8 @@ class PriorResearchSummary(AgentModel):
     constraint_compliant: bool
     concise_verified_finding: str
     safe_artefact_references: tuple[str, ...] = ()
+    safe_configuration: FrozenJsonDict = Field(default_factory=dict)
+    aggregate_metrics: FrozenJsonDict = Field(default_factory=dict)
 
 
 class HypothesisAgentContext(AgentModel):
@@ -212,6 +215,8 @@ class PlannerAgentContext(AgentModel):
     installed_search_capabilities: tuple[SearchType, ...]
     remaining_experiment_budget: int = Field(ge=0)
     remaining_cost_budget: float = Field(ge=0)
+    remaining_time_seconds: float | None = Field(default=None, ge=0)
+    campaign_deadline_at: AwareDatetime | None = None
     model_calls_used: int = Field(ge=0)
     approval_requirements: tuple[SearchType, ...]
     prior_verified_findings: tuple[PriorResearchSummary, ...] = ()

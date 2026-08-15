@@ -47,8 +47,8 @@ class DevelopmentLiveOpenEvolveConfiguration(DevelopmentRuntimeModel):
     acknowledgement: Literal["public-data-non-production-development"]
     model: ModelCallConfig
     credential: SecretReference
-    maximum_model_calls: Literal[2] = 2
-    maximum_total_cost_usd: float = Field(gt=0, le=1)
+    maximum_model_calls: int = Field(default=2, ge=1, le=20)
+    maximum_total_cost_usd: float = Field(gt=0, le=5)
     usage_log_file: Path
 
     @model_validator(mode="after")

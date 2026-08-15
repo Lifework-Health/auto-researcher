@@ -1,0 +1,235 @@
+"""Small JSON-only OpenEvolve surface for BasicUNet training policy search."""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from auto_researcher.contracts.models import (
+    ExperimentSpec,
+    ResearchContract,
+    SearchRequest,
+)
+from auto_researcher.search.openevolve.models import (
+    CandidatePreparationResult,
+    EvolvableComponentSpec,
+    OpenEvolveCandidate,
+)
+from auto_researcher.tasks.feta_unet_search.configuration import (
+    DICE_WEIGHT_BOUNDS,
+    DROPOUT_BOUNDS,
+    LEARNING_RATE_BOUNDS,
+    WEIGHT_DECAY_BOUNDS,
+    FeTAUNetSearchConfiguration,
+)
+from auto_researcher.tasks.models import ExperimentMetadata
+
+COMPONENT_ID = "feta-basic-unet-training-policy"
+COMPONENT_VERSION = "1.0"
+POLICY_VERSION: Literal["feta-basic-unet-training-policy-v1"] = (
+    "feta-basic-unet-training-policy-v1"
+)
+
+SEED_SOURCE = """def evolve(configuration):
+    return configuration["seed_training_policy"]
+"""
+
+LOW_REGULARISATION_SOURCE = """def evolve(configuration):
+    return {
+        "policy_version": "feta-basic-unet-training-policy-v1",
+        "learning_rate": 0.0002,
+        "weight_decay": 0.00001,
+        "dropout": 0.05,
+        "dice_weight": 1.1,
+        "positive_negative_ratio": "2:1",
+        "augmentation_strength": "light",
+    }
+"""
+
+REGULARISED_SOURCE = """def evolve(configuration):
+    return {
+        "policy_version": "feta-basic-unet-training-policy-v1",
+        "learning_rate": 0.00008,
+        "weight_decay": 0.00005,
+        "dropout": 0.2,
+        "dice_weight": 1.25,
+        "positive_negative_ratio": "1:1",
+        "augmentation_strength": "strong",
+    }
+"""
+
+
+class UNetTrainingPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    policy_version: Literal["feta-basic-unet-training-policy-v1"] = POLICY_VERSION
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-5
+    dropout: float = 0.0
+    dice_weight: float = 1.0
+    positive_negative_ratio: Literal["1:1", "2:1", "3:1"] = "1:1"
+    augmentation_strength: Literal["light", "baseline", "strong"] = "baseline"
+
+    @field_validator("learning_rate")
+    @classmethod
+    def learning_rate_is_bounded(cls, value: float) -> float:
+        if not LEARNING_RATE_BOUNDS[0] <= value <= LEARNING_RATE_BOUNDS[1]:
+            raise ValueError("feta_unet_policy_learning_rate_out_of_bounds")
+        return float(value)
+
+    @field_validator("weight_decay")
+    @classmethod
+    def weight_decay_is_bounded(cls, value: float) -> float:
+        if not WEIGHT_DECAY_BOUNDS[0] <= value <= WEIGHT_DECAY_BOUNDS[1]:
+            raise ValueError("feta_unet_policy_weight_decay_out_of_bounds")
+        return float(value)
+
+    @field_validator("dropout")
+    @classmethod
+    def dropout_is_bounded(cls, value: float) -> float:
+        if not DROPOUT_BOUNDS[0] <= value <= DROPOUT_BOUNDS[1]:
+            raise ValueError("feta_unet_policy_dropout_out_of_bounds")
+        return float(value)
+
+    @field_validator("dice_weight")
+    @classmethod
+    def dice_weight_is_bounded(cls, value: float) -> float:
+        if not DICE_WEIGHT_BOUNDS[0] <= value <= DICE_WEIGHT_BOUNDS[1]:
+            raise ValueError("feta_unet_policy_dice_weight_out_of_bounds")
+        return float(value)
+
+
+class FeTAUNetEvolvableComponent:
+    def __init__(self, *, maximum_epochs: int = 25) -> None:
+        self.maximum_epochs = maximum_epochs
+        FeTAUNetSearchConfiguration(maximum_epochs=maximum_epochs)  # type: ignore[arg-type]
+        self.seed_policy = UNetTrainingPolicy()
+
+    def component_spec(self) -> EvolvableComponentSpec:
+        safe_context: dict[str, Any] = {
+            "objective": "maximise fold-0 validation macro Dice",
+            "immutable_architecture": "MONAI BasicUNet 3D features 32-32-64-128-256-32",
+            "immutable_preprocessing": "RAS, 0.5 mm, foreground crop, nonzero z-score, 128^3 patches",
+            "maximum_epochs": self.maximum_epochs,
+            "legal_training_policy_schema": UNetTrainingPolicy.model_json_schema(),
+            "metric_names": [
+                "mean_subject_macro_dice",
+                "reconstruction_gap",
+                "per_tissue_dice",
+            ],
+            "data_boundary": "Only aggregate task metadata and the bounded policy schema are exposed.",
+        }
+        return EvolvableComponentSpec(
+            component_id=COMPONENT_ID,
+            component_version=COMPONENT_VERSION,
+            mutable_file="candidate.py",
+            allowed_files=("candidate.py",),
+            entry_point="evolve",
+            immutable_interface_contract=(
+                "evolve(configuration: bounded BasicUNet policy seed) -> "
+                "UNetTrainingPolicy JSON object"
+            ),
+            parameter_schema={
+                "model": "UNetTrainingPolicySeedInput@1.0",
+                "seed_training_policy": self.seed_policy.model_dump(mode="json"),
+                "mutation_context": safe_context,
+            },
+            output_schema=UNetTrainingPolicy.model_json_schema(),
+            seed_source=SEED_SOURCE,
+            deterministic_mutation_sources=(
+                LOW_REGULARISATION_SOURCE,
+                REGULARISED_SOURCE,
+            ),
+            maximum_source_bytes=8_192,
+            task_mutation_context=safe_context,
+        )
+
+    def seed_configuration(self) -> dict:
+        return {"seed_training_policy": self.seed_policy.model_dump(mode="json")}
+
+    def canonical_scientific_configuration(
+        self, preparation: CandidatePreparationResult
+    ) -> dict:
+        return UNetTrainingPolicy.model_validate(
+            dict(preparation.generated_configuration)
+        ).model_dump(mode="json")
+
+    def candidate_to_experiment(
+        self,
+        candidate: OpenEvolveCandidate,
+        preparation: CandidatePreparationResult,
+        request: SearchRequest,
+        contract: ResearchContract,
+        metadata: ExperimentMetadata,
+        *,
+        run_id: str,
+    ) -> ExperimentSpec:
+        del contract
+        policy = UNetTrainingPolicy.model_validate(
+            dict(preparation.generated_configuration)
+        )
+        configuration = FeTAUNetSearchConfiguration(
+            maximum_epochs=self.maximum_epochs,  # type: ignore[arg-type]
+            **policy.model_dump(mode="python", exclude={"policy_version"}),
+        )
+        digest = hashlib.sha256(
+            f"{run_id}\x1f{request.request_id}\x1f{candidate.candidate_id}".encode()
+        ).hexdigest()[:16]
+        return ExperimentSpec(
+            experiment_id=f"experiment-{digest}",
+            hypothesis_id=request.hypothesis_id,
+            search_request_id=request.request_id,
+            configuration=configuration.model_dump(mode="json"),
+            evaluator_id=metadata.evaluator_id,
+            code_version=metadata.code_version,
+            dataset_version=metadata.dataset_version,
+            provenance=metadata.provenance,
+        )
+
+
+def default_openevolve_configuration(
+    *, candidate_evaluations: int = 3
+) -> dict[str, Any]:
+    from auto_researcher.tasks.feta_seg.manifests import (
+        DATASET_RELEASE,
+        EXPECTED_MANIFEST_HASH,
+    )
+    from auto_researcher.tasks.feta_unet_search.evaluator import (
+        EVALUATOR_ID,
+        evaluator_code_version,
+    )
+
+    dataset_version = f"{DATASET_RELEASE}+{EXPECTED_MANIFEST_HASH}"
+    return {
+        "openevolve": {
+            "population_size": 1,
+            "maximum_generations": max(1, candidate_evaluations - 1),
+            "maximum_candidate_evaluations": candidate_evaluations,
+            "maximum_wall_time_seconds": 72_000.0,
+            "maximum_model_calls": max(0, candidate_evaluations - 1),
+            "maximum_failed_candidates": 2,
+            "maximum_consecutive_failures": 2,
+            "maximum_artefact_bytes": 20_000_000,
+            "random_seed": 20260815,
+            "objective_direction": "MAXIMIZE",
+            "objective_threshold": None,
+            "sandbox_policy_id": "openevolve-sandbox-v1",
+            "evaluator_identity": (
+                f"{EVALUATOR_ID}@{evaluator_code_version(dataset_version)}"
+            ),
+            "verifier_identity": (
+                "deterministic-verifier-v1@feta-basic-unet-search-evidence-policy-v1"
+            ),
+            "candidate_cpu_time_seconds": 2,
+            "candidate_wall_time_seconds": 3.0,
+            "candidate_memory_bytes": 268_435_456,
+            "candidate_process_limit": 1,
+            "candidate_output_bytes": 64_000,
+            "candidate_log_bytes": 8_000,
+            "candidate_file_count_limit": 8,
+            "candidate_workspace_bytes": 1_048_576,
+            "candidate_file_size_bytes": 64_000,
+        }
+    }

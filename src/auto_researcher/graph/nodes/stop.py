@@ -2,9 +2,12 @@
 
 from auto_researcher.contracts.enums import RunStatus
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.runtime.dependencies import RuntimeDependencies
 
 
-def supervisor_decide(state: ResearchState) -> dict:
+def supervisor_decide(
+    state: ResearchState, dependencies: RuntimeDependencies | None = None
+) -> dict:
     update: dict = {"executed_nodes": ["supervisor_decide"]}
     if state["status"] in {RunStatus.STOPPED, RunStatus.FAILED}:
         return update
@@ -13,6 +16,12 @@ def supervisor_decide(state: ResearchState) -> dict:
         return update
 
     budget = state["budget"]
+    now = dependencies.clock() if dependencies is not None else None
+    if budget.deadline_at is not None and now is not None and now >= budget.deadline_at:
+        update.update(
+            status=RunStatus.COMPLETED, stop_reason="campaign_deadline_reached"
+        )
+        return update
     if budget.cycles_used >= budget.maximum_cycles:
         update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cycles_reached")
         return update
@@ -25,7 +34,7 @@ def supervisor_decide(state: ResearchState) -> dict:
         update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cost_reached")
         return update
 
-    next_budget = budget.before_cycle()
+    next_budget = budget.before_cycle(now)
     if next_budget.exhausted:
         update.update(
             budget=next_budget,

@@ -23,16 +23,19 @@ def checkpoint_reference(
     }
 
 
-def create_loss():
+def create_loss(configuration=None):
+    """Create Dice/CE loss while preserving the historical 1:1 default."""
+
     try:
         from monai.losses import DiceCELoss
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
+    dice_weight = float(getattr(configuration, "dice_weight", 1.0))
     return DiceCELoss(
         to_onehot_y=True,
         softmax=True,
         include_background=False,
-        lambda_dice=1.0,
+        lambda_dice=dice_weight,
         lambda_ce=1.0,
     )
 

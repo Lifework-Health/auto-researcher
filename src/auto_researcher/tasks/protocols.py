@@ -123,6 +123,17 @@ class OpenEvolveCapableTask(Protocol):
 
 
 @runtime_checkable
+class CampaignDurationCapableTask(Protocol):
+    """Optional conservative wall-time estimate used before admitting a block."""
+
+    def estimate_search_duration_seconds(
+        self,
+        request: SearchRequest,
+        runtime_context: TaskRuntimeContext,
+    ) -> float: ...
+
+
+@runtime_checkable
 class LiveMutationDatasetClassCapableTask(Protocol):
     """Trusted opt-in classification for approved live OpenEvolve mutation."""
 

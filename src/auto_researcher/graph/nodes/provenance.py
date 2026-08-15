@@ -253,6 +253,38 @@ def record_provenance(
     event_ids: list[str] = [*knowledge_event_ids, *model_event_ids]
     for event_type, actor, inputs, outputs, rationale, provenance in rows:
         semantic = _semantic_identity(event_type, state, dependencies)
+        safe_payload: dict[str, Any] = {}
+        if (
+            event_type == EventType.EVIDENCE_VERIFIED
+            and state["contract"].task_id == "feta_unet_search"
+            and experiment is not None
+            and evaluation is not None
+        ):
+            fold_summaries = evaluation.metrics.get("fold_summaries", ())
+            first_fold = (
+                fold_summaries[0]
+                if isinstance(fold_summaries, (list, tuple)) and fold_summaries
+                else {}
+            )
+            safe_payload = {
+                "configuration": dict(experiment.configuration),
+                "aggregate_metrics": {
+                    "primary_score": evaluation.primary_score,
+                    "per_tissue_dice": evaluation.metrics.get("per_tissue_dice"),
+                    "reconstruction_gap": evaluation.metrics.get("reconstruction_gap"),
+                    "best_epoch": first_fold.get("best_epoch")
+                    if isinstance(first_fold, dict)
+                    else None,
+                    "training_duration_seconds": first_fold.get(
+                        "training_duration_seconds"
+                    )
+                    if isinstance(first_fold, dict)
+                    else None,
+                    "validation_history": first_fold.get("validation_history", ())
+                    if isinstance(first_fold, dict)
+                    else (),
+                },
+            }
         event = DecisionEvent(
             event_id=(
                 f"event-{semantic[0][:24]}"
@@ -269,6 +301,7 @@ def record_provenance(
             timestamp=dependencies.clock(),
             code_version=CODE_VERSION,
             provenance=provenance,
+            safe_payload=safe_payload,
         )
         if semantic is None:
             dependencies.provenance_store.append_event(event)
