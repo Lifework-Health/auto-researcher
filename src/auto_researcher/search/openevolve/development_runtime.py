@@ -217,6 +217,8 @@ class DevelopmentStructuredMutationClient:
 
 
 class DevelopmentOpenEvolveModelBridge(AutoResearcherOpenEvolveModelBridge):
+    development_dynamic_feedback = True
+
     @property
     def creation_provenance(self) -> str:
         return "LIVE_MODEL"

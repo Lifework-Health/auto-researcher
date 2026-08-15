@@ -8,7 +8,10 @@ from auto_researcher.agents.telemetry import (
 from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
-from auto_researcher.tasks.protocols import CampaignDurationCapableTask
+from auto_researcher.tasks.protocols import (
+    CampaignDurationCapableTask,
+    CampaignRequestEnrichmentCapableTask,
+)
 
 
 def plan_search(
@@ -28,6 +31,11 @@ def plan_search(
             dependencies.search_capabilities,
         )
         request = dependencies.planner_agent.plan(context)
+        if isinstance(dependencies.task, CampaignRequestEnrichmentCapableTask):
+            request = dependencies.task.enrich_search_request(
+                request,
+                context.prior_verified_findings,
+            )
     except Exception as exc:
         telemetry = consume_agent_telemetry(dependencies.planner_agent)
         code = (

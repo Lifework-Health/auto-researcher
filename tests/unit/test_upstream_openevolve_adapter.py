@@ -184,6 +184,41 @@ def test_synthetic_v2_request_exposes_machine_derived_constraints():
         assert rule in prompt
 
 
+def test_development_v2_request_includes_bounded_campaign_feedback():
+    captured = []
+
+    class CapturingClient(FakeUpstreamClient):
+        def propose_mutation(self, request):
+            captured.append(request)
+            return super().propose_mutation(request)
+
+    backend = _backend()
+    bridge = AutoResearcherOpenEvolveModelBridge(CapturingClient())
+    bridge.development_dynamic_feedback = True
+    adapter = UpstreamOpenEvolveAdapter(default_adapter_contract(LOCK), bridge)
+    search = backend.create_search_contract(_request(), _contract())
+    seed = backend.seed_candidate(search)
+    reservation = backend.reserve_mutation(
+        search, backend.initialise_population(search), seed
+    ).model_copy(
+        update={
+            "campaign_context": {"incumbent_primary_score": 0.8},
+            "parent_feedback": {
+                "objective_value": 0.8,
+                "constraint_compliant": True,
+            },
+        }
+    )
+
+    adapter.mutate(reservation, seed, backend.component_spec)
+
+    assert captured[0]["campaign_context"] == {"incumbent_primary_score": 0.8}
+    assert captured[0]["parent_feedback"] == {
+        "objective_value": 0.8,
+        "constraint_compliant": True,
+    }
+
+
 def test_historical_v1_request_preserves_the_documented_constraint_omissions():
     captured = []
 

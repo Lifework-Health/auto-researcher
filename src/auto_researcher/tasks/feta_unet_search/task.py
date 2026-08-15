@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
+
 from pydantic import JsonValue
 
-from auto_researcher.agents.models import TaskAgentContext
-from auto_researcher.contracts.enums import ProvenanceKind, SearchType
+from auto_researcher.agents.models import PriorResearchSummary, TaskAgentContext
+from auto_researcher.contracts.enums import EvidenceStatus, ProvenanceKind, SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.search.optuna.models import (
     CategoricalParameterSpec,
@@ -17,7 +19,9 @@ from auto_researcher.search.optuna.narrowing import narrow_study_spec
 from auto_researcher.search.protocols import SearchCapability
 from auto_researcher.tasks.feta_unet_search.openevolve import (
     FeTAUNetEvolvableComponent,
+    UNetTrainingPolicy,
     default_openevolve_configuration,
+    policy_from_configuration,
 )
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
@@ -44,6 +48,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     LEARNING_RATE_BOUNDS,
     POSITIVE_NEGATIVE_RATIOS,
     WEIGHT_DECAY_BOUNDS,
+    FeTAUNetSearchConfiguration,
     baseline_search_configuration,
     normalise_search_configuration,
 )
@@ -63,6 +68,37 @@ from auto_researcher.tasks.models import (
     TaskDescriptor,
     TaskRuntimeContext,
 )
+
+
+def _safe_initial_campaign_observations(raw: object) -> tuple[str, ...]:
+    prohibited = (
+        "/",
+        "\\",
+        "case ",
+        "checkpoint",
+        "holdout",
+        "mask",
+        "mri",
+        "path",
+        "patient",
+        "prediction",
+        "scan",
+        "sub-",
+        "subject",
+        "voxel",
+    )
+    if not isinstance(raw, (list, tuple)) or len(raw) > 12:
+        raise ValueError("feta_unet_campaign_observations_invalid")
+    observations = tuple(raw)
+    if any(
+        not isinstance(item, str)
+        or not item.strip()
+        or len(item) > 500
+        or any(token in item.casefold() for token in prohibited)
+        for item in observations
+    ):
+        raise ValueError("feta_unet_campaign_observations_invalid")
+    return observations
 
 
 class FeTAUNetSearchTask(FeTAUNetDirectTask):
@@ -234,7 +270,93 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         fidelity = runtime_context.task_options.get("openevolve_fidelity", 25)
         if isinstance(fidelity, bool) or not isinstance(fidelity, int):
             raise ValueError("feta_unet_openevolve_fidelity_invalid")
-        return FeTAUNetEvolvableComponent(maximum_epochs=fidelity)
+        seed_policy = None
+        raw_incumbent = runtime_context.task_options.get(
+            "initial_incumbent_configuration"
+        )
+        if raw_incumbent is not None:
+            if not isinstance(raw_incumbent, dict):
+                raise ValueError("feta_unet_initial_incumbent_invalid")
+            candidate = {
+                key: value
+                for key, value in raw_incumbent.items()
+                if key in CANDIDATE_CONFIGURATION_FIELDS
+            }
+            validated = FeTAUNetSearchConfiguration.model_validate(candidate)
+            seed_policy = policy_from_configuration(
+                validated.model_dump(mode="json")
+            )
+        raw_observations = runtime_context.task_options.get(
+            "initial_campaign_observations", ()
+        )
+        observations = _safe_initial_campaign_observations(raw_observations)
+        return FeTAUNetEvolvableComponent(
+            maximum_epochs=fidelity,
+            seed_policy=seed_policy,
+            initial_observations=observations,
+        )
+
+    def enrich_search_request(
+        self,
+        request: SearchRequest,
+        prior_verified_findings: tuple[PriorResearchSummary, ...],
+    ) -> SearchRequest:
+        if request.search_type != SearchType.OPENEVOLVE:
+            return request
+        compatible: list[tuple[PriorResearchSummary, UNetTrainingPolicy, dict]] = []
+        for finding in prior_verified_findings:
+            if (
+                finding.primary_score is None
+                or not math.isfinite(finding.primary_score)
+                or not finding.constraint_compliant
+                or finding.evidence_status != EvidenceStatus.SUPPORTED
+            ):
+                continue
+            try:
+                candidate = {
+                    key: value
+                    for key, value in dict(finding.safe_configuration).items()
+                    if key in CANDIDATE_CONFIGURATION_FIELDS
+                }
+                validated = FeTAUNetSearchConfiguration.model_validate(candidate)
+                policy = policy_from_configuration(
+                    validated.model_dump(mode="json")
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            compatible.append(
+                (finding, policy, validated.model_dump(mode="json"))
+            )
+        if not compatible:
+            return request
+        compatible.sort(
+            key=lambda item: (
+                float(item[0].primary_score),
+                item[0].experiment_reference,
+            ),
+            reverse=True,
+        )
+        incumbent, policy, configuration = compatible[0]
+        context = {
+            "incumbent_training_policy": policy.model_dump(mode="json"),
+            "incumbent_primary_score": incumbent.primary_score,
+            "incumbent_search_type": incumbent.search_type.value,
+            "prior_verified_results": [
+                {
+                    "search_type": finding.search_type.value,
+                    "primary_score": finding.primary_score,
+                    "configuration": {
+                        key: config[key]
+                        for key in CANDIDATE_CONFIGURATION_FIELDS
+                        if key in config
+                    },
+                }
+                for finding, _, config in compatible[:12]
+            ],
+        }
+        search_space = dict(request.search_space)
+        search_space["campaign_context"] = context
+        return request.model_copy(update={"search_space": search_space})
 
     def estimate_search_duration_seconds(
         self,

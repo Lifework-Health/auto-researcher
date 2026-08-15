@@ -61,6 +61,19 @@ REGULARISED_SOURCE = """def evolve(configuration):
 """
 
 
+def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPolicy":
+    return UNetTrainingPolicy.model_validate(
+        {
+            "learning_rate": configuration["learning_rate"],
+            "weight_decay": configuration["weight_decay"],
+            "dropout": configuration["dropout"],
+            "dice_weight": configuration["dice_weight"],
+            "positive_negative_ratio": configuration["positive_negative_ratio"],
+            "augmentation_strength": configuration["augmentation_strength"],
+        }
+    )
+
+
 class UNetTrainingPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -102,10 +115,17 @@ class UNetTrainingPolicy(BaseModel):
 
 
 class FeTAUNetEvolvableComponent:
-    def __init__(self, *, maximum_epochs: int = 25) -> None:
+    def __init__(
+        self,
+        *,
+        maximum_epochs: int = 25,
+        seed_policy: UNetTrainingPolicy | None = None,
+        initial_observations: tuple[str, ...] = (),
+    ) -> None:
         self.maximum_epochs = maximum_epochs
         FeTAUNetSearchConfiguration(maximum_epochs=maximum_epochs)  # type: ignore[arg-type]
-        self.seed_policy = UNetTrainingPolicy()
+        self.seed_policy = seed_policy or UNetTrainingPolicy()
+        self.initial_observations = initial_observations
 
     def component_spec(self) -> EvolvableComponentSpec:
         safe_context: dict[str, Any] = {
@@ -114,6 +134,11 @@ class FeTAUNetEvolvableComponent:
             "immutable_preprocessing": "RAS, 0.5 mm, foreground crop, nonzero z-score, 128^3 patches",
             "maximum_epochs": self.maximum_epochs,
             "legal_training_policy_schema": UNetTrainingPolicy.model_json_schema(),
+            "aggregate_campaign_observations": list(self.initial_observations),
+            "domain_guidance": [
+                "Treat campaign context and parent feedback as the only evidence "
+                "about earlier results."
+            ],
             "metric_names": [
                 "mean_subject_macro_dice",
                 "reconstruction_gap",
@@ -148,6 +173,21 @@ class FeTAUNetEvolvableComponent:
 
     def seed_configuration(self) -> dict:
         return {"seed_training_policy": self.seed_policy.model_dump(mode="json")}
+
+    def seed_configuration_for_request(self, request: SearchRequest) -> dict:
+        context = request.search_space.get("campaign_context", {})
+        if isinstance(context, dict):
+            incumbent = context.get("incumbent_training_policy")
+            if isinstance(incumbent, dict):
+                policy = UNetTrainingPolicy.model_validate(incumbent)
+                return {"seed_training_policy": policy.model_dump(mode="json")}
+        return self.seed_configuration()
+
+    def campaign_context_for_request(self, request: SearchRequest) -> dict:
+        raw = request.search_space.get("campaign_context", {})
+        if not isinstance(raw, dict):
+            raise ValueError("feta_unet_campaign_context_invalid")
+        return dict(raw)
 
     def canonical_scientific_configuration(
         self, preparation: CandidatePreparationResult

@@ -25,7 +25,7 @@ from auto_researcher.knowledge.models import (
     KnowledgeGroundingPolicy,
     KnowledgeQueryPlan,
 )
-from auto_researcher.agents.models import TaskAgentContext
+from auto_researcher.agents.models import PriorResearchSummary, TaskAgentContext
 from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.tasks.models import (
     ArtefactPolicy,
@@ -131,6 +131,17 @@ class CampaignDurationCapableTask(Protocol):
         request: SearchRequest,
         runtime_context: TaskRuntimeContext,
     ) -> float: ...
+
+
+@runtime_checkable
+class CampaignRequestEnrichmentCapableTask(Protocol):
+    """Optional deterministic handoff from verified results into a search block."""
+
+    def enrich_search_request(
+        self,
+        request: SearchRequest,
+        prior_verified_findings: tuple[PriorResearchSummary, ...],
+    ) -> SearchRequest: ...
 
 
 @runtime_checkable

@@ -114,3 +114,14 @@ runtime:
     campaign_seconds_per_epoch: 120.0
     campaign_finalisation_reserve_seconds: 1800.0
     campaign_prior_results: 12
+    # Replace from the completed, verified fold-0 baseline before launch.
+    initial_incumbent_configuration:
+      maximum_epochs: 150
+      learning_rate: 0.0001
+      weight_decay: 0.00001
+      dropout: 0.0
+      dice_weight: 1.0
+      positive_negative_ratio: "1:1"
+      augmentation_strength: baseline
+    # Aggregate results only; no paths, rows, images, masks or predictions.
+    initial_campaign_observations: []

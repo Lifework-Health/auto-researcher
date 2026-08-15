@@ -203,6 +203,13 @@ class UpstreamOpenEvolveAdapter:
                 "protocol": "upstream-adapter-mutation-request-v2",
                 "mutation_constraints": constraints.model_dump(mode="json"),
             }
+            if getattr(self.bridge, "development_dynamic_feedback", False):
+                request["feedback_instruction"] = (
+                    "Treat campaign_context and parent_feedback as the only "
+                    "evidence about earlier results; do not invent results."
+                )
+                request["campaign_context"] = dict(reservation.campaign_context)
+                request["parent_feedback"] = dict(reservation.parent_feedback)
         bind_search_request = getattr(self.bridge, "bind_search_request", None)
         if bind_search_request is not None:
             bind_search_request(reservation.search_request_id)

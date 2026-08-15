@@ -198,6 +198,8 @@ class MutationReservation(OpenEvolveModel):
     mutation_operator: str = Field(min_length=1)
     input_source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     mutation_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    campaign_context: FrozenJsonDict = Field(default_factory=dict)
+    parent_feedback: FrozenJsonDict = Field(default_factory=dict)
 
 
 class CandidateValidationResult(OpenEvolveModel):
