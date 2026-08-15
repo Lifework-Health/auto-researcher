@@ -151,6 +151,55 @@ def load_fold_result(
         score=float(result_payload["validation_score"]),
         output_root=target_root / "checkpoints",
     )
+    milestone_payload = result_payload.get("milestone_checkpoints", [])
+    validation_history = result_payload.get("validation_history", [])
+    if not isinstance(milestone_payload, list) or not isinstance(
+        validation_history, list
+    ):
+        raise ValueError("feta_unet_fold_restart_payload_invalid")
+    if any(not isinstance(item, dict) for item in validation_history):
+        raise ValueError("feta_unet_fold_restart_payload_invalid")
+    rebased_milestones = []
+    for item in milestone_payload:
+        if not isinstance(item, dict):
+            raise ValueError("feta_unet_fold_restart_checkpoint_invalid")
+        milestone_relative = item.get("relative_path")
+        milestone_sha = item.get("sha256")
+        milestone_size = item.get("size_bytes")
+        milestone_epoch = item.get("best_epoch")
+        milestone_score = item.get("validation_score")
+        if (
+            not isinstance(milestone_relative, str)
+            or not milestone_relative.startswith(f"fold-{fold}/milestone-epoch-")
+            or not milestone_relative.endswith(".pt")
+            or not isinstance(milestone_sha, str)
+            or not isinstance(milestone_size, int)
+            or not isinstance(milestone_epoch, int)
+            or not isinstance(milestone_score, (int, float))
+        ):
+            raise ValueError("feta_unet_fold_restart_checkpoint_invalid")
+        source_milestone = source_root / "checkpoints" / milestone_relative
+        if (
+            not source_milestone.is_file()
+            or source_milestone.stat().st_size != milestone_size
+            or _sha256(source_milestone) != milestone_sha
+        ):
+            raise ValueError("feta_unet_fold_restart_checkpoint_identity_mismatch")
+        target_milestone = target_root / "checkpoints" / milestone_relative
+        target_milestone.parent.mkdir(parents=True, exist_ok=True)
+        if source_milestone.resolve() != target_milestone.resolve():
+            shutil.copy2(source_milestone, target_milestone)
+        rebased_milestones.append(
+            checkpoint_reference(
+                target_milestone,
+                fold=fold,
+                best_epoch=milestone_epoch,
+                score=float(milestone_score),
+                output_root=target_root / "checkpoints",
+            )
+        )
     result_payload["subject_metrics"] = tuple(subject_metrics)
+    result_payload["validation_history"] = tuple(validation_history)
+    result_payload["milestone_checkpoints"] = tuple(rebased_milestones)
     result_payload["reused_fold_result"] = True
     return result_type(**result_payload)

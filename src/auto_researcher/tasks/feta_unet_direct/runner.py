@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.tasks.artifacts import atomic_json_write
 from auto_researcher.tasks.feta_seg.manifests import (
     EXPECTED_MANIFEST_HASH,
     FeTASubject,
@@ -64,6 +65,8 @@ class FoldExecutionResult:
     reused_fold_result: bool = False
     source_runner_id: str | None = None
     source_data_loader_id: str | None = None
+    validation_history: tuple[dict[str, Any], ...] = ()
+    milestone_checkpoints: tuple[dict[str, Any], ...] = ()
 
 
 FoldExecutor = Callable[
@@ -73,6 +76,15 @@ FoldExecutor = Callable[
 
 def _runner_id(configuration: FeTAUNetDirectConfiguration) -> str:
     return runner_id(configuration.profile)
+
+
+def _is_progress_milestone(
+    configuration: FeTAUNetDirectConfiguration, epoch: int
+) -> bool:
+    return (
+        configuration.profile == "development_baseline"
+        and epoch in configuration.progress_milestone_epochs
+    )
 
 
 def _native_label(subject: FeTASubject) -> Any:
@@ -194,10 +206,13 @@ def _run_cuda_fold(
         )
     training_loader = DataLoader(training_dataset, **loader_options)
 
-    checkpoint_path = checkpoint_root / f"fold-{fold}" / "best.pt"
+    fold_checkpoint_root = checkpoint_root / f"fold-{fold}"
+    checkpoint_path = fold_checkpoint_root / "best.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     best_score = -1.0
     best_epoch = 0
+    validation_history: list[dict[str, Any]] = []
+    milestone_checkpoints: list[dict[str, Any]] = []
     started = time.perf_counter()
     for epoch in range(1, configuration.maximum_epochs + 1):
         model.train()
@@ -238,23 +253,61 @@ def _run_cuda_fold(
         score = sum(validation_scores) / len(validation_scores)
         if not math.isfinite(score):
             raise ValueError("feta_unet_validation_metric_non_finite")
+        checkpoint_payload = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "architecture_identity": ARCHITECTURE_ID,
+            "configuration_identity": payload_hash(configuration),
+            "fold": fold,
+            "epoch": epoch,
+            "validation_score": score,
+            "seed": seed,
+            "runner_id": _runner_id(configuration),
+        }
         if score > best_score:
             best_score = score
             best_epoch = epoch
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "architecture_identity": ARCHITECTURE_ID,
-                    "configuration_identity": payload_hash(configuration),
-                    "fold": fold,
-                    "epoch": epoch,
-                    "validation_score": score,
-                    "seed": seed,
-                    "runner_id": _runner_id(configuration),
-                },
-                checkpoint_path,
+            torch.save(checkpoint_payload, checkpoint_path)
+
+        milestone = _is_progress_milestone(configuration, epoch)
+        if milestone:
+            milestone_path = fold_checkpoint_root / f"milestone-epoch-{epoch:03d}.pt"
+            torch.save(checkpoint_payload, milestone_path)
+            milestone_checkpoints.append(
+                checkpoint_reference(
+                    milestone_path,
+                    fold=fold,
+                    best_epoch=epoch,
+                    score=score,
+                    output_root=checkpoint_root,
+                )
             )
+        validation_history.append(
+            {
+                "epoch": epoch,
+                "validation_score": score,
+                "best_epoch": best_epoch,
+                "best_validation_score": best_score,
+                "milestone": milestone,
+            }
+        )
+        atomic_json_write(
+            fold_checkpoint_root / "validation-history.json",
+            {
+                "schema_version": "feta-unet-validation-history-v1",
+                "fold": fold,
+                "configuration_identity": payload_hash(configuration),
+                "entries": validation_history,
+                "milestone_checkpoints": milestone_checkpoints,
+            },
+        )
+        print(
+            "FETA_UNET_PROGRESS "
+            f"fold={fold} epoch={epoch} validation_macro_dice={score:.6f} "
+            f"best_epoch={best_epoch} best_macro_dice={best_score:.6f} "
+            f"milestone={str(milestone).lower()}",
+            flush=True,
+        )
 
     torch.cuda.synchronize()
     training_duration = time.perf_counter() - started
@@ -311,6 +364,8 @@ def _run_cuda_fold(
         seed=seed,
         source_runner_id=_runner_id(configuration),
         source_data_loader_id=DATA_LOADER_ID,
+        validation_history=tuple(validation_history),
+        milestone_checkpoints=tuple(milestone_checkpoints),
     )
 
 
@@ -469,6 +524,8 @@ def run_profile(
                 "reused_fold_result": result.reused_fold_result,
                 "source_runner_id": result.source_runner_id,
                 "source_data_loader_id": result.source_data_loader_id,
+                "validation_history": list(result.validation_history),
+                "milestone_checkpoints": list(result.milestone_checkpoints),
             }
             for result in fold_results
         ],

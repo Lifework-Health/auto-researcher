@@ -9,7 +9,7 @@ This built-in is `feta_unet_direct@1.0`. It does not change or reinterpret
 - Architecture: `monai-basic-unet-3d-v1`
 - Evaluator: `feta-basic-unet-direct-evaluator-v1`
 - Smoke runner: `feta-basic-unet-engineering-smoke-runner-v1`
-- Development runner: `feta-basic-unet-fold0-25epoch-development-runner-v1`
+- Development runner: `feta-basic-unet-fold0-150epoch-development-runner-v1`
 - Baseline runner: `feta-basic-unet-five-fold-oof-runner-v1`
 - Result: `feta-basic-unet-direct-result-v1`
 - Loss: `dice-ce-softmax-onehot-no-background-equal-v1`
@@ -33,8 +33,9 @@ The smoke uses one locked fold-0 training subject and one locked fold-0
 validation subject for one epoch. It exercises training, validation, a hashed
 checkpoint and the complete metric panel but is marked non-baseline. The
 development baseline uses all 54 fold-0 training subjects and all 14 fold-0
-validation subjects for 25 epochs. It is intended as a quick first-run
-comparison and is explicitly not the five-fold scientific baseline. The
+validation subjects for 150 epochs. It records validation progress every five
+epochs and retains checkpoints at epochs 25, 100 and 150. It is intended as a
+manageable first-run comparison and is explicitly not the five-fold scientific baseline. The
 scientific baseline uses all five fixed development folds and reports aggregate
 OOF Dice; the holdout remains sealed in every profile.
 

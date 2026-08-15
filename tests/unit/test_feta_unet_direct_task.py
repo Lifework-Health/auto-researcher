@@ -55,6 +55,7 @@ from auto_researcher.tasks.feta_unet_direct.model import (
 )
 from auto_researcher.tasks.feta_unet_direct.runner import (
     FoldExecutionResult,
+    _is_progress_milestone,
     orchestrate_profile_folds,
     select_profile_folds,
 )
@@ -203,7 +204,8 @@ def test_configuration_freezes_all_profiles_and_architecture():
         development.maximum_epochs,
         development.validation_every,
         development.fold_count,
-    ) == (25, 5, 1)
+    ) == (150, 5, 1)
+    assert development.progress_milestone_epochs == (25, 100, 150)
     assert (smoke.maximum_epochs, smoke.validation_every, smoke.fold_count) == (
         1,
         1,
@@ -218,7 +220,7 @@ def test_configuration_freezes_all_profiles_and_architecture():
     with pytest.raises(ValueError, match="feta_unet_development_profile_is_locked"):
         FeTAUNetDirectConfiguration(
             profile="development_baseline",
-            maximum_epochs=50,
+            maximum_epochs=25,
             validation_every=5,
             fold_count=1,
         )
@@ -319,6 +321,19 @@ def test_development_profile_uses_full_fold_zero_and_seals_holdout():
     exposed = {subject.subject_id for subject in training + validation}
     assert exposed == set(partition.development)
     assert exposed.isdisjoint(partition.holdout)
+
+
+def test_development_progress_milestones_are_exact():
+    development = FeTAUNetDirectConfiguration.model_validate(
+        development_baseline_configuration()
+    )
+    observed = tuple(
+        epoch
+        for epoch in range(1, development.maximum_epochs + 1)
+        if _is_progress_milestone(development, epoch)
+    )
+    assert observed == (25, 100, 150)
+    assert not _is_progress_milestone(FeTAUNetDirectConfiguration(), 25)
 
 
 def test_baseline_orchestration_requires_exact_68_subject_oof_membership():

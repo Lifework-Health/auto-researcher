@@ -2,7 +2,7 @@ task: {id: feta_unet_direct, version: "1.0"}
 agents: {mode: mock}
 experiment:
   profile: development_baseline
-  maximum_epochs: 25
+  maximum_epochs: 150
   validation_every: 5
   fold_count: 1
 runtime:

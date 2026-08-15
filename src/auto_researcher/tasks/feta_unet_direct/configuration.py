@@ -38,6 +38,11 @@ class FeTAUNetDirectConfiguration(BaseModel):
     sliding_window_batch_size: Literal[1] = 1
     seed: Literal[20260807] = 20260807
     fold_count: int = 5
+    progress_milestone_epochs: tuple[Literal[25], Literal[100], Literal[150]] = (
+        25,
+        100,
+        150,
+    )
     smoke_fold: Literal[0] = 0
     smoke_training_subjects: int = 1
     smoke_validation_subjects: int = 1
@@ -75,7 +80,7 @@ class FeTAUNetDirectConfiguration(BaseModel):
         ):
             raise ValueError("feta_unet_smoke_profile_is_locked")
         if self.profile == "development_baseline" and (
-            self.maximum_epochs != 25
+            self.maximum_epochs != 150
             or self.validation_every != 5
             or self.fold_count != 1
             or self.smoke_fold != 0
@@ -110,7 +115,7 @@ def engineering_smoke_configuration() -> dict:
 def development_baseline_configuration() -> dict:
     return {
         "profile": "development_baseline",
-        "maximum_epochs": 25,
+        "maximum_epochs": 150,
         "validation_every": 5,
         "fold_count": 1,
     }
