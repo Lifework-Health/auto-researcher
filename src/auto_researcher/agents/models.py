@@ -103,22 +103,69 @@ class StructuredModelResponse(AgentModel):
 
 
 class HypothesisProposal(AgentModel):
-    statement: str = Field(min_length=1)
-    rationale: str = Field(min_length=1)
-    predicted_subspace: FrozenJsonDict
-    expected_observation: str = Field(min_length=1)
-    falsification_condition: str = Field(min_length=1)
-    evidence_references: tuple[str, ...] = ()
-    confidence: float = Field(ge=0, le=1)
+    statement: str = Field(
+        min_length=1,
+        description="One prospective, falsifiable claim; never claim existing support.",
+    )
+    rationale: str = Field(
+        min_length=1,
+        description="Why the bounded experiment is worth running.",
+    )
+    predicted_subspace: FrozenJsonDict = Field(
+        description=(
+            "A non-empty JSON object whose keys are copied exactly from the task's "
+            "direct_configuration_schema or optuna_space_summary."
+        )
+    )
+    expected_observation: str = Field(
+        min_length=1,
+        description=(
+            "A measurable prospective observation that literally includes the exact "
+            "contract primary_metric string."
+        ),
+    )
+    falsification_condition: str = Field(
+        min_length=1,
+        description="A distinct observation that would falsify the claim.",
+    )
+    evidence_references: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Only IDs copied exactly from permitted_evidence_reference_ids; use an "
+            "empty array when none are needed."
+        ),
+    )
+    confidence: float = Field(
+        ge=0,
+        le=1,
+        description="A numeric prior confidence between 0 and 1 inclusive.",
+    )
 
 
 class PlannerProposal(AgentModel):
     search_type: SearchType
     target: str = Field(min_length=1)
-    proposed_search_space: FrozenJsonDict
-    requested_experiment_budget: int = Field(ge=1)
+    proposed_search_space: FrozenJsonDict = Field(
+        description=(
+            "A JSON object containing only task-registered parameter names and "
+            "contract-compatible values. Do not widen registered ranges."
+        )
+    )
+    requested_experiment_budget: int = Field(
+        ge=1,
+        description=(
+            "A positive integer no greater than remaining_experiment_budget; DIRECT "
+            "requires exactly 1."
+        ),
+    )
     rationale: str = Field(min_length=1)
-    evidence_references: tuple[str, ...] = ()
+    evidence_references: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Only IDs copied exactly from permitted_evidence_reference_ids; use an "
+            "empty array when none are needed."
+        ),
+    )
     recommends_human_approval: bool = False
 
     @model_validator(mode="after")

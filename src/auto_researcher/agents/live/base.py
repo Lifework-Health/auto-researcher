@@ -237,13 +237,19 @@ class BoundedStructuredCall:
                 result = reconcile(proposal, selected_call_id)
             except (ValidationError, ReconciliationError) as exc:
                 last_error = ProviderErrorCode.INVALID_STRUCTURED_OUTPUT
+                safe_reason = (
+                    exc.code
+                    if isinstance(exc, ReconciliationError)
+                    else "invalid_structured_output"
+                )
+                print(
+                    "AUTO_RESEARCHER_AGENT_RETRY "
+                    f"role={role.value} attempt={attempt} reason={safe_reason}",
+                    flush=True,
+                )
                 correction = (
                     "Correction required: "
-                    + (
-                        exc.code
-                        if isinstance(exc, ReconciliationError)
-                        else "invalid_structured_output"
-                    )
+                    + safe_reason
                     + ". Return a corrected structured proposal."
                 )
                 if (
@@ -272,6 +278,12 @@ class BoundedStructuredCall:
                     and attempt < attempts_allowed
                     and total_cost < self.config.maximum_cost_per_call
                 ):
+                    print(
+                        "AUTO_RESEARCHER_AGENT_RETRY "
+                        f"role={role.value} attempt={attempt} "
+                        f"reason={exc.code.value}",
+                        flush=True,
+                    )
                     correction = (
                         f"Retry after safe provider error {exc.code.value}; "
                         "return the requested structured proposal."

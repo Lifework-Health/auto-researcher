@@ -22,7 +22,7 @@ agents:
     maximum_cost_per_call: 0.50
     maximum_total_model_calls: 24
   hypothesis:
-    temperature: 0.2
+    temperature: 0.0
     maximum_output_tokens: 1200
     timeout_seconds: 120
     maximum_attempts: 2
