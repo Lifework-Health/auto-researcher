@@ -472,4 +472,6 @@ def test_prior_result_context_retains_safe_configuration_and_learning_curve():
     )
     _, prior = AgentContextAssembler(store)._prior("run", 2)
     assert prior[0].safe_configuration["learning_rate"] == 0.0002
-    assert prior[0].aggregate_metrics["validation_history"][-1]["epoch"] == 25
+    history = prior[0].aggregate_metrics["validation_history_summary"]
+    assert history["observation_count"] == 2
+    assert history["selected_entries"][-1]["epoch"] == 25

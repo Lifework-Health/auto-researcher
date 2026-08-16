@@ -45,6 +45,7 @@ def search_router(
         )
     update = {
         "search_backend_result": result,
+        "last_executed_search_type": request.search_type,
         "executed_nodes": ["search_router"],
     }
     if request.search_type == SearchType.OPENEVOLVE and dependencies is not None:

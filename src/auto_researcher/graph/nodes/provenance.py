@@ -132,6 +132,7 @@ def record_provenance(
             )
         )
     if request:
+        fallback_code = state.get("planner_fallback_code")
         rows.append(
             (
                 EventType.SEARCH_PLANNED,
@@ -151,6 +152,7 @@ def record_provenance(
                     f"source:{request.proposal_source.value}",
                     f"grounding:{request.grounding_status.value}",
                     f"prompt:{request.prompt_version or 'none'}",
+                    *((f"fallback:{fallback_code}",) if fallback_code else ()),
                     *(
                         f"evidence_reference:{reference}"
                         for reference in request.evidence_references
@@ -238,7 +240,22 @@ def record_provenance(
                 verification.provenance,
             )
         )
-    if not rows:
+    failure_code = state.get("planner_failure_code")
+    if failure_code:
+        rows.append(
+            (
+                EventType.RUN_STOPPED,
+                "planner_agent",
+                (hypothesis.hypothesis_id,) if hypothesis else (),
+                (
+                    f"error_code:{failure_code}",
+                    f"failure_stage:{state.get('planner_failure_stage') or 'unknown'}",
+                ),
+                failure_code,
+                ProvenanceKind.REAL,
+            )
+        )
+    elif not rows:
         rows.append(
             (
                 EventType.RUN_STOPPED,

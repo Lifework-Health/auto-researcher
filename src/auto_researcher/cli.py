@@ -60,6 +60,7 @@ from auto_researcher.runtime.dependencies import (
 from auto_researcher.runtime.checkpoints import sqlite_checkpointer
 from auto_researcher.runtime.execution import (
     RunExecutionError,
+    can_resume_recoverable_planner_failure,
     inspect_terminal_run,
     resume_run,
     start_run,
@@ -760,7 +761,14 @@ def run(
     verification = final.get("verification_result")
     evaluation = final.get("evaluation_result")
     typer.echo(f"Task: {contract.task_id}@{contract.task_version}")
-    typer.echo(f"Search type: {search_type.value}")
+    executed_search_type = final.get("last_executed_search_type")
+    if executed_search_type is None and final.get("search_request") is not None:
+        executed_search_type = final["search_request"].search_type
+    if executed_search_type is None:
+        executed_search_type = search_type
+    typer.echo(f"Search type: {executed_search_type.value}")
+    if executed_search_type != search_type:
+        typer.echo(f"Configured initial search type: {search_type.value}")
     typer.echo(f"Agent mode: {agent_mode}")
     typer.echo(f"Grounding mode: {contract.grounding.mode.value}")
     typer.echo(
@@ -919,6 +927,9 @@ def inspect_run(
     typer.echo(f"Thread: {identity.thread_id}")
     typer.echo(f"Run: {identity.run_id}")
     typer.echo(f"Task: {identity.task_id}@{identity.task_version}")
+    executed_search_type = final.get("last_executed_search_type")
+    if executed_search_type is not None:
+        typer.echo(f"Search type: {SearchType(executed_search_type).value}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(f"Stop reason: {final.get('stop_reason') or 'none'}")
     typer.echo(f"Primary score: {evaluation.primary_score if evaluation else 'n/a'}")
@@ -968,7 +979,7 @@ def resume_cli(
             RunStatus.COMPLETED,
             RunStatus.STOPPED,
             RunStatus.FAILED,
-        }:
+        } and not can_resume_recoverable_planner_failure(checkpoint):
             raise RunExecutionError("thread_is_terminal_use_inspect")
         contract = ResearchContract.model_validate(checkpoint["contract"])
         run_id = str(checkpoint["run_id"])
@@ -1059,6 +1070,9 @@ def resume_cli(
         typer.echo(f"Run resume failed: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"Run: {run_id}")
+    executed_search_type = final.get("last_executed_search_type")
+    if executed_search_type is not None:
+        typer.echo(f"Search type: {SearchType(executed_search_type).value}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(f"Stop reason: {final.get('stop_reason') or 'none'}")
 
