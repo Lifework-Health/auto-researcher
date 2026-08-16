@@ -91,6 +91,25 @@ def test_registry_exposes_three_method_unet_campaign_task():
     assert task.descriptor().supported_search_types == frozenset(SearchType)
 
 
+def test_agent_context_exposes_direct_executable_parameter_names():
+    task = FeTAUNetSearchTask()
+    context = task.create_agent_context(
+        default_feta_unet_search_contract(),
+        _runtime(),
+        {},
+    )
+
+    assert set(context.direct_configuration_schema) == {
+        "maximum_epochs",
+        "learning_rate",
+        "weight_decay",
+        "dropout",
+        "dice_weight",
+        "positive_negative_ratio",
+        "augmentation_strength",
+    }
+
+
 def test_one_runtime_assembly_exposes_all_three_backends():
     dataset_version = f"{DATASET_RELEASE}+{EXPECTED_MANIFEST_HASH}"
 

@@ -126,6 +126,53 @@ def test_hypothesis_reconciliation_derives_grounding_and_caps_weight():
         )
 
 
+def test_hypothesis_reconciliation_normalises_wrapped_mixed_subspace():
+    _, _, context = _contexts()
+    hypothesis = HypothesisReconciler().reconcile(
+        HypothesisProposal(
+            statement="Tree complexity may improve the bounded objective.",
+            rationale="Contract-bounded test.",
+            predicted_subspace={
+                "training_policy": {
+                    "complexity": [3, 5],
+                    "invented_parameter": [1, 2],
+                },
+                "unregistered_metadata": "ignored",
+            },
+            expected_observation="objective_score increases",
+            falsification_condition="objective_score does not increase",
+            evidence_references=(context.contract.contract_id,),
+            confidence=0.5,
+        ),
+        context,
+        call_id="call-normalised",
+        prompt_version="1.0.0",
+    )
+
+    assert hypothesis.predicted_subspace == {"complexity": [3, 5]}
+
+
+def test_hypothesis_reconciliation_rejects_entirely_unregistered_subspace():
+    _, _, context = _contexts()
+    with pytest.raises(
+        ReconciliationError,
+        match="predicted_subspace_not_task_compatible",
+    ):
+        HypothesisReconciler().reconcile(
+            HypothesisProposal(
+                statement="An invented control may alter the bounded objective.",
+                rationale="Contract-bounded test.",
+                predicted_subspace={"invented_parameter": [1, 2]},
+                expected_observation="objective_score changes",
+                falsification_condition="objective_score does not change",
+                confidence=0.5,
+            ),
+            context,
+            call_id="call-rejected",
+            prompt_version="1.0.0",
+        )
+
+
 def test_planner_reconciliation_rejects_clipping_and_unknown_direct_fields():
     dependencies, state, hypothesis_context = _contexts()
     hypothesis = HypothesisReconciler().reconcile(

@@ -64,6 +64,28 @@ def _require_relevant_knowledge(
         raise ReconciliationError("knowledge_reference_not_relevant")
 
 
+def _normalise_predicted_subspace(
+    raw: dict,
+    permitted_parameters: set[str],
+) -> dict:
+    """Keep registered task parameters, including those under model-added wrappers."""
+
+    compatible: dict = {}
+
+    def collect(value: dict) -> None:
+        for key in sorted(value):
+            item = value[key]
+            if key in permitted_parameters:
+                if key in compatible and compatible[key] != item:
+                    raise ReconciliationError("predicted_subspace_ambiguous")
+                compatible[key] = item
+            elif isinstance(item, dict):
+                collect(item)
+
+    collect(raw)
+    return compatible
+
+
 class HypothesisReconciler:
     def reconcile(
         self,
@@ -99,9 +121,13 @@ class HypothesisReconciler:
         )
         if not proposal.predicted_subspace:
             raise ReconciliationError("predicted_subspace_is_empty")
-        if set(proposal.predicted_subspace) - permitted_parameters:
+        predicted_subspace = _normalise_predicted_subspace(
+            dict(proposal.predicted_subspace),
+            permitted_parameters,
+        )
+        if not predicted_subspace:
             raise ReconciliationError("predicted_subspace_not_task_compatible")
-        if len(proposal.predicted_subspace) > 32:
+        if len(predicted_subspace) > 32:
             raise ReconciliationError("predicted_subspace_too_large")
         prior_refs = _prior_reference_ids(context.prior_verified_findings)
         knowledge_by_id = {
@@ -112,7 +138,7 @@ class HypothesisReconciler:
             for item in proposal.evidence_references
             if item in knowledge_by_id
         ]
-        predicted_parameters = set(proposal.predicted_subspace)
+        predicted_parameters = set(predicted_subspace)
         _require_relevant_knowledge(cited_knowledge, predicted_parameters)
         if cited_knowledge:
             grounding = GroundingStatus.KNOWLEDGE_GROUNDED
@@ -136,7 +162,7 @@ class HypothesisReconciler:
             ),
             statement=proposal.statement,
             rationale=proposal.rationale,
-            predicted_subspace=dict(proposal.predicted_subspace),
+            predicted_subspace=predicted_subspace,
             expected_observation=proposal.expected_observation,
             falsification_condition=proposal.falsification_condition,
             evidence_references=proposal.evidence_references,

@@ -455,8 +455,13 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 SearchType.OPENEVOLVE,
             ),
             direct_configuration_schema={
-                "fidelity_levels": list(FIDELITY_LEVELS),
-                "baseline": baseline_search_configuration(),
+                "maximum_epochs": list(FIDELITY_LEVELS),
+                "learning_rate": list(LEARNING_RATE_BOUNDS),
+                "weight_decay": list(WEIGHT_DECAY_BOUNDS),
+                "dropout": list(DROPOUT_BOUNDS),
+                "dice_weight": list(DICE_WEIGHT_BOUNDS),
+                "positive_negative_ratio": list(POSITIVE_NEGATIVE_RATIOS),
+                "augmentation_strength": list(AUGMENTATION_STRENGTHS),
             },
             optuna_space_summary={
                 "learning_rate": list(LEARNING_RATE_BOUNDS),
