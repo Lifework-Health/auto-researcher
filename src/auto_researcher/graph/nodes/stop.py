@@ -66,6 +66,9 @@ def supervisor_decide(
         planner_failure_code=None,
         planner_failure_stage=None,
         planner_fallback_code=None,
+        hypothesis_failure_code=None,
+        hypothesis_failure_stage=None,
+        hypothesis_fallback_code=None,
         stop_reason=None,
     )
     return update

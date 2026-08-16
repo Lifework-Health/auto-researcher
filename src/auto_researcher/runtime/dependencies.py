@@ -543,6 +543,7 @@ def _assemble_task_dependencies(
         limits=AgentContextLimits(
             maximum_prior_hypotheses=min(12, raw_prior_results),
             maximum_prior_results=raw_prior_results,
+            maximum_context_characters=budget_policy.maximum_input_context_size,
         ),
     )
     knowledge_coordinator = KnowledgeRetrievalCoordinator(

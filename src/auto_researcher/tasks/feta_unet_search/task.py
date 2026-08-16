@@ -544,7 +544,7 @@ def default_feta_unet_search_contract(
         verifier_id="deterministic-verifier",
         maximum_cycles=maximum_cycles,
         maximum_experiments=maximum_experiments,
-        maximum_cost=20.0,
+        maximum_cost=50.0,
         requires_approval_for=frozenset(),
         provenance=ProvenanceKind.REAL,
     )

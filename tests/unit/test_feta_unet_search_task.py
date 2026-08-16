@@ -435,6 +435,22 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     )
     assert contract.constraints["campaign_duration_seconds"] == 20 * 60 * 60
     assert contract.allowed_search_types == frozenset(SearchType)
+    assert contract.maximum_cost == 50.0
+    assert default_feta_unet_search_contract().maximum_cost == 50.0
+    configuration = yaml.safe_load((root / "campaign-20h-template.yaml").read_text())
+    assert configuration["agents"]["budget"] == {
+        "maximum_hypothesis_calls_per_cycle": 1,
+        "maximum_planner_calls_per_cycle": 1,
+        "maximum_attempts_per_agent_call": 4,
+        "maximum_input_context_size": 48_000,
+        "maximum_output_tokens": 2_048,
+        "maximum_cost_per_call": 0.5,
+        "maximum_total_model_calls": 96,
+    }
+    mutation = configuration["openevolve_development_mutation"]
+    assert mutation["maximum_model_calls"] == 48
+    assert mutation["maximum_total_cost_usd"] == 50.0
+    assert configuration["runtime"]["options"]["continue_after_failed_candidate"]
 
 
 def test_prior_result_context_retains_safe_configuration_and_learning_curve():

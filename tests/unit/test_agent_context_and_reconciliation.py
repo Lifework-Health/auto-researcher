@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from auto_researcher.agents.models import (
+    AgentBudgetPolicy,
     HypothesisProposal,
     PlannerProposal,
     PriorResearchSummary,
@@ -91,6 +92,21 @@ def test_context_size_limit_fails_before_a_model_call():
     )
     with pytest.raises(ValueError, match="agent_context_too_large"):
         assembler.hypothesis_context(state, dependencies.task_agent_context)
+
+
+def test_runtime_agent_context_limit_uses_configured_policy():
+    contract = default_synthetic_contract()
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        contract,
+        default_synthetic_configuration(),
+        agent_budget_policy=AgentBudgetPolicy(maximum_input_context_size=48_000),
+    )
+    assert (
+        dependencies.agent_context_assembler.limits.maximum_context_characters
+        == 48_000
+    )
 
 
 def test_cycle_four_context_compacts_full_validation_histories():

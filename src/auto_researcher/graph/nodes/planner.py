@@ -91,6 +91,8 @@ def plan_search(
             "executed_nodes": ["plan_search"],
         }
     stage = "context_assembly"
+    fallback_code: str | None = None
+    fallback_stage: str | None = None
     try:
         context = dependencies.agent_context_assembler.planner_context(
             state,
@@ -118,24 +120,22 @@ def plan_search(
             else None
         )
         if fallback is not None:
+            request = fallback
+            fallback_code = code
+            fallback_stage = stage
+        else:
             return {
+                "status": RunStatus.FAILED,
                 "budget": apply_agent_telemetry(state["budget"], telemetry),
-                "search_request": fallback,
-                "planner_fallback_code": code,
+                "search_request": None,
+                "errors": [code],
+                "stop_reason": code,
+                "planner_failure_code": code,
                 "planner_failure_stage": stage,
                 "executed_nodes": ["plan_search"],
             }
-        return {
-            "status": RunStatus.FAILED,
-            "budget": apply_agent_telemetry(state["budget"], telemetry),
-            "search_request": None,
-            "errors": [code],
-            "stop_reason": code,
-            "planner_failure_code": code,
-            "planner_failure_stage": stage,
-            "executed_nodes": ["plan_search"],
-        }
-    telemetry = consume_agent_telemetry(dependencies.planner_agent)
+    else:
+        telemetry = consume_agent_telemetry(dependencies.planner_agent)
     errors: list[str] = []
     if request.hypothesis_id != hypothesis.hypothesis_id:
         errors.append("planner_hypothesis_mismatch")
@@ -153,6 +153,17 @@ def plan_search(
                 )
             except ValueError as exc:
                 errors.append(str(exc))
+    if errors and fallback_code is None:
+        fallback = _deterministic_direct_fallback(
+            state,
+            dependencies,
+            failure_code="planner_request_invalid",
+        )
+        if fallback is not None:
+            request = fallback
+            errors = []
+            fallback_code = "planner_request_invalid"
+            fallback_stage = "request_validation"
     deadline_stop_reason = None
     remaining_time = state["budget"].remaining_seconds(dependencies.clock())
     if remaining_time is not None and isinstance(
@@ -184,8 +195,8 @@ def plan_search(
         "budget": apply_agent_telemetry(state["budget"], telemetry),
         "errors": errors,
         "planner_failure_code": None,
-        "planner_failure_stage": None,
-        "planner_fallback_code": None,
+        "planner_failure_stage": fallback_stage,
+        "planner_fallback_code": fallback_code,
         "executed_nodes": ["plan_search"],
     }
     if telemetry is not None and telemetry.cost_limit_exceeded:

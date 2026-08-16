@@ -36,6 +36,16 @@ code.
    optional; do not reuse its control databases.
 5. Export `ANTHROPIC_API_KEY` without writing it into YAML or a log.
 
+The development template permits up to 96 hypothesis/planner provider attempts
+and 48 OpenEvolve mutation calls. The research contract/agent ledger and the
+development OpenEvolve mutation ledger have independent USD 50 ceilings; these
+are ceilings rather than targets. Context assembly compacts full validation
+histories, and a transient structured-output failure can fall back to the best
+verified prior configuration rather than terminating the campaign. Invalid
+planner requests fall back to that exact bounded DIRECT configuration, and the
+campaign template records an isolated failed candidate without terminating the
+remaining search budget.
+
 ## End-to-end smoke
 
 Before committing 20 hours, make a smoke copy of the contract and task config:
@@ -80,6 +90,12 @@ Record the launcher PID immediately. The 20-hour clock begins when
 Optuna or OpenEvolve candidate is admitted after the deadline. The conservative
 pre-admission estimate and reserve are what keep normal completion inside the
 intended window.
+
+Do not resume an old failed checkpoint when the objective is a fresh 20 hours:
+its original absolute deadline remains part of the checkpoint. Start a new run
+and seed `initial_campaign_observations` with the prior run's aggregate verified
+results. Resume is for preserving an interrupted campaign's remaining original
+window, not for silently extending its research budget.
 
 ## Monitoring and final comparison
 
