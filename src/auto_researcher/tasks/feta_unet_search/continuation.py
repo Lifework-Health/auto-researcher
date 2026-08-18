@@ -83,10 +83,16 @@ def restore_rng_state(
                 float(numpy_state["cached_gaussian"]),
             )
         )
-        torch_module.set_rng_state(state["torch_cpu"])
-        torch_module.cuda.set_rng_state_all(state["torch_cuda"])
-        generator.set_state(state["data_loader_generator"])
-    except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+        # The training checkpoint is loaded onto CUDA so model and optimizer
+        # tensors are immediately usable. RNG byte tensors are different: the
+        # CPU and DataLoader generators require CPU ByteTensors, and CUDA's RNG
+        # setter also accepts its states from CPU memory.
+        torch_module.set_rng_state(state["torch_cpu"].cpu())
+        torch_module.cuda.set_rng_state_all(
+            [item.cpu() for item in state["torch_cuda"]]
+        )
+        generator.set_state(state["data_loader_generator"].cpu())
+    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
         raise ValueError("feta_unet_resume_rng_state_invalid") from exc
 
 

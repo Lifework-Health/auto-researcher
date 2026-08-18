@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import random
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
+import numpy as np
 
 from auto_researcher.contracts.enums import (
     EventType,
@@ -18,6 +20,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
 from auto_researcher.tasks.feta_unet_search.continuation import (
     CONTINUATION_VERSION,
     find_resume_source,
+    restore_rng_state,
     trajectory_identity,
 )
 from auto_researcher.tasks.feta_unet_search.portfolio import (
@@ -243,3 +246,52 @@ def test_resume_source_selects_highest_completed_lower_rung(tmp_path):
     assert find_resume_source(namespace, current, requested) == (
         namespace / "experiment-100"
     )
+
+
+def test_rng_restore_moves_checkpoint_rng_tensors_back_to_cpu():
+    class DeviceTensor:
+        def __init__(self, value):
+            self.value = value
+
+        def cpu(self):
+            return f"cpu:{self.value}"
+
+    class FakeCuda:
+        states = None
+
+        def set_rng_state_all(self, states):
+            self.states = states
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        state = None
+
+        @classmethod
+        def set_rng_state(cls, state):
+            cls.state = state
+
+    class FakeGenerator:
+        state = None
+
+        def set_state(self, state):
+            self.state = state
+
+    numpy_state = np.random.get_state()
+    state = {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": str(numpy_state[0]),
+            "state": numpy_state[1].tolist(),
+            "position": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
+        "torch_cpu": DeviceTensor("torch"),
+        "torch_cuda": [DeviceTensor("cuda-0")],
+        "data_loader_generator": DeviceTensor("loader"),
+    }
+    generator = FakeGenerator()
+    restore_rng_state(state, FakeTorch, np, generator)
+    assert FakeTorch.state == "cpu:torch"
+    assert FakeTorch.cuda.states == ["cpu:cuda-0"]
+    assert generator.state == "cpu:loader"
