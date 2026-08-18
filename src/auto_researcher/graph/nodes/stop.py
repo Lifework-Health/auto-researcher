@@ -9,7 +9,7 @@ def supervisor_decide(
     state: ResearchState, dependencies: RuntimeDependencies | None = None
 ) -> dict:
     update: dict = {"executed_nodes": ["supervisor_decide"]}
-    if state["status"] in {RunStatus.STOPPED, RunStatus.FAILED}:
+    if state["status"] in {RunStatus.COMPLETED, RunStatus.STOPPED, RunStatus.FAILED}:
         return update
     recovered = set(state.get("recovered_error_codes", ()))
     if any(code not in recovered for code in state["errors"]):

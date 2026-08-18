@@ -8,10 +8,12 @@ from pydantic import JsonValue
 
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import (
+    DecisionEvent,
     EvaluationResult,
     ExperimentSpec,
     ResearchContract,
     SearchRequest,
+    VerificationResult,
 )
 from auto_researcher.search.optuna.models import OptunaStudySpec
 from auto_researcher.search.optuna.pruning import OptunaIntermediateReporter
@@ -142,6 +144,33 @@ class CampaignRequestEnrichmentCapableTask(Protocol):
         request: SearchRequest,
         prior_verified_findings: tuple[PriorResearchSummary, ...],
     ) -> SearchRequest: ...
+
+
+@runtime_checkable
+class CampaignPortfolioCapableTask(Protocol):
+    """Optional controller-owned cross-method portfolio and promotion policy."""
+
+    def apply_campaign_portfolio(
+        self,
+        request: SearchRequest,
+        *,
+        run_id: str,
+        cycle: int,
+        events: tuple[DecisionEvent, ...],
+        runtime_context: TaskRuntimeContext,
+    ) -> SearchRequest | None: ...
+
+
+@runtime_checkable
+class SafeEvidencePayloadCapableTask(Protocol):
+    """Optional task-owned, aggregate-only evidence payload for provenance."""
+
+    def safe_evidence_payload(
+        self,
+        experiment: ExperimentSpec,
+        evaluation: EvaluationResult,
+        verification: VerificationResult,
+    ) -> dict[str, JsonValue]: ...
 
 
 @runtime_checkable

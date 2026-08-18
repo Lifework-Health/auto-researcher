@@ -69,6 +69,9 @@ class FoldExecutionResult:
     milestone_checkpoints: tuple[dict[str, Any], ...] = ()
     amp_skipped_steps: int = 0
     maximum_consecutive_amp_skips: int = 0
+    resumed: bool = False
+    resumed_from_epoch: int | None = None
+    trajectory_identity: str | None = None
 
 
 FoldExecutor = Callable[
@@ -179,10 +182,28 @@ def _run_cuda_fold(
     cache_root: Path,
 ) -> FoldExecutionResult:
     try:
+        import numpy as np
         import torch
         from monai.data import DataLoader, Dataset, PersistentDataset
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
+
+    # Keep the frozen DIRECT task import-independent from its search sibling.
+    # The search continuation helpers are loaded only when an evaluator actually
+    # executes a search configuration.
+    from auto_researcher.tasks.feta_unet_search.configuration import (
+        FeTAUNetSearchConfiguration,
+    )
+    from auto_researcher.tasks.feta_unet_search.continuation import (
+        build_last_payload,
+        capture_rng_state,
+        copy_prior_checkpoints,
+        find_resume_source,
+        load_resume_plan,
+        restore_rng_state,
+        trajectory_identity,
+        write_continuation_manifest,
+    )
 
     seed = seed_everything(fold)
     torch.cuda.empty_cache()
@@ -209,7 +230,12 @@ def _run_cuda_fold(
         transform=create_transforms(training=False),
     )
     generator = torch.Generator().manual_seed(seed)
-    worker_count = 0 if configuration.profile == "engineering_smoke" else 4
+    is_search_configuration = isinstance(configuration, FeTAUNetSearchConfiguration)
+    worker_count = (
+        0
+        if configuration.profile == "engineering_smoke" or is_search_configuration
+        else 4
+    )
     loader_options: dict[str, Any] = {
         "batch_size": configuration.batch_size,
         "shuffle": True,
@@ -226,16 +252,67 @@ def _run_cuda_fold(
 
     fold_checkpoint_root = checkpoint_root / f"fold-{fold}"
     checkpoint_path = fold_checkpoint_root / "best.pt"
+    last_checkpoint_path = fold_checkpoint_root / "last.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     best_score = -1.0
     best_epoch = 0
+    start_epoch = 1
+    resumed = False
+    resumed_from_epoch = None
     validation_history: list[dict[str, Any]] = []
     milestone_checkpoints: list[dict[str, Any]] = []
     amp_skipped_steps = 0
     consecutive_amp_skips = 0
     maximum_consecutive_amp_skips = 0
+    candidate_trajectory_identity = None
+    if isinstance(configuration, FeTAUNetSearchConfiguration) and fold == 0:
+        candidate_trajectory_identity = trajectory_identity(configuration)
+        candidate_root = checkpoint_root.parent
+        source_root = find_resume_source(
+            candidate_root.parent,
+            candidate_root,
+            configuration,
+        )
+        if source_root is not None:
+            plan = load_resume_plan(
+                source_root,
+                configuration,
+                runner_id=_runner_id(configuration),
+                data_loader_id=DATA_LOADER_ID,
+            )
+            copy_prior_checkpoints(plan, fold_checkpoint_root)
+            try:
+                model.load_state_dict(plan.last_payload["model_state_dict"])
+                optimizer.load_state_dict(plan.last_payload["optimizer_state_dict"])
+                scaler.load_state_dict(plan.last_payload["scaler_state_dict"])
+            except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                raise ValueError("feta_unet_resume_optimisation_state_invalid") from exc
+            restore_rng_state(plan.last_payload["rng_state"], torch, np, generator)
+            best_score = plan.best_score
+            best_epoch = plan.best_epoch
+            start_epoch = plan.start_epoch
+            resumed = True
+            resumed_from_epoch = plan.completed_epoch
+            validation_history.extend(plan.validation_history)
+            print(
+                "FETA_UNET_PROMOTION_RESUMED "
+                f"fold={fold} from_epoch={plan.completed_epoch} "
+                f"to_epoch={configuration.maximum_epochs} "
+                f"trajectory={plan.trajectory_identity}",
+                flush=True,
+            )
     started = time.perf_counter()
-    for epoch in range(1, configuration.maximum_epochs + 1):
+    for epoch in range(start_epoch, configuration.maximum_epochs + 1):
+        if is_search_configuration:
+            # Make every epoch's shuffle and augmentation stream a pure function
+            # of the frozen fold seed and absolute epoch. Promotions can then
+            # resume without restarting stochastic preprocessing.
+            epoch_seed = seed + epoch
+            generator.manual_seed(epoch_seed)
+            transform = getattr(training_dataset, "transform", None)
+            if transform is None or not hasattr(transform, "set_random_state"):
+                raise RuntimeError("feta_unet_epoch_random_state_unavailable")
+            transform.set_random_state(seed=epoch_seed)
         model.train()
         for batch in training_loader:
             inputs = batch["image"].to(device="cuda", non_blocking=True)
@@ -296,6 +373,7 @@ def _run_cuda_fold(
             "validation_score": score,
             "seed": seed,
             "runner_id": _runner_id(configuration),
+            "trajectory_identity": candidate_trajectory_identity,
         }
         if score > best_score:
             best_score = score
@@ -342,6 +420,37 @@ def _run_cuda_fold(
             flush=True,
         )
 
+    if isinstance(configuration, FeTAUNetSearchConfiguration) and fold == 0:
+        if best_epoch == 0 or not checkpoint_path.is_file():
+            raise RuntimeError("feta_unet_best_checkpoint_missing")
+        last_payload = build_last_payload(
+            model_state_dict=model.state_dict(),
+            optimizer_state_dict=optimizer.state_dict(),
+            scaler_state_dict=scaler.state_dict(),
+            completed_epoch=configuration.maximum_epochs,
+            configuration=configuration,
+            best_epoch=best_epoch,
+            best_score=best_score,
+            best_checkpoint_sha256=checkpoint_reference(
+                checkpoint_path,
+                fold=fold,
+                best_epoch=best_epoch,
+                score=best_score,
+                output_root=checkpoint_root,
+            )["sha256"],
+            runner_id=_runner_id(configuration),
+            data_loader_id=DATA_LOADER_ID,
+            rng_state=capture_rng_state(torch, np, generator),
+        )
+        torch.save(last_payload, last_checkpoint_path)
+        write_continuation_manifest(
+            checkpoint_root.parent,
+            configuration=configuration,
+            completed_epoch=configuration.maximum_epochs,
+            best_epoch=best_epoch,
+            best_score=best_score,
+        )
+
     torch.cuda.synchronize()
     training_duration = time.perf_counter() - started
     if best_epoch == 0 or not checkpoint_path.is_file():
@@ -349,10 +458,14 @@ def _run_cuda_fold(
     saved = torch.load(checkpoint_path, map_location="cuda", weights_only=True)
     if (
         saved.get("architecture_identity") != ARCHITECTURE_ID
-        or saved.get("configuration_identity") != payload_hash(configuration)
         or int(saved.get("fold", -1)) != fold
         or int(saved.get("seed", -1)) != seed
     ):
+        raise ValueError("feta_unet_checkpoint_identity_mismatch")
+    if isinstance(configuration, FeTAUNetSearchConfiguration):
+        if saved.get("trajectory_identity") != candidate_trajectory_identity:
+            raise ValueError("feta_unet_checkpoint_identity_mismatch")
+    elif saved.get("configuration_identity") != payload_hash(configuration):
         raise ValueError("feta_unet_checkpoint_identity_mismatch")
     model.load_state_dict(saved["model_state_dict"])
     model.eval()
@@ -401,6 +514,9 @@ def _run_cuda_fold(
         milestone_checkpoints=tuple(milestone_checkpoints),
         amp_skipped_steps=amp_skipped_steps,
         maximum_consecutive_amp_skips=maximum_consecutive_amp_skips,
+        resumed=resumed,
+        resumed_from_epoch=resumed_from_epoch,
+        trajectory_identity=candidate_trajectory_identity,
     )
 
 
@@ -574,6 +690,9 @@ def run_profile(
                 "milestone_checkpoints": list(result.milestone_checkpoints),
                 "amp_skipped_steps": result.amp_skipped_steps,
                 "maximum_consecutive_amp_skips": result.maximum_consecutive_amp_skips,
+                "resumed": result.resumed,
+                "resumed_from_epoch": result.resumed_from_epoch,
+                "trajectory_identity": result.trajectory_identity,
             }
             for result in fold_results
         ],

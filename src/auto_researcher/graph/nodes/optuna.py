@@ -18,7 +18,10 @@ from auto_researcher.search.optuna.models import (
 )
 from auto_researcher.search.optuna.naming import build_study_identity
 from auto_researcher.search.optuna.provenance import append_optuna_event
-from auto_researcher.tasks.protocols import OptunaCapableTask
+from auto_researcher.tasks.protocols import (
+    OptunaCapableTask,
+    SafeEvidencePayloadCapableTask,
+)
 from auto_researcher.agents.provenance import append_model_call_events
 
 
@@ -353,6 +356,15 @@ def optuna_record_trial(
             "executed_nodes": ["optuna_record_trial"],
         }
     assert evaluation and verification
+    safe_evidence_payload = (
+        dependencies.task.safe_evidence_payload(
+            experiment,
+            evaluation,
+            verification,
+        )
+        if isinstance(dependencies.task, SafeEvidencePayloadCapableTask)
+        else {}
+    )
     common = {
         "store": dependencies.provenance_store,
         "run_id": state["run_id"],
@@ -397,6 +409,7 @@ def optuna_record_trial(
                 ),
             ),
             rationale="Applied mandatory structural and task-policy verification.",
+            safe_payload=safe_evidence_payload,
         ),
         append_optuna_event(
             **common,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from typing import Any
 
 from auto_researcher.contracts.enums import EventType, ProvenanceKind
 from auto_researcher.contracts.models import DecisionEvent
@@ -40,6 +41,7 @@ def append_optuna_event(
     timestamp: datetime,
     provenance: ProvenanceKind,
     trial_number: int | None = None,
+    safe_payload: dict[str, Any] | None = None,
 ) -> str:
     event = DecisionEvent(
         event_id=deterministic_event_id(
@@ -58,6 +60,7 @@ def append_optuna_event(
         timestamp=timestamp,
         code_version=CODE_VERSION,
         provenance=provenance,
+        safe_payload=safe_payload or {},
     )
     append = getattr(store, "append_event_idempotent", None)
     if append is not None:

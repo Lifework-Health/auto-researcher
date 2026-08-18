@@ -14,6 +14,7 @@ from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
 from auto_researcher.tasks.protocols import (
     CampaignDurationCapableTask,
+    CampaignPortfolioCapableTask,
     CampaignRequestEnrichmentCapableTask,
 )
 
@@ -107,6 +108,27 @@ def plan_search(
                 request,
                 context.prior_verified_findings,
             )
+        if isinstance(dependencies.task, CampaignPortfolioCapableTask):
+            stage = "portfolio_policy"
+            request = dependencies.task.apply_campaign_portfolio(
+                request,
+                run_id=state["run_id"],
+                cycle=state["cycle"],
+                events=tuple(
+                    dependencies.provenance_store.list_events(state["run_id"])
+                ),
+                runtime_context=dependencies.runtime_context,
+            )
+            if request is None:
+                telemetry = consume_agent_telemetry(dependencies.planner_agent)
+                return {
+                    "status": RunStatus.COMPLETED,
+                    "budget": apply_agent_telemetry(state["budget"], telemetry),
+                    "search_request": None,
+                    "errors": [],
+                    "stop_reason": "campaign_portfolio_complete",
+                    "executed_nodes": ["plan_search"],
+                }
     except Exception as exc:
         telemetry = consume_agent_telemetry(dependencies.planner_agent)
         code = _safe_failure_code(exc)
