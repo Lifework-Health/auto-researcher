@@ -112,7 +112,8 @@ def test_agent_context_exposes_direct_executable_parameter_names():
         "dropout",
         "dice_weight",
         "positive_negative_ratio",
-        "augmentation_strength",
+        "augmentation_policy",
+        "model_variant",
     }
 
 
@@ -163,7 +164,7 @@ def test_one_runtime_assembly_exposes_all_three_backends():
     } == set(SearchType)
 
 
-def test_search_configuration_keeps_architecture_fixed_and_training_bounded():
+def test_search_configuration_keeps_family_bounded_and_training_bounded():
     candidate = FeTAUNetSearchConfiguration(
         maximum_epochs=25,
         learning_rate=2e-4,
@@ -171,9 +172,12 @@ def test_search_configuration_keeps_architecture_fixed_and_training_bounded():
         dropout=0.2,
         dice_weight=1.2,
         positive_negative_ratio="2:1",
-        augmentation_strength="strong",
+        model_variant="unet_residual",
+        augmentation_policy="combined",
     )
     assert candidate.features == (32, 32, 64, 128, 256, 32)
+    assert candidate.network_family == "UNet"
+    assert candidate.residual_units == 2
     with pytest.raises(ValidationError, match="learning_rate"):
         FeTAUNetSearchConfiguration(learning_rate=0.1)
     with pytest.raises(ValidationError, match="fixed_context"):
@@ -203,7 +207,7 @@ def test_search_evaluator_binds_variable_training_policy_identities():
     assert evaluator.optimiser_identity == OPTIMISER_ID
 
 
-def test_optuna_space_has_twelve_axes_and_fixed_fidelity():
+def test_optuna_space_has_thirteen_axes_and_fixed_fidelity():
     task = FeTAUNetSearchTask()
     specification = task.create_optuna_study_spec(
         default_feta_unet_search_contract(),
@@ -221,7 +225,8 @@ def test_optuna_space_has_twelve_axes_and_fixed_fidelity():
         "dropout",
         "dice_weight",
         "positive_negative_ratio",
-        "augmentation_strength",
+        "augmentation_policy",
+        "model_variant",
         "feature_width",
         "activation",
         "norm",
@@ -229,6 +234,61 @@ def test_optuna_space_has_twelve_axes_and_fixed_fidelity():
         "lr_schedule",
         "loss_variant",
     }
+    assert {
+        "features",
+        "channels",
+        "network_family",
+        "residual_units",
+    }.isdisjoint(specification.fixed_configuration)
+
+
+def test_optuna_fixed_residual_family_recomputes_derived_architecture():
+    task = FeTAUNetSearchTask()
+    specification = task.create_optuna_study_spec(
+        default_feta_unet_search_contract(),
+        _request(
+            SearchType.OPTUNA,
+            {
+                "fixed": {
+                    "maximum_epochs": 25,
+                    "model_variant": "unet_residual",
+                    "feature_width": "wide",
+                }
+            },
+            budget=2,
+        ),
+    )
+    assert specification.fixed_configuration["model_variant"] == "unet_residual"
+    assert specification.fixed_configuration["feature_width"] == "wide"
+    assert {
+        "features",
+        "channels",
+        "network_family",
+        "residual_units",
+    }.isdisjoint(specification.fixed_configuration)
+
+    normalised = task.normalise_configuration(
+        {
+            **dict(specification.fixed_configuration),
+            "learning_rate": 2e-4,
+            "weight_decay": 5e-5,
+            "dropout": 0.1,
+            "dice_weight": 1.1,
+            "positive_negative_ratio": "2:1",
+            "augmentation_policy": "combined",
+            "activation": "PReLU",
+            "norm": "group",
+            "optimizer": "Adam",
+            "lr_schedule": "cosine",
+            "loss_variant": "dice_tversky",
+        }
+    )
+    candidate = FeTAUNetSearchConfiguration.model_validate(normalised)
+    assert candidate.model_variant == "unet_residual"
+    assert candidate.feature_width == "wide"
+    assert candidate.network_family == "UNet"
+    assert candidate.residual_units == 2
+    assert candidate.channels == (40, 80, 160, 320, 640)
 
 
 def test_openevolve_seed_executes_to_a_bounded_unet_experiment():
@@ -284,7 +344,8 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
                 "dropout": 0.05,
                 "dice_weight": 1.2,
                 "positive_negative_ratio": "2:1",
-                "augmentation_strength": "strong",
+                "augmentation_policy": "combined",
+                "model_variant": "unet_residual",
             },
             initial_campaign_observations=[
                 "Verified fold-0 baseline mean macro Dice was 0.807986."
@@ -292,7 +353,8 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         ),
     )
     assert component.seed_configuration()["seed_training_policy"] == {
-        "policy_version": "feta-basic-unet-training-policy-v2",
+        "policy_version": "feta-unet-training-policy-v3",
+        "model_variant": "unet_residual",
         "feature_width": "baseline",
         "activation": "LeakyReLU",
         "norm": "instance",
@@ -304,7 +366,7 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         "dropout": 0.05,
         "dice_weight": 1.2,
         "positive_negative_ratio": "2:1",
-        "augmentation_strength": "strong",
+        "augmentation_policy": "combined",
     }
     assert component.component_spec().task_mutation_context[
         "aggregate_campaign_observations"
@@ -332,7 +394,8 @@ def test_verified_optuna_incumbent_seeds_openevolve_and_parent_feedback():
         dropout=0.05,
         dice_weight=1.2,
         positive_negative_ratio="2:1",
-        augmentation_strength="strong",
+        model_variant="unet_plain",
+        augmentation_policy="geometric",
     ).model_dump(mode="json")
     prior = PriorResearchSummary(
         hypothesis_reference="hypothesis-optuna",
@@ -378,7 +441,8 @@ def test_verified_optuna_incumbent_seeds_openevolve_and_parent_feedback():
     seed = backend.seed_candidate(search_contract)
     preparation = backend.prepare(seed, search_contract)
     assert preparation.generated_configuration["learning_rate"] == 2e-4
-    assert preparation.generated_configuration["augmentation_strength"] == "strong"
+    assert preparation.generated_configuration["augmentation_policy"] == "geometric"
+    assert preparation.generated_configuration["model_variant"] == "unet_plain"
 
     outcome = CandidateOutcome(
         candidate_id=seed.candidate_id,
@@ -437,7 +501,7 @@ def test_campaign_duration_estimate_counts_candidate_epochs():
             "dropout": 0.0,
             "dice_weight": 1.2,
             "positive_negative_ratio": "1:1",
-            "augmentation_strength": "baseline",
+            "augmentation_policy": "reference_light",
         },
         budget=1,
     ).model_copy(update={"evidence_references": ("promotion-from-epoch:50",)})
@@ -494,6 +558,9 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         "V4 rank correlation was 0.1859504132231405 from 25 to 50 epochs "
         "and 0.03571428571428571 from 50 to 100 epochs, so early endpoint "
         "rank alone is weak evidence.",
+        "A separately trained U-Net reportedly reached approximately 0.84 "
+        "under a believed-comparable evaluation, but its architecture and "
+        "training policy are deliberately withheld from this bottom-up campaign.",
     ]
     component = FeTAUNetSearchTask().create_evolvable_component(
         default_feta_unet_search_contract(),
@@ -509,14 +576,19 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         "OPENEVOLVE": 8,
         "DIRECT": 8,
     }
+    assert options["campaign_portfolio"]["root_model_variants"] == {
+        "basic_unet": 4,
+        "unet_plain": 2,
+        "unet_residual": 2,
+    }
     assert options["campaign_portfolio"]["promotion_targets"] == {
         "50": 12,
         "100": 6,
         "150": 3,
     }
-    # Sixty unique 25-epoch nodes, thirteen imported OpenEvolve parent seeds,
+    # Sixty unique 25-epoch nodes, fifteen imported OpenEvolve parent seeds,
     # and continuation-only graduation to 50/100/150.
-    total_epoch_work = 60 * 25 + 13 * 25 + 12 * 25 + 6 * 50 + 3 * 50
+    total_epoch_work = 60 * 25 + 15 * 25 + 12 * 25 + 6 * 50 + 3 * 50
     estimated_seconds = total_epoch_work * options["campaign_seconds_per_epoch"]
     assert estimated_seconds + options["campaign_finalisation_reserve_seconds"] < (
         20 * 60 * 60

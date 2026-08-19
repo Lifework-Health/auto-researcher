@@ -80,7 +80,7 @@ def test_valid_hypothesis_uses_identity_stable_direct_fallback(
         "dropout": 0.0,
         "dice_weight": 1.0,
         "positive_negative_ratio": "1:1",
-        "augmentation_strength": "baseline",
+        "augmentation_policy": "reference_light",
     }
     hypothesis = Hypothesis(
         hypothesis_id="hyp-cycle-four",
@@ -354,7 +354,7 @@ def test_first_cycle_context_failure_uses_configured_incumbent(
         "dropout": 0.0,
         "dice_weight": 1.0,
         "positive_negative_ratio": "1:1",
-        "augmentation_strength": "baseline",
+        "augmentation_policy": "reference_light",
     }
     state = {
         "run_id": "run-first-cycle-fallback",

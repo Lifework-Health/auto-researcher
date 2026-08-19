@@ -15,10 +15,13 @@ from auto_researcher.contracts.enums import (
 from auto_researcher.contracts.models import DecisionEvent, SearchRequest
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.tasks.feta_unet_search.configuration import (
+    AUGMENTATION_POLICIES,
     CANDIDATE_CONFIGURATION_FIELDS,
     DICE_WEIGHT_BOUNDS,
     DROPOUT_BOUNDS,
     LEARNING_RATE_BOUNDS,
+    LOSS_VARIANTS,
+    MODEL_VARIANTS,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
 )
@@ -30,7 +33,7 @@ from auto_researcher.tasks.feta_unet_search.openevolve import (
 from auto_researcher.tasks.models import TaskRuntimeContext
 
 PORTFOLIO_VERSION = "feta-unet-60-18-7-2-portfolio-v1"
-TREE_PORTFOLIO_VERSION = "feta-unet-lineage-tree-24-24-12-12-6-3-v1"
+TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-24-12-12-6-3-v2"
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,7 @@ class PortfolioPolicy:
 @dataclass(frozen=True)
 class TreePortfolioPolicy:
     root_screening: dict[SearchType, int]
+    root_model_variants: dict[str, int]
     root_parent_count: int
     children_per_parent: dict[SearchType, int]
     child_parent_count: int
@@ -152,6 +156,10 @@ class TreePortfolioPolicy:
             }
             root_parent_count = int(raw["root_parent_count"])
             child_parent_count = int(raw["child_parent_count"])
+            root_model_variants = {
+                str(name): int(value)
+                for name, value in dict(raw["root_model_variants"]).items()
+            }
             direct = tuple(dict(item) for item in raw["direct_root_configurations"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("feta_unet_campaign_tree_portfolio_invalid") from exc
@@ -163,6 +171,8 @@ class TreePortfolioPolicy:
                 SearchType.DIRECT: 8,
             }
             or root_parent_count != 6
+            or root_model_variants
+            != {"basic_unet": 4, "unet_plain": 2, "unet_residual": 2}
             or children
             != {
                 SearchType.OPTUNA: 2,
@@ -170,8 +180,7 @@ class TreePortfolioPolicy:
                 SearchType.DIRECT: 1,
             }
             or child_parent_count != 6
-            or grandchildren
-            != {SearchType.OPTUNA: 1, SearchType.OPENEVOLVE: 1}
+            or grandchildren != {SearchType.OPTUNA: 1, SearchType.OPENEVOLVE: 1}
             or promotions != {50: 12, 100: 6, 150: 3}
             or wildcards != {50: 4, 100: 2, 150: 1}
             or len(direct) < roots[SearchType.DIRECT]
@@ -195,6 +204,7 @@ class TreePortfolioPolicy:
             )
         return cls(
             root_screening=roots,
+            root_model_variants=root_model_variants,
             root_parent_count=root_parent_count,
             children_per_parent=children,
             child_parent_count=child_parent_count,
@@ -509,9 +519,7 @@ def _tree_cohort(
     target: int,
     wildcard_count: int,
 ) -> tuple[TreeCandidate, ...]:
-    unique = {
-        item.evidence.trajectory_identity: item for item in candidates
-    }
+    unique = {item.evidence.trajectory_identity: item for item in candidates}
     ranked = sorted(
         unique.values(),
         key=lambda item: (
@@ -527,9 +535,7 @@ def _tree_cohort(
     selected = list(ranked[: target - wildcard_count])
     selected_ids = {item.evidence.trajectory_identity for item in selected}
     remaining = [
-        item
-        for item in ranked
-        if item.evidence.trajectory_identity not in selected_ids
+        item for item in ranked if item.evidence.trajectory_identity not in selected_ids
     ]
     represented_methods = {item.action for item in selected}
     represented_roots = {item.root_trajectory for item in selected}
@@ -593,6 +599,7 @@ def _local_optuna_space(
             **{
                 name: configuration[name]
                 for name in (
+                    "model_variant",
                     "feature_width",
                     "activation",
                     "norm",
@@ -600,7 +607,7 @@ def _local_optuna_space(
                     "lr_schedule",
                     "loss_variant",
                     "positive_negative_ratio",
-                    "augmentation_strength",
+                    "augmentation_policy",
                 )
             },
         },
@@ -625,18 +632,17 @@ def _local_optuna_space(
     }
 
 
-def _direct_ablation(
-    parent: CandidateEvidence, existing: set[str]
-) -> dict[str, Any]:
-    base = dict(parent.configuration)
+def _direct_ablation(parent: CandidateEvidence, existing: set[str]) -> dict[str, Any]:
+    base = {name: parent.configuration[name] for name in CANDIDATE_CONFIGURATION_FIELDS}
     axes: tuple[tuple[str, tuple[Any, ...]], ...] = (
+        ("model_variant", MODEL_VARIANTS),
         ("lr_schedule", ("constant", "cosine", "polynomial")),
         ("optimizer", ("AdamW", "Adam")),
-        ("loss_variant", ("dice_ce", "dice_focal")),
+        ("loss_variant", LOSS_VARIANTS),
         ("norm", ("instance", "group")),
         ("activation", ("LeakyReLU", "ReLU", "PReLU")),
         ("feature_width", ("narrow", "baseline", "wide")),
-        ("augmentation_strength", ("light", "baseline", "strong")),
+        ("augmentation_policy", AUGMENTATION_POLICIES),
     )
     for name, values in axes:
         for value in values:
@@ -685,18 +691,30 @@ def apply_tree_portfolio_policy(
         prior_root_ids.update(selected)
 
     optuna_roots = root_by_method[SearchType.OPTUNA]
-    if len(optuna_roots) < policy.root_screening[SearchType.OPTUNA]:
-        remaining = policy.root_screening[SearchType.OPTUNA] - len(optuna_roots)
+    for model_variant, target in policy.root_model_variants.items():
+        completed = {
+            identity
+            for identity, item in optuna_roots.items()
+            if item.evidence.configuration["model_variant"] == model_variant
+        }
+        if len(completed) >= target:
+            continue
+        remaining = target - len(completed)
         return _request(
             original,
             run_id=run_id,
             cycle=cycle,
             stage="tree-root-optuna",
             search_type=SearchType.OPTUNA,
-            search_space={"fixed": {"maximum_epochs": 25}},
+            search_space={
+                "fixed": {
+                    "maximum_epochs": 25,
+                    "model_variant": model_variant,
+                }
+            },
             experiment_budget=remaining,
             rationale=(
-                f"{TREE_PORTFOLIO_VERSION}: create {remaining} globally diverse Optuna root lineages at 25 epochs."
+                f"{TREE_PORTFOLIO_VERSION}: create {remaining} deduplicated {model_variant} Optuna root lineages at 25 epochs."
             ),
             evidence_references=_tree_references(
                 stage="root", action=SearchType.OPTUNA
@@ -704,11 +722,22 @@ def apply_tree_portfolio_policy(
         )
 
     oe_roots = root_by_method[SearchType.OPENEVOLVE]
-    if len(oe_roots) < policy.root_screening[SearchType.OPENEVOLVE]:
-        remaining = policy.root_screening[SearchType.OPENEVOLVE] - len(oe_roots)
+    for model_variant, target in policy.root_model_variants.items():
+        completed = {
+            identity
+            for identity, item in oe_roots.items()
+            if item.evidence.configuration["model_variant"] == model_variant
+        }
+        if len(completed) >= target:
+            continue
+        remaining = target - len(completed)
         evaluations = remaining + 1
         parent = max(
-            optuna_roots.values(),
+            (
+                item
+                for item in optuna_roots.values()
+                if item.evidence.configuration["model_variant"] == model_variant
+            ),
             key=lambda item: (
                 item.evidence.best_score,
                 item.evidence.trajectory_identity,
@@ -729,6 +758,7 @@ def apply_tree_portfolio_policy(
             ).model_dump(mode="json"),
             "incumbent_primary_score": parent.evidence.best_score,
             "incumbent_search_type": parent.action.value,
+            "required_model_variant": model_variant,
             "prior_verified_results": [
                 {
                     "search_type": item.action.value,
@@ -736,7 +766,12 @@ def apply_tree_portfolio_policy(
                     "configuration": item.evidence.configuration,
                 }
                 for item in sorted(
-                    optuna_roots.values(),
+                    (
+                        candidate
+                        for candidate in optuna_roots.values()
+                        if candidate.evidence.configuration["model_variant"]
+                        == model_variant
+                    ),
                     key=lambda item: item.evidence.best_score,
                     reverse=True,
                 )
@@ -751,7 +786,7 @@ def apply_tree_portfolio_policy(
             search_space=search_space,
             experiment_budget=evaluations,
             rationale=(
-                f"{TREE_PORTFOLIO_VERSION}: create {remaining} novel OpenEvolve roots from the strongest Optuna anchor."
+                f"{TREE_PORTFOLIO_VERSION}: create {remaining} novel {model_variant} OpenEvolve roots from the strongest matching Optuna anchor."
             ),
             evidence_references=_tree_references(
                 stage="root",
@@ -762,15 +797,21 @@ def apply_tree_portfolio_policy(
         )
 
     direct_roots = root_by_method[SearchType.DIRECT]
-    if len(direct_roots) < policy.root_screening[SearchType.DIRECT]:
+    for model_variant, target in policy.root_model_variants.items():
+        completed = {
+            identity
+            for identity, item in direct_roots.items()
+            if item.evidence.configuration["model_variant"] == model_variant
+        }
+        if len(completed) >= target:
+            continue
         existing = set().union(*(set(items) for items in root_by_method.values()))
         configuration = next(
             (
                 item
                 for item in policy.direct_root_configurations
-                if trajectory_identity(
-                    FeTAUNetSearchConfiguration.model_validate(item)
-                )
+                if item["model_variant"] == model_variant
+                if trajectory_identity(FeTAUNetSearchConfiguration.model_validate(item))
                 not in existing
             ),
             None,
@@ -786,7 +827,7 @@ def apply_tree_portfolio_policy(
             search_space=configuration,
             experiment_budget=1,
             rationale=(
-                f"{TREE_PORTFOLIO_VERSION}: execute one deduplicated DIRECT root ablation."
+                f"{TREE_PORTFOLIO_VERSION}: execute one deduplicated {model_variant} DIRECT root ablation."
             ),
             evidence_references=_tree_references(
                 stage="root", action=SearchType.DIRECT
@@ -801,18 +842,14 @@ def apply_tree_portfolio_policy(
         target=policy.root_parent_count,
         wildcard_count=2,
     )
-    root_ids = {
-        item.evidence.trajectory_identity for item in roots
-    }
+    root_ids = {item.evidence.trajectory_identity for item in roots}
     child_candidates = tuple(
         item
         for item in candidates
-        if item.stage == "child"
-        and item.evidence.trajectory_identity not in root_ids
+        if item.stage == "child" and item.evidence.trajectory_identity not in root_ids
     )
     existing_25 = {
-        item.evidence.trajectory_identity
-        for item in (*roots, *child_candidates)
+        item.evidence.trajectory_identity for item in (*roots, *child_candidates)
     }
     for parent in root_parents:
         parent_id = parent.evidence.trajectory_identity
@@ -1055,7 +1092,10 @@ def apply_portfolio_policy(
     runtime_context: TaskRuntimeContext,
 ) -> SearchRequest | None:
     raw_policy = runtime_context.task_options.get("campaign_portfolio")
-    if isinstance(raw_policy, dict) and raw_policy.get("version") == TREE_PORTFOLIO_VERSION:
+    if (
+        isinstance(raw_policy, dict)
+        and raw_policy.get("version") == TREE_PORTFOLIO_VERSION
+    ):
         return apply_tree_portfolio_policy(
             original,
             run_id=run_id,

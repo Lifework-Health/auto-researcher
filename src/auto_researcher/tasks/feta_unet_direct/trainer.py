@@ -14,7 +14,7 @@ def create_loss(configuration: FeTAUNetDirectConfiguration):
     variant = str(getattr(configuration, "loss_variant", "dice_ce"))
     dice_weight = float(getattr(configuration, "dice_weight", 1.0))
     try:
-        from monai.losses import DiceCELoss, DiceFocalLoss
+        from monai.losses import DiceCELoss, DiceFocalLoss, DiceLoss, TverskyLoss
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
     common = {
@@ -30,6 +30,17 @@ def create_loss(configuration: FeTAUNetDirectConfiguration):
             lambda_dice=dice_weight,
             lambda_focal=1.0,
         )
+    if variant == "dice_tversky":
+        dice = DiceLoss(**common)
+        tversky = TverskyLoss(**common, alpha=0.3, beta=0.7)
+
+        class _DiceTverskyLoss:
+            def __call__(self, prediction, target):
+                return dice_weight * dice(prediction, target) + tversky(
+                    prediction, target
+                )
+
+        return _DiceTverskyLoss()
     raise ValueError("feta_unet_loss_variant_invalid")
 
 

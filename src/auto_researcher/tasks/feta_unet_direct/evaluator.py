@@ -148,6 +148,8 @@ class FeTAUNetDirectEvaluator:
     evaluator_id = EVALUATOR_ID
     version = EVALUATOR_VERSION
     architecture_family_identity = ARCHITECTURE_ID
+    development_runner_identity = DEVELOPMENT_BASELINE_RUNNER_ID
+    data_loader_identity = DATA_LOADER_ID
     cost_per_experiment = 0.0
 
     def __init__(
@@ -411,7 +413,7 @@ class FeTAUNetDirectEvaluator:
             expected_runner = BASELINE_RUNNER_ID
         elif development_baseline:
             expected_folds, expected_subjects = 1, 14
-            expected_runner = DEVELOPMENT_BASELINE_RUNNER_ID
+            expected_runner = self.development_runner_identity
         else:
             expected_folds, expected_subjects = 1, 1
             expected_runner = ENGINEERING_SMOKE_RUNNER_ID
@@ -438,7 +440,8 @@ class FeTAUNetDirectEvaluator:
             "evaluator_identity_exact": metrics["evaluator_version"] == self.version
             and metrics["evaluator_code_version"] == self.metadata.code_version,
             "runner_identity_exact": metrics["runner_id"] == expected_runner,
-            "data_loader_identity_exact": metrics["data_loader_id"] == DATA_LOADER_ID,
+            "data_loader_identity_exact": metrics["data_loader_id"]
+            == self.data_loader_identity,
             "oof_subject_count_exact": metrics["oof_subject_count"]
             == expected_subjects,
             "no_subject_identifiers": metrics["contains_subject_identifiers"] is False

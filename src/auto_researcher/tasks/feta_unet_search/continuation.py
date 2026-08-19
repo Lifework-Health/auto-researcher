@@ -1,4 +1,4 @@
-"""Durable staged-fidelity continuation for the FeTA BasicUNet campaign."""
+"""Durable staged-fidelity continuation for the FeTA U-Net campaign."""
 
 from __future__ import annotations
 

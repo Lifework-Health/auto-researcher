@@ -1,4 +1,4 @@
-"""Read-only reporting and champion preservation for BasicUNet campaigns."""
+"""Read-only reporting and champion preservation for U-Net campaigns."""
 
 from __future__ import annotations
 
@@ -67,15 +67,12 @@ def _pearson(left: Iterable[float], right: Iterable[float]) -> float | None:
     mean_y = sum(ys) / len(ys)
     numerator = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
     denominator = math.sqrt(
-        sum((x - mean_x) ** 2 for x in xs)
-        * sum((y - mean_y) ** 2 for y in ys)
+        sum((x - mean_x) ** 2 for x in xs) * sum((y - mean_y) ** 2 for y in ys)
     )
     return None if denominator == 0.0 else numerator / denominator
 
 
-def _spearman(
-    source: dict[str, float], target: dict[str, float]
-) -> dict[str, Any]:
+def _spearman(source: dict[str, float], target: dict[str, float]) -> dict[str, Any]:
     identities = sorted(set(source) & set(target))
     source_ranks = _average_ranks(
         {identity: source[identity] for identity in identities}
@@ -117,8 +114,7 @@ def campaign_report(
         raise ValueError("feta_unet_campaign_evidence_missing")
     selected = _best_rows(rows)
     tree_by_experiment = {
-        item.evidence.experiment_id: item
-        for item in _tree_candidates(events, rows)
+        item.evidence.experiment_id: item for item in _tree_candidates(events, rows)
     }
     origin_by_trajectory: dict[str, CandidateEvidence] = {}
     for row in rows:
@@ -163,9 +159,7 @@ def campaign_report(
             item.trajectory_identity: item.rung_score
             for item in unique_stage_rows.get(target, ())
         }
-        correlations[f"{source}_to_{target}"] = _spearman(
-            source_scores, target_scores
-        )
+        correlations[f"{source}_to_{target}"] = _spearman(source_scores, target_scores)
 
     finalists = unique_stage_rows.get(150, [])
     if not finalists:
@@ -228,9 +222,7 @@ def campaign_report(
         "stages": stages,
         "rank_correlations": correlations,
         "tree_stage_counts": dict(
-            sorted(
-                Counter(item.stage for item in tree_by_experiment.values()).items()
-            )
+            sorted(Counter(item.stage for item in tree_by_experiment.values()).items())
         ),
         "champion": {
             "experiment_id": champion.experiment_id,
@@ -289,7 +281,7 @@ def write_campaign_report(
             )
     champion = report["champion"]
     summary = (
-        "# FeTA BasicUNet campaign postmortem\n\n"
+        "# FeTA U-Net campaign postmortem\n\n"
         f"- Run: `{run_id}`\n"
         f"- Champion experiment: `{champion['experiment_id']}`\n"
         f"- Champion origin: `{champion['origin_search_type']}`\n"

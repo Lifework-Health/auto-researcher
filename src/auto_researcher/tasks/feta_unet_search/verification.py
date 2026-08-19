@@ -1,4 +1,4 @@
-"""Evidence verification for bounded BasicUNet search candidates."""
+"""Evidence verification for bounded U-Net search candidates."""
 
 from auto_researcher.contracts.enums import EvidenceStatus
 from auto_researcher.contracts.models import EvaluationResult, ResearchContract

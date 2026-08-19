@@ -1,4 +1,4 @@
-"""Small JSON-only OpenEvolve surface for BasicUNet training policy search."""
+"""Small JSON-only OpenEvolve surface for bounded U-Net family search."""
 
 from __future__ import annotations
 
@@ -19,12 +19,14 @@ from auto_researcher.search.openevolve.models import (
 )
 from auto_researcher.tasks.feta_unet_search.configuration import (
     ACTIVATIONS,
+    AUGMENTATION_POLICIES,
     DICE_WEIGHT_BOUNDS,
     DROPOUT_BOUNDS,
     FEATURE_WIDTH_PROFILES,
     LEARNING_RATE_BOUNDS,
     LEARNING_RATE_SCHEDULES,
     LOSS_VARIANTS,
+    MODEL_VARIANTS,
     NORMALISATIONS,
     OPTIMISERS,
     WEIGHT_DECAY_BOUNDS,
@@ -32,11 +34,9 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
 )
 from auto_researcher.tasks.models import ExperimentMetadata
 
-COMPONENT_ID = "feta-basic-unet-training-policy"
-COMPONENT_VERSION = "2.0"
-POLICY_VERSION: Literal["feta-basic-unet-training-policy-v2"] = (
-    "feta-basic-unet-training-policy-v2"
-)
+COMPONENT_ID = "feta-unet-family-training-policy"
+COMPONENT_VERSION = "3.0"
+POLICY_VERSION: Literal["feta-unet-training-policy-v3"] = "feta-unet-training-policy-v3"
 
 SEED_SOURCE = """def evolve(configuration):
     return configuration["seed_training_policy"]
@@ -44,25 +44,27 @@ SEED_SOURCE = """def evolve(configuration):
 
 LOW_REGULARISATION_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-basic-unet-training-policy-v2",
+        "policy_version": "feta-unet-training-policy-v3",
+        "model_variant": "unet_plain",
         "feature_width": "baseline",
         "activation": "ReLU",
         "norm": "instance",
         "optimizer": "AdamW",
         "lr_schedule": "cosine",
-        "loss_variant": "dice_ce",
+        "loss_variant": "dice_tversky",
         "learning_rate": 0.0002,
         "weight_decay": 0.00001,
         "dropout": 0.05,
         "dice_weight": 1.1,
         "positive_negative_ratio": "2:1",
-        "augmentation_strength": "light",
+        "augmentation_policy": "geometric",
     }
 """
 
 REGULARISED_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-basic-unet-training-policy-v2",
+        "policy_version": "feta-unet-training-policy-v3",
+        "model_variant": "unet_residual",
         "feature_width": "narrow",
         "activation": "LeakyReLU",
         "norm": "group",
@@ -74,7 +76,7 @@ REGULARISED_SOURCE = """def evolve(configuration):
         "dropout": 0.2,
         "dice_weight": 1.25,
         "positive_negative_ratio": "1:1",
-        "augmentation_strength": "strong",
+        "augmentation_policy": "combined",
     }
 """
 
@@ -82,6 +84,7 @@ REGULARISED_SOURCE = """def evolve(configuration):
 def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPolicy":
     return UNetTrainingPolicy.model_validate(
         {
+            "model_variant": configuration["model_variant"],
             "feature_width": configuration["feature_width"],
             "activation": configuration["activation"],
             "norm": configuration["norm"],
@@ -93,7 +96,7 @@ def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPol
             "dropout": configuration["dropout"],
             "dice_weight": configuration["dice_weight"],
             "positive_negative_ratio": configuration["positive_negative_ratio"],
-            "augmentation_strength": configuration["augmentation_strength"],
+            "augmentation_policy": configuration["augmentation_policy"],
         }
     )
 
@@ -101,19 +104,22 @@ def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPol
 class UNetTrainingPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    policy_version: Literal["feta-basic-unet-training-policy-v2"] = POLICY_VERSION
+    policy_version: Literal["feta-unet-training-policy-v3"] = POLICY_VERSION
+    model_variant: Literal["basic_unet", "unet_plain", "unet_residual"] = "basic_unet"
     feature_width: Literal["narrow", "baseline", "wide"] = "baseline"
     activation: Literal["LeakyReLU", "ReLU", "PReLU"] = "LeakyReLU"
     norm: Literal["instance", "group"] = "instance"
     optimizer: Literal["AdamW", "Adam"] = "AdamW"
     lr_schedule: Literal["constant", "cosine", "polynomial"] = "constant"
-    loss_variant: Literal["dice_ce", "dice_focal"] = "dice_ce"
+    loss_variant: Literal["dice_ce", "dice_focal", "dice_tversky"] = "dice_ce"
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     dropout: float = 0.0
     dice_weight: float = 1.0
     positive_negative_ratio: Literal["1:1", "2:1", "3:1"] = "1:1"
-    augmentation_strength: Literal["light", "baseline", "strong"] = "baseline"
+    augmentation_policy: Literal[
+        "reference_light", "geometric", "intensity", "combined"
+    ] = "reference_light"
 
     @field_validator("learning_rate")
     @classmethod
@@ -160,7 +166,7 @@ class FeTAUNetEvolvableComponent:
     def component_spec(self) -> EvolvableComponentSpec:
         safe_context: dict[str, Any] = {
             "objective": "maximise fold-0 validation macro Dice",
-            "immutable_topology": "MONAI BasicUNet 3D with fixed depth and skip topology",
+            "bounded_model_variants": list(MODEL_VARIANTS),
             "bounded_feature_width_profiles": {
                 name: list(features)
                 for name, features in FEATURE_WIDTH_PROFILES.items()
@@ -170,13 +176,16 @@ class FeTAUNetEvolvableComponent:
             "bounded_optimisers": list(OPTIMISERS),
             "bounded_learning_rate_schedules": list(LEARNING_RATE_SCHEDULES),
             "bounded_loss_variants": list(LOSS_VARIANTS),
+            "bounded_augmentation_policies": list(AUGMENTATION_POLICIES),
             "immutable_preprocessing": "RAS, 0.5 mm, foreground crop, nonzero z-score, 128^3 patches",
             "maximum_epochs": self.maximum_epochs,
             "legal_training_policy_schema": UNetTrainingPolicy.model_json_schema(),
             "aggregate_campaign_observations": list(self.initial_observations),
             "domain_guidance": [
                 "Treat campaign context and parent feedback as the only evidence "
-                "about earlier results."
+                "about earlier results.",
+                "When campaign_context includes required_model_variant, preserve "
+                "that exact model_variant while mutating other bounded fields.",
             ],
             "metric_names": [
                 "mean_subject_macro_dice",
@@ -192,7 +201,7 @@ class FeTAUNetEvolvableComponent:
             allowed_files=("candidate.py",),
             entry_point="evolve",
             immutable_interface_contract=(
-                "evolve(configuration: bounded BasicUNet policy seed) -> "
+                "evolve(configuration: bounded U-Net family policy seed) -> "
                 "UNetTrainingPolicy JSON object"
             ),
             parameter_schema={
@@ -249,6 +258,10 @@ class FeTAUNetEvolvableComponent:
         policy = UNetTrainingPolicy.model_validate(
             dict(preparation.generated_configuration)
         )
+        campaign_context = self.campaign_context_for_request(request)
+        required_variant = campaign_context.get("required_model_variant")
+        if required_variant is not None and policy.model_variant != required_variant:
+            raise ValueError("feta_unet_required_model_variant_not_preserved")
         configuration = FeTAUNetSearchConfiguration(
             maximum_epochs=self.maximum_epochs,  # type: ignore[arg-type]
             **policy.model_dump(mode="python", exclude={"policy_version"}),

@@ -96,7 +96,7 @@ def _configuration(index: int, fidelity: int = 25) -> dict:
         "dropout": 0.0,
         "dice_weight": 1.2,
         "positive_negative_ratio": "1:1",
-        "augmentation_strength": "baseline",
+        "augmentation_policy": "reference_light",
     }
 
 
@@ -110,6 +110,11 @@ def test_portfolio_policy_requires_exact_screening_and_promotion_shape():
         SearchType.DIRECT: 8,
     }
     assert policy.root_parent_count == 6
+    assert policy.root_model_variants == {
+        "basic_unet": 4,
+        "unet_plain": 2,
+        "unet_residual": 2,
+    }
     assert policy.children_per_parent == {
         SearchType.OPTUNA: 2,
         SearchType.OPENEVOLVE: 1,
@@ -173,9 +178,9 @@ def _sampled_configuration(
             request.search_space["campaign_context"]["incumbent_training_policy"]
         )
         policy.pop("policy_version", None)
-        return FeTAUNetSearchConfiguration(
-            maximum_epochs=25, **policy
-        ).model_dump(mode="json")
+        return FeTAUNetSearchConfiguration(maximum_epochs=25, **policy).model_dump(
+            mode="json"
+        )
     parameters = request.search_space.get("parameters", {})
     fraction = (sample + 1) / (request.experiment_budget + 1)
     numeric = {}
@@ -190,24 +195,32 @@ def _sampled_configuration(
         high = float(bounds.get("high", default_bounds[1]))
         numeric[name] = low + (high - low) * fraction
     categorical = {
+        "model_variant": ("basic_unet", "unet_plain", "unet_residual")[
+            unique_index % 3
+        ],
         "feature_width": ("narrow", "baseline", "wide")[unique_index % 3],
         "activation": ("LeakyReLU", "ReLU", "PReLU")[unique_index % 3],
         "norm": ("instance", "group")[unique_index % 2],
         "optimizer": ("AdamW", "Adam")[unique_index % 2],
         "lr_schedule": ("constant", "cosine", "polynomial")[unique_index % 3],
-        "loss_variant": ("dice_ce", "dice_focal")[unique_index % 2],
+        "loss_variant": ("dice_ce", "dice_focal", "dice_tversky")[unique_index % 3],
         "positive_negative_ratio": ("1:1", "2:1", "3:1")[unique_index % 3],
-        "augmentation_strength": ("light", "baseline", "strong")[
-            unique_index % 3
-        ],
+        "augmentation_policy": (
+            "reference_light",
+            "geometric",
+            "intensity",
+            "combined",
+        )[unique_index % 4],
     }
     categorical.update(
-        {
-            key: value
-            for key, value in dict(fixed).items()
-            if key in categorical
-        }
+        {key: value for key, value in dict(fixed).items() if key in categorical}
     )
+    if request.search_type == SearchType.OPENEVOLVE:
+        required_variant = request.search_space.get("campaign_context", {}).get(
+            "required_model_variant"
+        )
+        if required_variant is not None:
+            categorical["model_variant"] = required_variant
     return FeTAUNetSearchConfiguration(
         maximum_epochs=int(dict(fixed).get("maximum_epochs", 25)),
         **numeric,
@@ -264,12 +277,10 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
                     identity = trajectory_identity(candidate)
                     assert attempts < 100
             experiment_id = f"experiment-{experiment_index}"
-            events.append(
-                _prepared_event(experiment_index, request, experiment_id)
+            events.append(_prepared_event(experiment_index, request, experiment_id))
+            score = (
+                0.55 + candidate.maximum_epochs / 1000 + (experiment_index % 20) / 1000
             )
-            score = 0.55 + candidate.maximum_epochs / 1000 + (
-                experiment_index % 20
-            ) / 1000
             events.append(
                 _event(
                     experiment_index,
@@ -301,12 +312,58 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
         and item.evidence.trajectory_identity not in roots | children
     }
     assert len(roots) == 24
+    assigned_roots: set[str] = set()
+    for method in (SearchType.OPTUNA, SearchType.OPENEVOLVE, SearchType.DIRECT):
+        method_roots = []
+        for item in rows:
+            identity = item.evidence.trajectory_identity
+            if (
+                item.stage == "root"
+                and item.action == method
+                and identity not in assigned_roots
+            ):
+                method_roots.append(item)
+                assigned_roots.add(identity)
+        assert {
+            variant: sum(
+                item.evidence.configuration["model_variant"] == variant
+                for item in method_roots
+            )
+            for variant in ("basic_unet", "unet_plain", "unet_residual")
+        } == {"basic_unet": 4, "unet_plain": 2, "unet_residual": 2}
     assert len(children) == 24
     assert len(grandchildren) == 12
-    assert len({item.evidence.trajectory_identity for item in rows if item.stage == "promote-50"}) == 12
-    assert len({item.evidence.trajectory_identity for item in rows if item.stage == "promote-100"}) == 6
-    assert len({item.evidence.trajectory_identity for item in rows if item.stage == "promote-150"}) == 3
-    assert experiment_index == 94
+    assert (
+        len(
+            {
+                item.evidence.trajectory_identity
+                for item in rows
+                if item.stage == "promote-50"
+            }
+        )
+        == 12
+    )
+    assert (
+        len(
+            {
+                item.evidence.trajectory_identity
+                for item in rows
+                if item.stage == "promote-100"
+            }
+        )
+        == 6
+    )
+    assert (
+        len(
+            {
+                item.evidence.trajectory_identity
+                for item in rows
+                if item.stage == "promote-150"
+            }
+        )
+        == 3
+    )
+    assert experiment_index == 96
 
 
 def test_trajectory_identity_excludes_only_fidelity():

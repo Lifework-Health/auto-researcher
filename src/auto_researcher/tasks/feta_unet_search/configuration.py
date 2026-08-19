@@ -1,4 +1,4 @@
-"""Bounded BasicUNet training configuration for planner-driven development."""
+"""Bounded U-Net family configuration for planner-driven development."""
 
 from __future__ import annotations
 
@@ -7,27 +7,44 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-CONFIGURATION_SCHEMA_VERSION = "feta-basic-unet-search-configuration-v2"
+CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v3"
 FIDELITY_LEVELS = (5, 25, 50, 100, 150)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
 DROPOUT_BOUNDS = (0.0, 0.3)
 DICE_WEIGHT_BOUNDS = (0.5, 1.5)
 POSITIVE_NEGATIVE_RATIOS = ("1:1", "2:1", "3:1")
-AUGMENTATION_STRENGTHS = ("light", "baseline", "strong")
+MODEL_VARIANTS = ("basic_unet", "unet_plain", "unet_residual")
+MODEL_VARIANT_CONTEXT = {
+    "basic_unet": ("BasicUNet", 0),
+    "unet_plain": ("UNet", 0),
+    "unet_residual": ("UNet", 2),
+}
 FEATURE_WIDTH_PROFILES = {
     "narrow": (24, 24, 48, 96, 192, 24),
     "baseline": (32, 32, 64, 128, 256, 32),
     "wide": (40, 40, 80, 160, 320, 40),
 }
+RESIDUAL_CHANNEL_PROFILES = {
+    "narrow": (24, 48, 96, 192, 384),
+    "baseline": (32, 64, 128, 256, 512),
+    "wide": (40, 80, 160, 320, 640),
+}
 ACTIVATIONS = ("LeakyReLU", "ReLU", "PReLU")
 NORMALISATIONS = ("instance", "group")
 OPTIMISERS = ("AdamW", "Adam")
 LEARNING_RATE_SCHEDULES = ("constant", "cosine", "polynomial")
-LOSS_VARIANTS = ("dice_ce", "dice_focal")
-SEARCH_ARCHITECTURE_FAMILY_ID = "monai-basic-unet-3d-bounded-width-v2"
+LOSS_VARIANTS = ("dice_ce", "dice_focal", "dice_tversky")
+AUGMENTATION_POLICIES = (
+    "reference_light",
+    "geometric",
+    "intensity",
+    "combined",
+)
+SEARCH_ARCHITECTURE_FAMILY_ID = "monai-unet-3d-bounded-family-v3"
 CANDIDATE_CONFIGURATION_FIELDS = (
     "maximum_epochs",
+    "model_variant",
     "feature_width",
     "activation",
     "norm",
@@ -39,12 +56,12 @@ CANDIDATE_CONFIGURATION_FIELDS = (
     "dropout",
     "dice_weight",
     "positive_negative_ratio",
-    "augmentation_strength",
+    "augmentation_policy",
 )
 
 
 class FeTAUNetSearchConfiguration(BaseModel):
-    """A fold-0 BasicUNet candidate with a bounded v5 mutable surface."""
+    """A fold-0 U-Net candidate with a bounded v5 mutable surface."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -52,10 +69,13 @@ class FeTAUNetSearchConfiguration(BaseModel):
     spatial_dims: Literal[3] = 3
     in_channels: Literal[1] = 1
     out_channels: Literal[8] = 8
+    model_variant: Literal["basic_unet", "unet_plain", "unet_residual"] = "basic_unet"
+    network_family: Literal["BasicUNet", "UNet"] = "BasicUNet"
+    residual_units: Literal[0, 2] = 0
     feature_width: Literal["narrow", "baseline", "wide"] = "baseline"
-    features: tuple[int, int, int, int, int, int] = FEATURE_WIDTH_PROFILES[
-        "baseline"
-    ]
+    features: tuple[int, int, int, int, int, int] = FEATURE_WIDTH_PROFILES["baseline"]
+    channels: tuple[int, int, int, int, int] = RESIDUAL_CHANNEL_PROFILES["baseline"]
+    strides: tuple[int, int, int, int] = (2, 2, 2, 2)
     activation: Literal["LeakyReLU", "ReLU", "PReLU"] = "LeakyReLU"
     negative_slope: float = 0.1
     activation_inplace: Literal[True] = True
@@ -75,12 +95,14 @@ class FeTAUNetSearchConfiguration(BaseModel):
     dropout: float = 0.0
     dice_weight: float = 1.0
     positive_negative_ratio: Literal["1:1", "2:1", "3:1"] = "1:1"
-    augmentation_strength: Literal["light", "baseline", "strong"] = "baseline"
+    augmentation_policy: Literal[
+        "reference_light", "geometric", "intensity", "combined"
+    ] = "reference_light"
     optimizer: Literal["AdamW", "Adam"] = "AdamW"
     lr_schedule: Literal["constant", "cosine", "polynomial"] = "constant"
     scheduler_horizon_epochs: Literal[150] = 150
     polynomial_power: Literal[0.9] = 0.9
-    loss_variant: Literal["dice_ce", "dice_focal"] = "dice_ce"
+    loss_variant: Literal["dice_ce", "dice_focal", "dice_tversky"] = "dice_ce"
     inference_overlap: float = 0.5
     inference_blending: Literal["gaussian"] = "gaussian"
     sliding_window_batch_size: Literal[1] = 1
@@ -107,6 +129,14 @@ class FeTAUNetSearchConfiguration(BaseModel):
         expected = FEATURE_WIDTH_PROFILES.get(profile)
         if expected is not None and "features" not in payload:
             payload["features"] = expected
+        channels = RESIDUAL_CHANNEL_PROFILES.get(profile)
+        if channels is not None and "channels" not in payload:
+            payload["channels"] = channels
+        variant = payload.get("model_variant", "basic_unet")
+        context = MODEL_VARIANT_CONTEXT.get(variant)
+        if context is not None:
+            payload.setdefault("network_family", context[0])
+            payload.setdefault("residual_units", context[1])
         return payload
 
     @field_validator("learning_rate")
@@ -139,10 +169,14 @@ class FeTAUNetSearchConfiguration(BaseModel):
     @model_validator(mode="after")
     def bounded_search_profile(self) -> "FeTAUNetSearchConfiguration":
         # Deliberately do not call the frozen DIRECT validator: this sibling
-        # task varies only the registered training surface while retaining its
-        # architecture, preprocessing, fold and inference identities.
+        # task varies only the registered architecture/training surface while
+        # retaining the preprocessing, fold and inference identities.
         if (
             self.features != FEATURE_WIDTH_PROFILES[self.feature_width]
+            or self.channels != RESIDUAL_CHANNEL_PROFILES[self.feature_width]
+            or (self.network_family, self.residual_units)
+            != MODEL_VARIANT_CONTEXT[self.model_variant]
+            or self.strides != (2, 2, 2, 2)
             or self.negative_slope != 0.1
             or self.spacing_mm != (0.5, 0.5, 0.5)
             or self.patch_size != (128, 128, 128)

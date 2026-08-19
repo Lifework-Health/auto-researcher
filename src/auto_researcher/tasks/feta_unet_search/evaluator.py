@@ -1,8 +1,12 @@
-"""Trusted evaluator adapter for bounded BasicUNet search candidates."""
+"""Trusted evaluator adapter for bounded U-Net search candidates."""
 
 from auto_researcher.tasks.feta_unet_direct.evaluator import (
     FeTAUNetDirectEvaluator,
     evaluator_code_version as direct_evaluator_code_version,
+)
+from auto_researcher.tasks.feta_unet_direct.runner import (
+    SEARCH_DATA_LOADER_ID,
+    SEARCH_RUNNER_ID,
 )
 from auto_researcher.tasks.feta_unet_search.configuration import (
     CONFIGURATION_SCHEMA_VERSION,
@@ -16,11 +20,11 @@ from auto_researcher.tasks.models import (
 )
 
 EVALUATOR_ID = "feta-basic-unet-search-evaluator"
-EVALUATOR_VERSION = "feta-basic-unet-search-evaluator-v2"
-RESULT_ID = "feta-basic-unet-search-result-v2"
-SCIENTIFIC_ID = "feta-basic-unet-fold0-bounded-tree-search-macro-dice-v2"
-AUGMENTATION_ID = "feta-bounded-flip-scale-shift-and-patch-ratio-v1"
-LOSS_ID = "bounded-dice-ce-or-dice-focal-no-background-v2"
+EVALUATOR_VERSION = "feta-unet-search-evaluator-v3"
+RESULT_ID = "feta-unet-search-result-v3"
+SCIENTIFIC_ID = "feta-unet-fold0-bounded-family-tree-search-macro-dice-v3"
+AUGMENTATION_ID = "feta-bounded-explicit-geometric-intensity-policies-v2"
+LOSS_ID = "bounded-dice-ce-focal-or-tversky-no-background-v3"
 OPTIMISER_ID = "adam-or-adamw-bounded-lr-wd-with-150epoch-schedules-v2"
 
 
@@ -42,6 +46,8 @@ class FeTAUNetSearchEvaluator(FeTAUNetDirectEvaluator):
     evaluator_id = EVALUATOR_ID
     version = EVALUATOR_VERSION
     architecture_family_identity = SEARCH_ARCHITECTURE_FAMILY_ID
+    development_runner_identity = SEARCH_RUNNER_ID
+    data_loader_identity = SEARCH_DATA_LOADER_ID
 
     def __init__(
         self,

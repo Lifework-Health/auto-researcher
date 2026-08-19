@@ -39,7 +39,7 @@ from auto_researcher.tasks.feta_unet_direct.identities import (
 from auto_researcher.tasks.feta_unet_direct.model import (
     ARCHITECTURE_ID,
     architecture_identity,
-    create_basic_unet,
+    create_unet_model,
     trainable_parameter_count,
 )
 from auto_researcher.tasks.feta_unet_direct.trainer import (
@@ -84,6 +84,8 @@ FoldExecutor = Callable[
 ]
 
 MAX_CONSECUTIVE_AMP_SKIPS = 16
+SEARCH_RUNNER_ID = "feta-unet-family-fold0-development-runner-v3"
+SEARCH_DATA_LOADER_ID = "monai-unet-family-explicit-augmentation-loader-v4"
 
 
 def _amp_step_was_skipped(scale_before: float, scale_after: float) -> bool:
@@ -93,7 +95,15 @@ def _amp_step_was_skipped(scale_before: float, scale_after: float) -> bool:
 
 
 def _runner_id(configuration: FeTAUNetDirectConfiguration) -> str:
+    if hasattr(configuration, "model_variant"):
+        return SEARCH_RUNNER_ID
     return runner_id(configuration.profile)
+
+
+def _data_loader_id(configuration: FeTAUNetDirectConfiguration) -> str:
+    if hasattr(configuration, "augmentation_policy"):
+        return SEARCH_DATA_LOADER_ID
+    return DATA_LOADER_ID
 
 
 def _is_progress_milestone(
@@ -213,7 +223,7 @@ def _run_cuda_fold(
     seed = seed_everything(fold)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
-    model = create_basic_unet(configuration).to("cuda")
+    model = create_unet_model(configuration).to("cuda")
     candidate_architecture_identity = architecture_identity(configuration)
     candidate_trainable_parameters = trainable_parameter_count(model)
     loss_function = create_loss(configuration)
@@ -230,6 +240,7 @@ def _run_cuda_fold(
             augmentation_strength=str(
                 getattr(configuration, "augmentation_strength", "baseline")
             ),
+            augmentation_policy=getattr(configuration, "augmentation_policy", None),
         ),
         cache_dir=cache_root / "training",
     )
@@ -286,7 +297,7 @@ def _run_cuda_fold(
                 source_root,
                 configuration,
                 runner_id=_runner_id(configuration),
-                data_loader_id=DATA_LOADER_ID,
+                data_loader_id=_data_loader_id(configuration),
             )
             copy_prior_checkpoints(plan, fold_checkpoint_root)
             try:
@@ -296,9 +307,7 @@ def _run_cuda_fold(
                 scheduler_state = plan.last_payload["scheduler_state_dict"]
                 if scheduler is None:
                     if scheduler_state is not None:
-                        raise ValueError(
-                            "feta_unet_resume_scheduler_state_invalid"
-                        )
+                        raise ValueError("feta_unet_resume_scheduler_state_invalid")
                 elif not isinstance(scheduler_state, dict):
                     raise ValueError("feta_unet_resume_scheduler_state_invalid")
                 else:
@@ -464,7 +473,7 @@ def _run_cuda_fold(
                 output_root=checkpoint_root,
             )["sha256"],
             runner_id=_runner_id(configuration),
-            data_loader_id=DATA_LOADER_ID,
+            data_loader_id=_data_loader_id(configuration),
             rng_state=capture_rng_state(torch, np, generator),
         )
         torch.save(last_payload, last_checkpoint_path)
@@ -523,7 +532,15 @@ def _run_cuda_fold(
         score=best_score,
         output_root=checkpoint_root,
     )
-    del model, optimizer, scheduler, scaler, training_loader, training_dataset, validation_dataset
+    del (
+        model,
+        optimizer,
+        scheduler,
+        scaler,
+        training_loader,
+        training_dataset,
+        validation_dataset,
+    )
     torch.cuda.empty_cache()
     return FoldExecutionResult(
         fold=fold,
@@ -536,7 +553,7 @@ def _run_cuda_fold(
         checkpoint=reference,
         seed=seed,
         source_runner_id=_runner_id(configuration),
-        source_data_loader_id=DATA_LOADER_ID,
+        source_data_loader_id=_data_loader_id(configuration),
         validation_history=tuple(validation_history),
         milestone_checkpoints=tuple(milestone_checkpoints),
         amp_skipped_steps=amp_skipped_steps,
@@ -732,7 +749,7 @@ def run_profile(
         "checkpoint_references": [result.checkpoint for result in fold_results],
         "environment": environment,
         "runner_id": _runner_id(configuration),
-        "data_loader_id": DATA_LOADER_ID,
+        "data_loader_id": _data_loader_id(configuration),
         "folds_completed": len(fold_results),
         "oof_subject_count": sum(
             len(result.subject_metrics) for result in fold_results
