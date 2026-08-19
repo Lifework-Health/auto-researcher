@@ -601,6 +601,7 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         options["initial_campaign_observations"]
     )
     assert options["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
+    assert options["campaign_prior_results"] == 30
     assert options["openevolve_fidelity"] == 25
     assert options["campaign_portfolio"]["root_screening"] == {
         "OPTUNA": 8,

@@ -122,7 +122,7 @@ runtime:
       unet_plain: 26.0
       unet_residual: 49.0
     campaign_finalisation_reserve_seconds: 10800.0
-    campaign_prior_results: 40
+    campaign_prior_results: 30
     # Record a failed candidate as inconclusive evidence and continue the campaign.
     continue_after_failed_candidate: true
     # Replace from the completed, verified fold-0 baseline before launch.
