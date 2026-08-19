@@ -384,7 +384,13 @@ def optuna_record_trial(
             event_type=EventType.EXPERIMENT_PREPARED,
             actor="optuna_create_experiment",
             inputs=(experiment.search_request_id,),
-            outputs=(experiment.experiment_id,),
+            outputs=(
+                experiment.experiment_id,
+                *(
+                    f"evidence_reference:{reference}"
+                    for reference in state["search_request"].evidence_references
+                ),
+            ),
             rationale="Prepared a task-normalised experiment from one sampled trial.",
         ),
         append_optuna_event(

@@ -112,6 +112,19 @@ def test_synthetic_optuna_study_is_generic_verified_and_writes_artefacts(tmp_pat
         for reference in planned.output_references
         if reference.startswith("evidence_reference:")
     } == set(final["search_request"].evidence_references)
+    prepared = [
+        event for event in events if event.event_type == EventType.EXPERIMENT_PREPARED
+    ]
+    assert prepared
+    assert all(
+        {
+            reference.removeprefix("evidence_reference:")
+            for reference in event.output_references
+            if reference.startswith("evidence_reference:")
+        }
+        == set(final["search_request"].evidence_references)
+        for event in prepared
+    )
 
 
 @pytest.mark.parametrize(

@@ -396,6 +396,150 @@ def test_tree_portfolio_rejects_planned_event_without_lineage_metadata():
         )
 
 
+def test_tree_portfolio_recovers_lineage_from_prepared_experiment_event():
+    context = TaskRuntimeContext(task_options=_options())
+    first = apply_portfolio_policy(
+        _original(),
+        run_id="portfolio-run",
+        cycle=1,
+        events=(),
+        runtime_context=context,
+    )
+    assert first is not None
+    planned = _planned_event(1, first).model_copy(
+        update={
+            "output_references": (
+                first.request_id,
+                f"search_type:{first.search_type.value}",
+            )
+        }
+    )
+    events = [planned]
+    for sample in range(first.experiment_budget):
+        experiment_id = f"experiment-{sample}"
+        prepared = _prepared_event(sample, first, experiment_id).model_copy(
+            update={
+                "output_references": (
+                    experiment_id,
+                    *(
+                        f"evidence_reference:{item}"
+                        for item in first.evidence_references
+                    ),
+                )
+            }
+        )
+        configuration = _sampled_configuration(first, sample, sample)
+        events.extend(
+            (
+                prepared,
+                _event(sample, first.search_type, configuration, 0.6 + sample / 100),
+            )
+        )
+
+    second = apply_portfolio_policy(
+        _original(),
+        run_id="portfolio-run",
+        cycle=2,
+        events=tuple(events),
+        runtime_context=context,
+    )
+
+    assert second is not None
+    assert second.search_type == SearchType.OPTUNA
+    assert second.search_space["fixed"]["model_variant"] == "unet_plain"
+    assert second.experiment_budget == 2
+    assert second.search_space["seed"] != first.search_space["seed"]
+
+    unique_identities = {
+        trajectory_identity(
+            FeTAUNetSearchConfiguration.model_validate(
+                _sampled_configuration(first, sample, sample)
+            )
+        )
+        for sample in range(first.experiment_budget)
+    }
+    experiment_index = first.experiment_budget
+    for request in (second,):
+        events.append(_planned_event(2, request))
+        for sample in range(request.experiment_budget):
+            experiment_id = f"experiment-{experiment_index}"
+            configuration = _sampled_configuration(
+                request, sample, experiment_index
+            )
+            events.extend(
+                (
+                    _prepared_event(experiment_index, request, experiment_id),
+                    _event(
+                        experiment_index,
+                        request.search_type,
+                        configuration,
+                        0.65 + experiment_index / 100,
+                    ),
+                )
+            )
+            unique_identities.add(
+                trajectory_identity(
+                    FeTAUNetSearchConfiguration.model_validate(configuration)
+                )
+            )
+            experiment_index += 1
+
+    third = apply_portfolio_policy(
+        _original(),
+        run_id="portfolio-run",
+        cycle=3,
+        events=tuple(events),
+        runtime_context=context,
+    )
+    assert third is not None
+    assert third.search_type == SearchType.OPTUNA
+    assert third.search_space["fixed"]["model_variant"] == "unet_residual"
+    assert third.experiment_budget == 2
+    assert len(
+        {
+            first.search_space["seed"],
+            second.search_space["seed"],
+            third.search_space["seed"],
+        }
+    ) == 3
+    events.append(_planned_event(3, third))
+    for sample in range(third.experiment_budget):
+        experiment_id = f"experiment-{experiment_index}"
+        configuration = _sampled_configuration(third, sample, experiment_index)
+        events.extend(
+            (
+                _prepared_event(experiment_index, third, experiment_id),
+                _event(
+                    experiment_index,
+                    third.search_type,
+                    configuration,
+                    0.65 + experiment_index / 100,
+                ),
+            )
+        )
+        unique_identities.add(
+            trajectory_identity(
+                FeTAUNetSearchConfiguration.model_validate(configuration)
+            )
+        )
+        experiment_index += 1
+
+    fourth = apply_portfolio_policy(
+        _original(),
+        run_id="portfolio-run",
+        cycle=4,
+        events=tuple(events),
+        runtime_context=context,
+    )
+    assert experiment_index == 8
+    assert len(unique_identities) == 8
+    assert fourth is not None
+    assert fourth.search_type == SearchType.OPENEVOLVE
+    assert fourth.search_space["campaign_context"]["required_model_variant"] == (
+        "basic_unet"
+    )
+
+
 def test_tree_portfolio_rejects_duplicate_execution_in_same_branch():
     request = apply_portfolio_policy(
         _original(),

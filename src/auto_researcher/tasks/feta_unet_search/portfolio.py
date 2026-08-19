@@ -418,22 +418,12 @@ def _request(
 def _tree_request_metadata(
     events: tuple[DecisionEvent, ...],
 ) -> dict[str, dict[str, str]]:
-    requests: dict[str, dict[str, str]] = {}
-    for event in events:
-        if event.event_type != EventType.SEARCH_PLANNED:
-            continue
-        request_id = next(
-            (item for item in event.output_references if ":" not in item),
-            None,
-        )
-        if request_id is None:
-            continue
+    def metadata_from_references(references: tuple[str, ...]) -> dict[str, str]:
         metadata: dict[str, str] = {}
-        for reference in event.output_references:
-            prefix = "evidence_reference:"
-            if not reference.startswith(prefix):
+        for reference in references:
+            value = reference.removeprefix("evidence_reference:")
+            if value == reference:
                 continue
-            value = reference[len(prefix) :]
             for name in (
                 "tree-stage",
                 "tree-action",
@@ -443,10 +433,24 @@ def _tree_request_metadata(
                 marker = f"{name}:"
                 if value.startswith(marker):
                     metadata[name] = value[len(marker) :]
+        return metadata
+
+    requests: dict[str, dict[str, str]] = {}
+    missing_requests: set[str] = set()
+    for event in events:
+        if event.event_type != EventType.SEARCH_PLANNED:
+            continue
+        request_id = next(
+            (item for item in event.output_references if ":" not in item),
+            None,
+        )
+        if request_id is None:
+            continue
+        metadata = metadata_from_references(event.output_references)
         if metadata.get("tree-stage"):
             requests[request_id] = metadata
         elif event.rationale.startswith(f"{TREE_PORTFOLIO_VERSION}:"):
-            raise ValueError("feta_unet_campaign_tree_metadata_missing")
+            missing_requests.add(request_id)
     experiments: dict[str, dict[str, str]] = {}
     for event in events:
         if (
@@ -455,9 +459,20 @@ def _tree_request_metadata(
             or not event.output_references
         ):
             continue
-        metadata = requests.get(event.input_references[0])
+        request_metadata = requests.get(event.input_references[0])
+        embedded_metadata = metadata_from_references(event.output_references)
+        if (
+            request_metadata is not None
+            and embedded_metadata
+            and request_metadata != embedded_metadata
+        ):
+            raise ValueError("feta_unet_campaign_tree_metadata_conflict")
+        metadata = embedded_metadata or request_metadata
         if metadata is not None:
             experiments[event.output_references[0]] = metadata
+            missing_requests.discard(event.input_references[0])
+    if missing_requests:
+        raise ValueError("feta_unet_campaign_tree_metadata_missing")
     return experiments
 
 
@@ -719,6 +734,9 @@ def apply_tree_portfolio_policy(
             stage="tree-root-optuna",
             search_type=SearchType.OPTUNA,
             search_space={
+                "seed": _tree_seed(
+                    f"{run_id}:root:{model_variant}", SearchType.OPTUNA, 0
+                ),
                 "fixed": {
                     "maximum_epochs": 25,
                     "model_variant": model_variant,

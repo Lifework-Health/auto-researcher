@@ -18,6 +18,7 @@ from auto_researcher.contracts.enums import (
 from auto_researcher.contracts.models import (
     BudgetState,
     DecisionEvent,
+    EvaluationResult,
     ResearchContract,
     SearchRequest,
 )
@@ -31,6 +32,15 @@ from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
     EXPECTED_MANIFEST_HASH,
 )
+from auto_researcher.tasks.feta_seg.splits import (
+    EXPECTED_FOLD_HASH,
+    EXPECTED_SPLIT_HASH,
+    FOLD_ID,
+    SPLIT_ID,
+)
+from auto_researcher.tasks.feta_unet_direct.identities import AMP_POLICY_ID
+from auto_researcher.tasks.feta_unet_direct.model import architecture_identity
+from auto_researcher.tasks.feta_unet_direct.runner import SEARCH_DATA_LOADER_ID
 from auto_researcher.tasks.feta_unet_search import (
     FeTAUNetSearchConfiguration,
     FeTAUNetSearchTask,
@@ -39,8 +49,10 @@ from auto_researcher.tasks.feta_unet_search import (
 from auto_researcher.tasks.feta_unet_search.evaluator import (
     AUGMENTATION_ID,
     EVALUATOR_ID,
+    EVALUATOR_VERSION,
     LOSS_ID,
     OPTIMISER_ID,
+    RESULT_ID,
     FeTAUNetSearchEvaluator,
     evaluator_code_version,
 )
@@ -89,6 +101,67 @@ def test_registry_exposes_three_method_unet_campaign_task():
     assert isinstance(task, OpenEvolveCapableTask)
     assert isinstance(task, CampaignDurationCapableTask)
     assert task.descriptor().supported_search_types == frozenset(SearchType)
+
+
+def test_search_verifier_accepts_registered_family_architecture():
+    task = FeTAUNetSearchTask()
+    policy = task.create_verification_policy(default_feta_unet_search_contract())
+    configuration = FeTAUNetSearchConfiguration(
+        maximum_epochs=25,
+        model_variant="unet_plain",
+        feature_width="wide",
+        norm="group",
+    )
+    metrics = {name: None for name in policy.required_metrics}
+    metrics.update(
+        {
+            "dataset_manifest_hash": EXPECTED_MANIFEST_HASH,
+            "split_identity": SPLIT_ID,
+            "split_hash": EXPECTED_SPLIT_HASH,
+            "fold_identity": FOLD_ID,
+            "fold_hash": EXPECTED_FOLD_HASH,
+            "architecture_identity": architecture_identity(configuration),
+            "architecture_trainable_parameters": 12_378_136,
+            "evaluator_version": EVALUATOR_VERSION,
+            "result_identity": RESULT_ID,
+            "data_loader_id": SEARCH_DATA_LOADER_ID,
+            "amp_policy_identity": AMP_POLICY_ID,
+            "holdout_subjects_evaluated": 0,
+            "failed_training_folds": 0,
+            "profile": "development_baseline",
+            "folds_completed": 1,
+            "oof_subject_count": 14,
+            "contains_subject_identifiers": False,
+            "configuration": configuration.model_dump(mode="json"),
+            "augmentation_version": AUGMENTATION_ID,
+            "loss_identity": LOSS_ID,
+            "optimiser_identity": OPTIMISER_ID,
+        }
+    )
+    evaluation = EvaluationResult(
+        experiment_id="experiment-family",
+        success=True,
+        primary_score=0.7,
+        metrics=metrics,
+        constraint_results={"evaluator_integrity": True},
+        evaluator_version=EVALUATOR_VERSION,
+        provenance=ProvenanceKind.REAL,
+    )
+
+    accepted = policy.evaluate_constraints(
+        evaluation, default_feta_unet_search_contract()
+    )
+    rejected = policy.evaluate_constraints(
+        evaluation.model_copy(
+            update={"metrics": {**metrics, "architecture_identity": "wrong"}}
+        ),
+        default_feta_unet_search_contract(),
+    )
+
+    assert accepted.constraint_compliant is True
+    assert accepted.evidence_status == EvidenceStatus.SUPPORTED
+    assert rejected.constraint_compliant is False
+    assert "feta_unet_architecture_identity_mismatch" in rejected.reasons
 
 
 def test_agent_context_exposes_direct_executable_parameter_names():

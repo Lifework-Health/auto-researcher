@@ -30,6 +30,9 @@ from auto_researcher.tasks.models import PolicyDecision
 
 class FeTAUNetDirectVerificationPolicy:
     policy_id = "feta-basic-unet-direct-evidence-policy-v1"
+    architecture_identity = ARCHITECTURE_ID
+    architecture_trainable_parameters = TRAINABLE_PARAMETER_COUNT
+    data_loader_identity = DATA_LOADER_ID
     required_metrics = frozenset(
         {
             "mean_subject_macro_dice",
@@ -75,6 +78,14 @@ class FeTAUNetDirectVerificationPolicy:
         self.evaluator_version = evaluator_version
         self.result_identity = result_identity
 
+    def architecture_is_valid(self, evaluation: EvaluationResult) -> bool:
+        return bool(
+            evaluation.metrics.get("architecture_identity")
+            == self.architecture_identity
+            and evaluation.metrics.get("architecture_trainable_parameters")
+            == self.architecture_trainable_parameters
+        )
+
     def evaluate_constraints(
         self, evaluation: EvaluationResult, contract: ResearchContract
     ) -> PolicyDecision:
@@ -98,17 +109,13 @@ class FeTAUNetDirectVerificationPolicy:
             or evaluation.metrics.get("fold_hash") != EXPECTED_FOLD_HASH
         ):
             reasons.append("feta_unet_fold_identity_mismatch")
-        if (
-            evaluation.metrics.get("architecture_identity") != ARCHITECTURE_ID
-            or evaluation.metrics.get("architecture_trainable_parameters")
-            != TRAINABLE_PARAMETER_COUNT
-        ):
+        if not self.architecture_is_valid(evaluation):
             reasons.append("feta_unet_architecture_identity_mismatch")
         if evaluation.metrics.get("evaluator_version") != self.evaluator_version:
             reasons.append("feta_unet_evaluator_identity_mismatch")
         if evaluation.metrics.get("result_identity") != self.result_identity:
             reasons.append("feta_unet_result_identity_mismatch")
-        if evaluation.metrics.get("data_loader_id") != DATA_LOADER_ID:
+        if evaluation.metrics.get("data_loader_id") != self.data_loader_identity:
             reasons.append("feta_unet_data_loader_identity_mismatch")
         if evaluation.metrics.get("amp_policy_identity") != AMP_POLICY_ID:
             reasons.append("feta_unet_amp_policy_identity_mismatch")
