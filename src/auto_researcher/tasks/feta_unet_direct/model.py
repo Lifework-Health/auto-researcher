@@ -1,4 +1,7 @@
-"""Lazy construction of the frozen MONAI BasicUNet."""
+"""Lazy construction of the frozen and bounded-search MONAI BasicUNets."""
+
+import hashlib
+import json
 
 from auto_researcher.tasks.feta_unet_direct.configuration import (
     FeTAUNetDirectConfiguration,
@@ -13,6 +16,55 @@ MEASURED_PEAK_CUDA_RESERVED_MIB = 3_076
 MEASURED_ALLOCATOR_CEILING_MIB = 20_638
 
 
+def architecture_identity(configuration: FeTAUNetDirectConfiguration) -> str:
+    payload = {
+        "spatial_dims": configuration.spatial_dims,
+        "in_channels": configuration.in_channels,
+        "out_channels": configuration.out_channels,
+        "features": list(configuration.features),
+        "activation": configuration.activation,
+        "norm": configuration.norm,
+        "upsample": configuration.upsample,
+    }
+    if payload == {
+        "spatial_dims": 3,
+        "in_channels": 1,
+        "out_channels": 8,
+        "features": [32, 32, 64, 128, 256, 32],
+        "activation": "LeakyReLU",
+        "norm": "instance",
+        "upsample": "deconv",
+    }:
+        return ARCHITECTURE_ID
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"monai-basic-unet-3d-bounded-v2-{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
+def _activation(configuration: FeTAUNetDirectConfiguration):
+    if configuration.activation == "LeakyReLU":
+        return (
+            "LeakyReLU",
+            {
+                "negative_slope": configuration.negative_slope,
+                "inplace": configuration.activation_inplace,
+            },
+        )
+    if configuration.activation == "ReLU":
+        return ("ReLU", {"inplace": configuration.activation_inplace})
+    if configuration.activation == "PReLU":
+        return ("PReLU", {"num_parameters": 1, "init": 0.25})
+    raise ValueError("feta_unet_activation_invalid")
+
+
+def _normalisation(configuration: FeTAUNetDirectConfiguration):
+    if configuration.norm == "instance":
+        return ("instance", {"affine": configuration.norm_affine})
+    if configuration.norm == "group":
+        groups = int(getattr(configuration, "norm_num_groups", 8))
+        return ("group", {"num_groups": groups, "affine": configuration.norm_affine})
+    raise ValueError("feta_unet_normalisation_invalid")
+
+
 def create_basic_unet(configuration: FeTAUNetDirectConfiguration):
     try:
         from monai.networks.nets import BasicUNet
@@ -23,14 +75,8 @@ def create_basic_unet(configuration: FeTAUNetDirectConfiguration):
         in_channels=configuration.in_channels,
         out_channels=configuration.out_channels,
         features=configuration.features,
-        act=(
-            configuration.activation,
-            {
-                "negative_slope": configuration.negative_slope,
-                "inplace": configuration.activation_inplace,
-            },
-        ),
-        norm=(configuration.norm, {"affine": configuration.norm_affine}),
+        act=_activation(configuration),
+        norm=_normalisation(configuration),
         dropout=configuration.dropout,
         upsample=configuration.upsample,
     )

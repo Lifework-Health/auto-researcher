@@ -18,18 +18,24 @@ from auto_researcher.search.openevolve.models import (
     OpenEvolveCandidate,
 )
 from auto_researcher.tasks.feta_unet_search.configuration import (
+    ACTIVATIONS,
     DICE_WEIGHT_BOUNDS,
     DROPOUT_BOUNDS,
+    FEATURE_WIDTH_PROFILES,
     LEARNING_RATE_BOUNDS,
+    LEARNING_RATE_SCHEDULES,
+    LOSS_VARIANTS,
+    NORMALISATIONS,
+    OPTIMISERS,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
 )
 from auto_researcher.tasks.models import ExperimentMetadata
 
 COMPONENT_ID = "feta-basic-unet-training-policy"
-COMPONENT_VERSION = "1.0"
-POLICY_VERSION: Literal["feta-basic-unet-training-policy-v1"] = (
-    "feta-basic-unet-training-policy-v1"
+COMPONENT_VERSION = "2.0"
+POLICY_VERSION: Literal["feta-basic-unet-training-policy-v2"] = (
+    "feta-basic-unet-training-policy-v2"
 )
 
 SEED_SOURCE = """def evolve(configuration):
@@ -38,7 +44,13 @@ SEED_SOURCE = """def evolve(configuration):
 
 LOW_REGULARISATION_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-basic-unet-training-policy-v1",
+        "policy_version": "feta-basic-unet-training-policy-v2",
+        "feature_width": "baseline",
+        "activation": "ReLU",
+        "norm": "instance",
+        "optimizer": "AdamW",
+        "lr_schedule": "cosine",
+        "loss_variant": "dice_ce",
         "learning_rate": 0.0002,
         "weight_decay": 0.00001,
         "dropout": 0.05,
@@ -50,7 +62,13 @@ LOW_REGULARISATION_SOURCE = """def evolve(configuration):
 
 REGULARISED_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-basic-unet-training-policy-v1",
+        "policy_version": "feta-basic-unet-training-policy-v2",
+        "feature_width": "narrow",
+        "activation": "LeakyReLU",
+        "norm": "group",
+        "optimizer": "Adam",
+        "lr_schedule": "polynomial",
+        "loss_variant": "dice_focal",
         "learning_rate": 0.00008,
         "weight_decay": 0.00005,
         "dropout": 0.2,
@@ -64,6 +82,12 @@ REGULARISED_SOURCE = """def evolve(configuration):
 def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPolicy":
     return UNetTrainingPolicy.model_validate(
         {
+            "feature_width": configuration["feature_width"],
+            "activation": configuration["activation"],
+            "norm": configuration["norm"],
+            "optimizer": configuration["optimizer"],
+            "lr_schedule": configuration["lr_schedule"],
+            "loss_variant": configuration["loss_variant"],
             "learning_rate": configuration["learning_rate"],
             "weight_decay": configuration["weight_decay"],
             "dropout": configuration["dropout"],
@@ -77,7 +101,13 @@ def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPol
 class UNetTrainingPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    policy_version: Literal["feta-basic-unet-training-policy-v1"] = POLICY_VERSION
+    policy_version: Literal["feta-basic-unet-training-policy-v2"] = POLICY_VERSION
+    feature_width: Literal["narrow", "baseline", "wide"] = "baseline"
+    activation: Literal["LeakyReLU", "ReLU", "PReLU"] = "LeakyReLU"
+    norm: Literal["instance", "group"] = "instance"
+    optimizer: Literal["AdamW", "Adam"] = "AdamW"
+    lr_schedule: Literal["constant", "cosine", "polynomial"] = "constant"
+    loss_variant: Literal["dice_ce", "dice_focal"] = "dice_ce"
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     dropout: float = 0.0
@@ -130,7 +160,16 @@ class FeTAUNetEvolvableComponent:
     def component_spec(self) -> EvolvableComponentSpec:
         safe_context: dict[str, Any] = {
             "objective": "maximise fold-0 validation macro Dice",
-            "immutable_architecture": "MONAI BasicUNet 3D features 32-32-64-128-256-32",
+            "immutable_topology": "MONAI BasicUNet 3D with fixed depth and skip topology",
+            "bounded_feature_width_profiles": {
+                name: list(features)
+                for name, features in FEATURE_WIDTH_PROFILES.items()
+            },
+            "bounded_activations": list(ACTIVATIONS),
+            "bounded_normalisations": list(NORMALISATIONS),
+            "bounded_optimisers": list(OPTIMISERS),
+            "bounded_learning_rate_schedules": list(LEARNING_RATE_SCHEDULES),
+            "bounded_loss_variants": list(LOSS_VARIANTS),
             "immutable_preprocessing": "RAS, 0.5 mm, foreground crop, nonzero z-score, 128^3 patches",
             "maximum_epochs": self.maximum_epochs,
             "legal_training_policy_schema": UNetTrainingPolicy.model_json_schema(),

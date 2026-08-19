@@ -24,7 +24,9 @@ from auto_researcher.tasks.feta_unet_search.continuation import (
     trajectory_identity,
 )
 from auto_researcher.tasks.feta_unet_search.portfolio import (
-    PortfolioPolicy,
+    TreePortfolioPolicy,
+    _evidence,
+    _tree_candidates,
     apply_portfolio_policy,
 )
 from auto_researcher.tasks.models import TaskRuntimeContext
@@ -99,124 +101,212 @@ def _configuration(index: int, fidelity: int = 25) -> dict:
 
 
 def test_portfolio_policy_requires_exact_screening_and_promotion_shape():
-    policy = PortfolioPolicy.from_runtime(TaskRuntimeContext(task_options=_options()))
-    assert policy is not None
-    assert policy.screening == {
-        SearchType.OPTUNA: 36,
-        SearchType.OPENEVOLVE: 12,
-        SearchType.DIRECT: 12,
+    policy = TreePortfolioPolicy.from_runtime(
+        TaskRuntimeContext(task_options=_options())
+    )
+    assert policy.root_screening == {
+        SearchType.OPTUNA: 8,
+        SearchType.OPENEVOLVE: 8,
+        SearchType.DIRECT: 8,
     }
-    assert policy.promotion_targets == {50: 18, 100: 7, 150: 2}
-    assert policy.wildcard_counts == {50: 2, 100: 1, 150: 0}
+    assert policy.root_parent_count == 6
+    assert policy.children_per_parent == {
+        SearchType.OPTUNA: 2,
+        SearchType.OPENEVOLVE: 1,
+        SearchType.DIRECT: 1,
+    }
+    assert policy.child_parent_count == 6
+    assert policy.grandchildren_per_parent == {
+        SearchType.OPTUNA: 1,
+        SearchType.OPENEVOLVE: 1,
+    }
+    assert policy.promotion_targets == {50: 12, 100: 6, 150: 3}
+    assert policy.wildcard_counts == {50: 4, 100: 2, 150: 1}
 
 
-def test_portfolio_controller_executes_60_18_7_2_with_continuations():
+def _planned_event(index: int, request: SearchRequest) -> DecisionEvent:
+    return DecisionEvent(
+        event_id=f"event-plan-{index}",
+        run_id="portfolio-run",
+        cycle=index,
+        event_type=EventType.SEARCH_PLANNED,
+        actor="planner",
+        input_references=(request.hypothesis_id,),
+        output_references=(
+            request.request_id,
+            f"search_type:{request.search_type.value}",
+            *(f"evidence_reference:{item}" for item in request.evidence_references),
+        ),
+        rationale=request.rationale,
+        timestamp=datetime(2026, 8, 18, tzinfo=UTC),
+        code_version="test",
+        provenance=ProvenanceKind.MOCK,
+    )
+
+
+def _prepared_event(
+    index: int, request: SearchRequest, experiment_id: str
+) -> DecisionEvent:
+    return DecisionEvent(
+        event_id=f"event-prepared-{index}",
+        run_id="portfolio-run",
+        cycle=index,
+        event_type=EventType.EXPERIMENT_PREPARED,
+        actor="search",
+        input_references=(request.request_id,),
+        output_references=(experiment_id,),
+        rationale="prepared tree-search experiment",
+        timestamp=datetime(2026, 8, 18, tzinfo=UTC),
+        code_version="test",
+        provenance=ProvenanceKind.REAL,
+    )
+
+
+def _sampled_configuration(
+    request: SearchRequest, sample: int, unique_index: int
+) -> dict:
+    if request.search_type == SearchType.DIRECT:
+        return dict(request.search_space)
+    fixed = request.search_space.get("fixed", {})
+    if request.search_type == SearchType.OPENEVOLVE and sample == 0:
+        policy = dict(
+            request.search_space["campaign_context"]["incumbent_training_policy"]
+        )
+        policy.pop("policy_version", None)
+        return FeTAUNetSearchConfiguration(
+            maximum_epochs=25, **policy
+        ).model_dump(mode="json")
+    parameters = request.search_space.get("parameters", {})
+    fraction = (sample + 1) / (request.experiment_budget + 1)
+    numeric = {}
+    for name, default_bounds in {
+        "learning_rate": (3e-5, 5e-4),
+        "weight_decay": (1e-6, 3e-4),
+        "dropout": (0.0, 0.3),
+        "dice_weight": (0.5, 1.5),
+    }.items():
+        bounds = parameters.get(name, {})
+        low = float(bounds.get("low", default_bounds[0]))
+        high = float(bounds.get("high", default_bounds[1]))
+        numeric[name] = low + (high - low) * fraction
+    categorical = {
+        "feature_width": ("narrow", "baseline", "wide")[unique_index % 3],
+        "activation": ("LeakyReLU", "ReLU", "PReLU")[unique_index % 3],
+        "norm": ("instance", "group")[unique_index % 2],
+        "optimizer": ("AdamW", "Adam")[unique_index % 2],
+        "lr_schedule": ("constant", "cosine", "polynomial")[unique_index % 3],
+        "loss_variant": ("dice_ce", "dice_focal")[unique_index % 2],
+        "positive_negative_ratio": ("1:1", "2:1", "3:1")[unique_index % 3],
+        "augmentation_strength": ("light", "baseline", "strong")[
+            unique_index % 3
+        ],
+    }
+    categorical.update(
+        {
+            key: value
+            for key, value in dict(fixed).items()
+            if key in categorical
+        }
+    )
+    return FeTAUNetSearchConfiguration(
+        maximum_epochs=int(dict(fixed).get("maximum_epochs", 25)),
+        **numeric,
+        **categorical,
+    ).model_dump(mode="json")
+
+
+def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
     context = TaskRuntimeContext(task_options=_options())
     original = _original()
     events: list[DecisionEvent] = []
-
-    request = apply_portfolio_policy(
-        original,
-        run_id="portfolio-run",
-        cycle=1,
-        events=tuple(events),
-        runtime_context=context,
-    )
-    assert request is not None
-    assert request.search_type == SearchType.OPTUNA
-    assert request.experiment_budget == 36
-    assert request.search_space["fixed"]["maximum_epochs"] == 25
-
-    for index in range(36):
-        events.append(
-            _event(index, SearchType.OPTUNA, _configuration(index), 0.5 + index / 1000)
-        )
-    request = apply_portfolio_policy(
-        original,
-        run_id="portfolio-run",
-        cycle=2,
-        events=tuple(events),
-        runtime_context=context,
-    )
-    assert request is not None
-    assert request.search_type == SearchType.OPENEVOLVE
-    assert request.experiment_budget == 13
-    assert request.search_space["campaign_context"]["incumbent_primary_score"] == (
-        0.535
-    )
-    assert len(request.search_space["campaign_context"]["prior_verified_results"]) == 12
-
-    for offset in range(12):
-        index = 36 + offset
-        events.append(
-            _event(
-                index, SearchType.OPENEVOLVE, _configuration(index), 0.6 + offset / 1000
-            )
-        )
-    request = apply_portfolio_policy(
-        original,
-        run_id="portfolio-run",
-        cycle=3,
-        events=tuple(events),
-        runtime_context=context,
-    )
-    assert request is not None
-    assert request.search_type == SearchType.DIRECT
-    assert request.search_space["maximum_epochs"] == 25
-
-    for offset in range(12):
-        index = 48 + offset
-        events.append(
-            _event(
-                index, SearchType.DIRECT, _configuration(index), 0.55 + offset / 1000
-            )
-        )
-
-    expected = ((50, 18), (100, 7), (150, 2))
-    event_index = len(events)
-    for fidelity, count in expected:
-        seen: set[str] = set()
-        for _ in range(count):
-            request = apply_portfolio_policy(
-                original,
-                run_id="portfolio-run",
-                cycle=event_index + 1,
-                events=tuple(events),
-                runtime_context=context,
-            )
-            assert request is not None
-            assert request.search_type == SearchType.DIRECT
-            assert request.search_space["maximum_epochs"] == fidelity
-            assert any(
-                reference.startswith("promotion-from-epoch:")
-                for reference in request.evidence_references
-            )
-            candidate = FeTAUNetSearchConfiguration.model_validate(
-                dict(request.search_space)
-            )
-            identity = trajectory_identity(candidate)
-            assert identity not in seen
-            seen.add(identity)
-            events.append(
-                _event(
-                    event_index,
-                    SearchType.DIRECT,
-                    dict(request.search_space),
-                    0.7 + event_index / 10_000,
-                )
-            )
-            event_index += 1
-
-    assert (
-        apply_portfolio_policy(
+    used: set[str] = set()
+    experiment_index = 0
+    request_count = 0
+    while True:
+        request = apply_portfolio_policy(
             original,
             run_id="portfolio-run",
-            cycle=64,
+            cycle=request_count + 1,
             events=tuple(events),
             runtime_context=context,
         )
-        is None
+        if request is None:
+            break
+        request_count += 1
+        assert request_count <= 96
+        events.append(_planned_event(request_count, request))
+        for sample in range(request.experiment_budget):
+            configuration = _sampled_configuration(
+                request, sample, experiment_index + sample
+            )
+            candidate = FeTAUNetSearchConfiguration.model_validate(configuration)
+            identity = trajectory_identity(candidate)
+            if candidate.maximum_epochs == 25 and (
+                request.search_type != SearchType.OPENEVOLVE or sample != 0
+            ):
+                # Make synthetic Optuna/OE mutations globally unique while
+                # preserving the task-owned fixed local branch fields.
+                attempts = 0
+                while identity in used:
+                    attempts += 1
+                    configuration = _sampled_configuration(
+                        request,
+                        sample,
+                        experiment_index + sample + attempts,
+                    )
+                    configuration["learning_rate"] = min(
+                        5e-4,
+                        float(configuration["learning_rate"]) + attempts * 1e-9,
+                    )
+                    candidate = FeTAUNetSearchConfiguration.model_validate(
+                        configuration
+                    )
+                    identity = trajectory_identity(candidate)
+                    assert attempts < 100
+            experiment_id = f"experiment-{experiment_index}"
+            events.append(
+                _prepared_event(experiment_index, request, experiment_id)
+            )
+            score = 0.55 + candidate.maximum_epochs / 1000 + (
+                experiment_index % 20
+            ) / 1000
+            events.append(
+                _event(
+                    experiment_index,
+                    request.search_type,
+                    candidate.model_dump(mode="json"),
+                    score,
+                )
+            )
+            used.add(identity)
+            experiment_index += 1
+
+    rows = tuple(
+        item
+        for item in _tree_candidates(
+            tuple(events),
+            _evidence(tuple(events)),
+        )
     )
+    roots = {item.evidence.trajectory_identity for item in rows if item.stage == "root"}
+    children = {
+        item.evidence.trajectory_identity
+        for item in rows
+        if item.stage == "child" and item.evidence.trajectory_identity not in roots
+    }
+    grandchildren = {
+        item.evidence.trajectory_identity
+        for item in rows
+        if item.stage == "grandchild"
+        and item.evidence.trajectory_identity not in roots | children
+    }
+    assert len(roots) == 24
+    assert len(children) == 24
+    assert len(grandchildren) == 12
+    assert len({item.evidence.trajectory_identity for item in rows if item.stage == "promote-50"}) == 12
+    assert len({item.evidence.trajectory_identity for item in rows if item.stage == "promote-100"}) == 6
+    assert len({item.evidence.trajectory_identity for item in rows if item.stage == "promote-150"}) == 3
+    assert experiment_index == 94
 
 
 def test_trajectory_identity_excludes_only_fidelity():

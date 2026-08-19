@@ -101,6 +101,12 @@ def test_agent_context_exposes_direct_executable_parameter_names():
 
     assert set(context.direct_configuration_schema) == {
         "maximum_epochs",
+        "feature_width",
+        "activation",
+        "norm",
+        "optimizer",
+        "lr_schedule",
+        "loss_variant",
         "learning_rate",
         "weight_decay",
         "dropout",
@@ -197,7 +203,7 @@ def test_search_evaluator_binds_variable_training_policy_identities():
     assert evaluator.optimiser_identity == OPTIMISER_ID
 
 
-def test_optuna_space_has_six_axes_and_fixed_fidelity():
+def test_optuna_space_has_twelve_axes_and_fixed_fidelity():
     task = FeTAUNetSearchTask()
     specification = task.create_optuna_study_spec(
         default_feta_unet_search_contract(),
@@ -216,6 +222,12 @@ def test_optuna_space_has_six_axes_and_fixed_fidelity():
         "dice_weight",
         "positive_negative_ratio",
         "augmentation_strength",
+        "feature_width",
+        "activation",
+        "norm",
+        "optimizer",
+        "lr_schedule",
+        "loss_variant",
     }
 
 
@@ -280,7 +292,13 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         ),
     )
     assert component.seed_configuration()["seed_training_policy"] == {
-        "policy_version": "feta-basic-unet-training-policy-v1",
+        "policy_version": "feta-basic-unet-training-policy-v2",
+        "feature_width": "baseline",
+        "activation": "LeakyReLU",
+        "norm": "instance",
+        "optimizer": "AdamW",
+        "lr_schedule": "constant",
+        "loss_variant": "dice_ce",
         "learning_rate": 2e-4,
         "weight_decay": 6e-6,
         "dropout": 0.05,
@@ -449,8 +467,8 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     )
     assert contract.constraints["campaign_duration_seconds"] == 20 * 60 * 60
     assert contract.constraints["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
-    assert contract.maximum_cycles == 64
-    assert contract.maximum_experiments == 120
+    assert contract.maximum_cycles == 96
+    assert contract.maximum_experiments == 140
     assert contract.allowed_search_types == frozenset(SearchType)
     assert contract.maximum_cost == 50.0
     assert default_feta_unet_search_contract().maximum_cost == 50.0
@@ -462,7 +480,7 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         "maximum_input_context_size": 48_000,
         "maximum_output_tokens": 2_048,
         "maximum_cost_per_call": 0.5,
-        "maximum_total_model_calls": 192,
+        "maximum_total_model_calls": 288,
     }
     mutation = configuration["openevolve_development_mutation"]
     assert mutation["maximum_model_calls"] == 48
@@ -471,8 +489,11 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     options = configuration["runtime"]["options"]
     assert options["initial_campaign_observations"] == [
         "Verified fold-0 development aggregate mean macro Dice was "
-        "0.812891818509455 at best epoch 120 for the incumbent DIRECT "
-        "BasicUNet training policy."
+        "0.8169983918129687 at epoch 150 for the incumbent OPTUNA "
+        "BasicUNet policy.",
+        "V4 rank correlation was 0.1859504132231405 from 25 to 50 epochs "
+        "and 0.03571428571428571 from 50 to 100 epochs, so early endpoint "
+        "rank alone is weak evidence.",
     ]
     component = FeTAUNetSearchTask().create_evolvable_component(
         default_feta_unet_search_contract(),
@@ -483,20 +504,19 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     )
     assert options["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
     assert options["openevolve_fidelity"] == 25
-    assert options["campaign_portfolio"]["screening"] == {
-        "OPTUNA": 36,
-        "OPENEVOLVE": 12,
-        "DIRECT": 12,
+    assert options["campaign_portfolio"]["root_screening"] == {
+        "OPTUNA": 8,
+        "OPENEVOLVE": 8,
+        "DIRECT": 8,
     }
     assert options["campaign_portfolio"]["promotion_targets"] == {
-        "50": 18,
-        "100": 7,
-        "150": 2,
+        "50": 12,
+        "100": 6,
+        "150": 3,
     }
-    # OpenEvolve evaluates one imported seed plus twelve novel mutations.
-    total_epoch_work = (
-        36 * 25 + 13 * 25 + 12 * 25 + 18 * (50 - 25) + 7 * (100 - 50) + 2 * (150 - 100)
-    )
+    # Sixty unique 25-epoch nodes, thirteen imported OpenEvolve parent seeds,
+    # and continuation-only graduation to 50/100/150.
+    total_epoch_work = 60 * 25 + 13 * 25 + 12 * 25 + 6 * 50 + 3 * 50
     estimated_seconds = total_epoch_work * options["campaign_seconds_per_epoch"]
     assert estimated_seconds + options["campaign_finalisation_reserve_seconds"] < (
         20 * 60 * 60

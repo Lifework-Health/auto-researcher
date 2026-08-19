@@ -38,12 +38,15 @@ from auto_researcher.tasks.feta_unet_direct.identities import (
 )
 from auto_researcher.tasks.feta_unet_direct.model import (
     ARCHITECTURE_ID,
+    architecture_identity,
     create_basic_unet,
+    trainable_parameter_count,
 )
 from auto_researcher.tasks.feta_unet_direct.trainer import (
     checkpoint_reference,
     create_loss,
     create_optimizer,
+    create_scheduler,
     require_full_baseline_environment,
     seed_everything,
     sliding_window_predict,
@@ -72,6 +75,8 @@ class FoldExecutionResult:
     resumed: bool = False
     resumed_from_epoch: int | None = None
     trajectory_identity: str | None = None
+    architecture_identity: str = ARCHITECTURE_ID
+    architecture_trainable_parameters: int | None = None
 
 
 FoldExecutor = Callable[
@@ -209,8 +214,11 @@ def _run_cuda_fold(
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     model = create_basic_unet(configuration).to("cuda")
+    candidate_architecture_identity = architecture_identity(configuration)
+    candidate_trainable_parameters = trainable_parameter_count(model)
     loss_function = create_loss(configuration)
     optimizer = create_optimizer(model, configuration)
+    scheduler = create_scheduler(optimizer, configuration)
     scaler = torch.amp.GradScaler("cuda")
     training_dataset = PersistentDataset(
         _dataset_records(training_subjects),
@@ -285,6 +293,16 @@ def _run_cuda_fold(
                 model.load_state_dict(plan.last_payload["model_state_dict"])
                 optimizer.load_state_dict(plan.last_payload["optimizer_state_dict"])
                 scaler.load_state_dict(plan.last_payload["scaler_state_dict"])
+                scheduler_state = plan.last_payload["scheduler_state_dict"]
+                if scheduler is None:
+                    if scheduler_state is not None:
+                        raise ValueError(
+                            "feta_unet_resume_scheduler_state_invalid"
+                        )
+                elif not isinstance(scheduler_state, dict):
+                    raise ValueError("feta_unet_resume_scheduler_state_invalid")
+                else:
+                    scheduler.load_state_dict(scheduler_state)
             except (KeyError, RuntimeError, TypeError, ValueError) as exc:
                 raise ValueError("feta_unet_resume_optimisation_state_invalid") from exc
             restore_rng_state(plan.last_payload["rng_state"], torch, np, generator)
@@ -348,6 +366,9 @@ def _run_cuda_fold(
             else:
                 consecutive_amp_skips = 0
 
+        if scheduler is not None:
+            scheduler.step()
+
         if epoch % configuration.validation_every:
             continue
         model.eval()
@@ -366,7 +387,8 @@ def _run_cuda_fold(
         checkpoint_payload = {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
-            "architecture_identity": ARCHITECTURE_ID,
+            "architecture_identity": candidate_architecture_identity,
+            "architecture_trainable_parameters": candidate_trainable_parameters,
             "configuration_identity": payload_hash(configuration),
             "fold": fold,
             "epoch": epoch,
@@ -426,6 +448,9 @@ def _run_cuda_fold(
         last_payload = build_last_payload(
             model_state_dict=model.state_dict(),
             optimizer_state_dict=optimizer.state_dict(),
+            scheduler_state_dict=(
+                scheduler.state_dict() if scheduler is not None else None
+            ),
             scaler_state_dict=scaler.state_dict(),
             completed_epoch=configuration.maximum_epochs,
             configuration=configuration,
@@ -457,7 +482,9 @@ def _run_cuda_fold(
         raise RuntimeError("feta_unet_best_checkpoint_missing")
     saved = torch.load(checkpoint_path, map_location="cuda", weights_only=True)
     if (
-        saved.get("architecture_identity") != ARCHITECTURE_ID
+        saved.get("architecture_identity") != candidate_architecture_identity
+        or saved.get("architecture_trainable_parameters")
+        != candidate_trainable_parameters
         or int(saved.get("fold", -1)) != fold
         or int(saved.get("seed", -1)) != seed
     ):
@@ -496,7 +523,7 @@ def _run_cuda_fold(
         score=best_score,
         output_root=checkpoint_root,
     )
-    del model, optimizer, scaler, training_loader, training_dataset, validation_dataset
+    del model, optimizer, scheduler, scaler, training_loader, training_dataset, validation_dataset
     torch.cuda.empty_cache()
     return FoldExecutionResult(
         fold=fold,
@@ -517,6 +544,8 @@ def _run_cuda_fold(
         resumed=resumed,
         resumed_from_epoch=resumed_from_epoch,
         trajectory_identity=candidate_trajectory_identity,
+        architecture_identity=candidate_architecture_identity,
+        architecture_trainable_parameters=candidate_trainable_parameters,
     )
 
 
@@ -673,6 +702,10 @@ def run_profile(
     aggregate.pop("subject_metrics", None)
     return {
         **aggregate,
+        "architecture_identity": fold_results[0].architecture_identity,
+        "architecture_trainable_parameters": fold_results[
+            0
+        ].architecture_trainable_parameters,
         "fold_summaries": [
             {
                 "fold": result.fold,

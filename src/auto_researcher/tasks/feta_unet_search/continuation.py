@@ -100,6 +100,7 @@ def build_last_payload(
     *,
     model_state_dict: Any,
     optimizer_state_dict: Any,
+    scheduler_state_dict: Any,
     scaler_state_dict: Any,
     completed_epoch: int,
     configuration: FeTAUNetSearchConfiguration,
@@ -114,7 +115,7 @@ def build_last_payload(
     payload = {
         "model_state_dict": model_state_dict,
         "optimizer_state_dict": optimizer_state_dict,
-        "scheduler_state_dict": None,
+        "scheduler_state_dict": scheduler_state_dict,
         "scaler_state_dict": scaler_state_dict,
         "completed_epoch": completed_epoch,
         "configuration": configuration.model_dump(mode="json"),

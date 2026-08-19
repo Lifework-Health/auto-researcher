@@ -17,6 +17,7 @@ from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.tasks.feta_unet_search.portfolio import (
     CandidateEvidence,
     _evidence,
+    _tree_candidates,
 )
 
 REPORT_SCHEMA_VERSION = "feta-unet-campaign-postmortem-v1"
@@ -115,6 +116,10 @@ def campaign_report(
     if not rows:
         raise ValueError("feta_unet_campaign_evidence_missing")
     selected = _best_rows(rows)
+    tree_by_experiment = {
+        item.evidence.experiment_id: item
+        for item in _tree_candidates(events, rows)
+    }
     origin_by_trajectory: dict[str, CandidateEvidence] = {}
     for row in rows:
         existing = origin_by_trajectory.get(row.trajectory_identity)
@@ -183,6 +188,26 @@ def campaign_report(
             "rung_score": row.rung_score,
             "best_score": row.best_score,
             "trajectory_slope": row.trajectory_slope,
+            "tree_stage": (
+                tree_by_experiment[row.experiment_id].stage
+                if row.experiment_id in tree_by_experiment
+                else None
+            ),
+            "tree_action": (
+                tree_by_experiment[row.experiment_id].action.value
+                if row.experiment_id in tree_by_experiment
+                else None
+            ),
+            "parent_trajectory": (
+                tree_by_experiment[row.experiment_id].parent_trajectory
+                if row.experiment_id in tree_by_experiment
+                else None
+            ),
+            "root_trajectory": (
+                tree_by_experiment[row.experiment_id].root_trajectory
+                if row.experiment_id in tree_by_experiment
+                else None
+            ),
             "configuration": row.configuration,
         }
         for row in sorted(
@@ -202,6 +227,11 @@ def campaign_report(
         "unique_trajectory_fidelity_count": len(selected),
         "stages": stages,
         "rank_correlations": correlations,
+        "tree_stage_counts": dict(
+            sorted(
+                Counter(item.stage for item in tree_by_experiment.values()).items()
+            )
+        ),
         "champion": {
             "experiment_id": champion.experiment_id,
             "trajectory_identity": champion.trajectory_identity,
@@ -240,6 +270,10 @@ def write_campaign_report(
             "rung_score",
             "best_score",
             "trajectory_slope",
+            "tree_stage",
+            "tree_action",
+            "parent_trajectory",
+            "root_trajectory",
             "configuration_json",
         )
         writer = csv.DictWriter(handle, fieldnames=fieldnames)

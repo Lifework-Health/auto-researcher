@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-CONFIGURATION_SCHEMA_VERSION = "feta-basic-unet-search-configuration-v1"
+CONFIGURATION_SCHEMA_VERSION = "feta-basic-unet-search-configuration-v2"
 FIDELITY_LEVELS = (5, 25, 50, 100, 150)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
@@ -15,8 +15,25 @@ DROPOUT_BOUNDS = (0.0, 0.3)
 DICE_WEIGHT_BOUNDS = (0.5, 1.5)
 POSITIVE_NEGATIVE_RATIOS = ("1:1", "2:1", "3:1")
 AUGMENTATION_STRENGTHS = ("light", "baseline", "strong")
+FEATURE_WIDTH_PROFILES = {
+    "narrow": (24, 24, 48, 96, 192, 24),
+    "baseline": (32, 32, 64, 128, 256, 32),
+    "wide": (40, 40, 80, 160, 320, 40),
+}
+ACTIVATIONS = ("LeakyReLU", "ReLU", "PReLU")
+NORMALISATIONS = ("instance", "group")
+OPTIMISERS = ("AdamW", "Adam")
+LEARNING_RATE_SCHEDULES = ("constant", "cosine", "polynomial")
+LOSS_VARIANTS = ("dice_ce", "dice_focal")
+SEARCH_ARCHITECTURE_FAMILY_ID = "monai-basic-unet-3d-bounded-width-v2"
 CANDIDATE_CONFIGURATION_FIELDS = (
     "maximum_epochs",
+    "feature_width",
+    "activation",
+    "norm",
+    "optimizer",
+    "lr_schedule",
+    "loss_variant",
     "learning_rate",
     "weight_decay",
     "dropout",
@@ -27,7 +44,7 @@ CANDIDATE_CONFIGURATION_FIELDS = (
 
 
 class FeTAUNetSearchConfiguration(BaseModel):
-    """A fold-0 BasicUNet candidate with a small registered mutable surface."""
+    """A fold-0 BasicUNet candidate with a bounded v5 mutable surface."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -35,12 +52,16 @@ class FeTAUNetSearchConfiguration(BaseModel):
     spatial_dims: Literal[3] = 3
     in_channels: Literal[1] = 1
     out_channels: Literal[8] = 8
-    features: tuple[int, int, int, int, int, int] = (32, 32, 64, 128, 256, 32)
-    activation: Literal["LeakyReLU"] = "LeakyReLU"
+    feature_width: Literal["narrow", "baseline", "wide"] = "baseline"
+    features: tuple[int, int, int, int, int, int] = FEATURE_WIDTH_PROFILES[
+        "baseline"
+    ]
+    activation: Literal["LeakyReLU", "ReLU", "PReLU"] = "LeakyReLU"
     negative_slope: float = 0.1
     activation_inplace: Literal[True] = True
-    norm: Literal["instance"] = "instance"
+    norm: Literal["instance", "group"] = "instance"
     norm_affine: Literal[True] = True
+    norm_num_groups: Literal[8] = 8
     upsample: Literal["deconv"] = "deconv"
     spacing_mm: tuple[float, float, float] = (0.5, 0.5, 0.5)
     patch_size: tuple[int, int, int] = (128, 128, 128)
@@ -55,6 +76,11 @@ class FeTAUNetSearchConfiguration(BaseModel):
     dice_weight: float = 1.0
     positive_negative_ratio: Literal["1:1", "2:1", "3:1"] = "1:1"
     augmentation_strength: Literal["light", "baseline", "strong"] = "baseline"
+    optimizer: Literal["AdamW", "Adam"] = "AdamW"
+    lr_schedule: Literal["constant", "cosine", "polynomial"] = "constant"
+    scheduler_horizon_epochs: Literal[150] = 150
+    polynomial_power: Literal[0.9] = 0.9
+    loss_variant: Literal["dice_ce", "dice_focal"] = "dice_ce"
     inference_overlap: float = 0.5
     inference_blending: Literal["gaussian"] = "gaussian"
     sliding_window_batch_size: Literal[1] = 1
@@ -70,6 +96,18 @@ class FeTAUNetSearchConfiguration(BaseModel):
     smoke_fold: Literal[0] = 0
     smoke_training_subjects: Literal[1] = 1
     smoke_validation_subjects: Literal[1] = 1
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_feature_tuple(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        profile = payload.get("feature_width", "baseline")
+        expected = FEATURE_WIDTH_PROFILES.get(profile)
+        if expected is not None and "features" not in payload:
+            payload["features"] = expected
+        return payload
 
     @field_validator("learning_rate")
     @classmethod
@@ -104,7 +142,7 @@ class FeTAUNetSearchConfiguration(BaseModel):
         # task varies only the registered training surface while retaining its
         # architecture, preprocessing, fold and inference identities.
         if (
-            self.features != (32, 32, 64, 128, 256, 32)
+            self.features != FEATURE_WIDTH_PROFILES[self.feature_width]
             or self.negative_slope != 0.1
             or self.spacing_mm != (0.5, 0.5, 0.5)
             or self.patch_size != (128, 128, 128)
