@@ -33,7 +33,7 @@ from auto_researcher.tasks.feta_unet_search.openevolve import (
 from auto_researcher.tasks.models import TaskRuntimeContext
 
 PORTFOLIO_VERSION = "feta-unet-60-18-7-2-portfolio-v1"
-TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-24-12-12-6-3-v2"
+TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-18-6-8-4-2-v3"
 
 
 @dataclass(frozen=True)
@@ -175,14 +175,14 @@ class TreePortfolioPolicy:
             != {"basic_unet": 4, "unet_plain": 2, "unet_residual": 2}
             or children
             != {
-                SearchType.OPTUNA: 2,
+                SearchType.OPTUNA: 1,
                 SearchType.OPENEVOLVE: 1,
                 SearchType.DIRECT: 1,
             }
-            or child_parent_count != 6
+            or child_parent_count != 3
             or grandchildren != {SearchType.OPTUNA: 1, SearchType.OPENEVOLVE: 1}
-            or promotions != {50: 12, 100: 6, 150: 3}
-            or wildcards != {50: 4, 100: 2, 150: 1}
+            or promotions != {50: 8, 100: 4, 150: 2}
+            or wildcards != {50: 3, 100: 1, 150: 1}
             or len(direct) < roots[SearchType.DIRECT]
         ):
             raise ValueError("feta_unet_campaign_tree_portfolio_invalid")

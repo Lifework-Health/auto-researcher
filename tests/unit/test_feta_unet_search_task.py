@@ -508,6 +508,37 @@ def test_campaign_duration_estimate_counts_candidate_epochs():
     assert task.estimate_search_duration_seconds(promoted, runtime) == 500.0
 
 
+def test_campaign_duration_estimate_uses_measured_model_family_rates():
+    task = FeTAUNetSearchTask()
+    runtime = _runtime(
+        campaign_seconds_per_epoch=30.0,
+        campaign_seconds_per_epoch_by_model_variant={
+            "basic_unet": 25.0,
+            "unet_plain": 26.0,
+            "unet_residual": 49.0,
+        },
+        openevolve_fidelity=25,
+    )
+    basic = _request(
+        SearchType.OPTUNA,
+        {"fixed": {"maximum_epochs": 25, "model_variant": "basic_unet"}},
+        budget=4,
+    )
+    residual = _request(
+        SearchType.DIRECT,
+        {"maximum_epochs": 50, "model_variant": "unet_residual"},
+        budget=1,
+    ).model_copy(update={"evidence_references": ("promotion-from-epoch:25",)})
+    mutable = _request(
+        SearchType.OPENEVOLVE,
+        default_openevolve_configuration(candidate_evaluations=2),
+        budget=2,
+    )
+    assert task.estimate_search_duration_seconds(basic, runtime) == 2_500.0
+    assert task.estimate_search_duration_seconds(residual, runtime) == 1_225.0
+    assert task.estimate_search_duration_seconds(mutable, runtime) == 2_450.0
+
+
 def test_budget_deadline_survives_cycles_and_exhausts():
     started = datetime(2026, 8, 16, 8, tzinfo=UTC)
     deadline = started + timedelta(hours=20)
@@ -582,13 +613,18 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         "unet_residual": 2,
     }
     assert options["campaign_portfolio"]["promotion_targets"] == {
-        "50": 12,
-        "100": 6,
-        "150": 3,
+        "50": 8,
+        "100": 4,
+        "150": 2,
     }
-    # Sixty unique 25-epoch nodes, fifteen imported OpenEvolve parent seeds,
-    # and continuation-only graduation to 50/100/150.
-    total_epoch_work = 60 * 25 + 15 * 25 + 12 * 25 + 6 * 50 + 3 * 50
+    assert options["campaign_seconds_per_epoch_by_model_variant"] == {
+        "basic_unet": 25.0,
+        "unet_plain": 26.0,
+        "unet_residual": 49.0,
+    }
+    # Forty-eight unique 25-epoch nodes, twelve imported OpenEvolve parent
+    # seeds, and continuation-only graduation to 50/100/150.
+    total_epoch_work = 48 * 25 + 12 * 25 + 8 * 25 + 4 * 50 + 2 * 50
     estimated_seconds = total_epoch_work * options["campaign_seconds_per_epoch"]
     assert estimated_seconds + options["campaign_finalisation_reserve_seconds"] < (
         20 * 60 * 60

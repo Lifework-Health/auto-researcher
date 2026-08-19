@@ -456,6 +456,47 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             or raw_seconds_per_epoch <= 0
         ):
             raise ValueError("feta_unet_campaign_epoch_duration_invalid")
+        seconds_per_epoch = float(raw_seconds_per_epoch)
+        raw_family_rates = runtime_context.task_options.get(
+            "campaign_seconds_per_epoch_by_model_variant"
+        )
+        if raw_family_rates is not None:
+            if not isinstance(raw_family_rates, dict) or set(raw_family_rates) != set(
+                MODEL_VARIANTS
+            ):
+                raise ValueError("feta_unet_campaign_family_durations_invalid")
+            family_rates: dict[str, float] = {}
+            for name in MODEL_VARIANTS:
+                value = raw_family_rates[name]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or value <= 0
+                ):
+                    raise ValueError("feta_unet_campaign_family_durations_invalid")
+                family_rates[name] = float(value)
+
+            model_variant = None
+            if request.search_type == SearchType.DIRECT:
+                model_variant = request.search_space.get("model_variant")
+            elif request.search_type == SearchType.OPTUNA:
+                fixed = request.search_space.get("fixed", {})
+                if isinstance(fixed, dict):
+                    model_variant = fixed.get("model_variant")
+            else:
+                campaign_context = request.search_space.get("campaign_context", {})
+                if isinstance(campaign_context, dict):
+                    model_variant = campaign_context.get("required_model_variant")
+            if model_variant is None:
+                # A mutable or mixed-family block must reserve for the slowest
+                # registered family so the wall-time deadline remains real.
+                seconds_per_epoch = max(family_rates.values())
+            elif (
+                not isinstance(model_variant, str) or model_variant not in family_rates
+            ):
+                raise ValueError("feta_unet_campaign_model_variant_invalid")
+            else:
+                seconds_per_epoch = family_rates[model_variant]
         if request.search_type == SearchType.OPENEVOLVE:
             fidelity = runtime_context.task_options.get("openevolve_fidelity", 25)
             candidates = request.experiment_budget
@@ -487,7 +528,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             if source_fidelity >= fidelity or source_fidelity not in FIDELITY_LEVELS:
                 raise ValueError("feta_unet_campaign_promotion_reference_invalid")
             marginal_fidelity = fidelity - source_fidelity
-        return float(raw_seconds_per_epoch) * marginal_fidelity * candidates
+        return seconds_per_epoch * marginal_fidelity * candidates
 
     def artefact_policy(self) -> ArtefactPolicy:
         baseline = super().artefact_policy()
@@ -620,6 +661,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "optimiser_family": OPTIMISER_ID,
                 "campaign_seconds_per_epoch": runtime_context.task_options.get(
                     "campaign_seconds_per_epoch", 120.0
+                ),
+                "campaign_seconds_per_epoch_by_model_variant": runtime_context.task_options.get(
+                    "campaign_seconds_per_epoch_by_model_variant"
                 ),
                 "campaign_finalisation_reserve_seconds": runtime_context.task_options.get(
                     "campaign_finalisation_reserve_seconds", 10_800.0

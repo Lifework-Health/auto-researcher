@@ -116,17 +116,17 @@ def test_portfolio_policy_requires_exact_screening_and_promotion_shape():
         "unet_residual": 2,
     }
     assert policy.children_per_parent == {
-        SearchType.OPTUNA: 2,
+        SearchType.OPTUNA: 1,
         SearchType.OPENEVOLVE: 1,
         SearchType.DIRECT: 1,
     }
-    assert policy.child_parent_count == 6
+    assert policy.child_parent_count == 3
     assert policy.grandchildren_per_parent == {
         SearchType.OPTUNA: 1,
         SearchType.OPENEVOLVE: 1,
     }
-    assert policy.promotion_targets == {50: 12, 100: 6, 150: 3}
-    assert policy.wildcard_counts == {50: 4, 100: 2, 150: 1}
+    assert policy.promotion_targets == {50: 8, 100: 4, 150: 2}
+    assert policy.wildcard_counts == {50: 3, 100: 1, 150: 1}
 
 
 def _planned_event(index: int, request: SearchRequest) -> DecisionEvent:
@@ -246,7 +246,7 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
         if request is None:
             break
         request_count += 1
-        assert request_count <= 96
+        assert request_count <= 74
         events.append(_planned_event(request_count, request))
         for sample in range(request.experiment_budget):
             configuration = _sampled_configuration(
@@ -331,8 +331,8 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
             )
             for variant in ("basic_unet", "unet_plain", "unet_residual")
         } == {"basic_unet": 4, "unet_plain": 2, "unet_residual": 2}
-    assert len(children) == 24
-    assert len(grandchildren) == 12
+    assert len(children) == 18
+    assert len(grandchildren) == 6
     assert (
         len(
             {
@@ -341,7 +341,7 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
                 if item.stage == "promote-50"
             }
         )
-        == 12
+        == 8
     )
     assert (
         len(
@@ -351,7 +351,7 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
                 if item.stage == "promote-100"
             }
         )
-        == 6
+        == 4
     )
     assert (
         len(
@@ -361,9 +361,9 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
                 if item.stage == "promote-150"
             }
         )
-        == 3
+        == 2
     )
-    assert experiment_index == 96
+    assert experiment_index == 74
 
 
 def test_trajectory_identity_excludes_only_fidelity():
