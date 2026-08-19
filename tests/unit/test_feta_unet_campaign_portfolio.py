@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 import numpy as np
+import pytest
 
 from auto_researcher.contracts.enums import (
     EventType,
@@ -364,6 +365,64 @@ def test_tree_portfolio_controller_executes_lineage_depth_and_promotions():
         == 2
     )
     assert experiment_index == 74
+
+
+def test_tree_portfolio_rejects_planned_event_without_lineage_metadata():
+    request = apply_portfolio_policy(
+        _original(),
+        run_id="portfolio-run",
+        cycle=1,
+        events=(),
+        runtime_context=TaskRuntimeContext(task_options=_options()),
+    )
+    assert request is not None
+    planned = _planned_event(1, request).model_copy(
+        update={
+            "output_references": (
+                request.request_id,
+                f"search_type:{request.search_type.value}",
+            )
+        }
+    )
+    with pytest.raises(
+        ValueError, match="feta_unet_campaign_tree_metadata_missing"
+    ):
+        apply_portfolio_policy(
+            _original(),
+            run_id="portfolio-run",
+            cycle=2,
+            events=(planned,),
+            runtime_context=TaskRuntimeContext(task_options=_options()),
+        )
+
+
+def test_tree_portfolio_rejects_duplicate_execution_in_same_branch():
+    request = apply_portfolio_policy(
+        _original(),
+        run_id="portfolio-run",
+        cycle=1,
+        events=(),
+        runtime_context=TaskRuntimeContext(task_options=_options()),
+    )
+    assert request is not None
+    configuration = _sampled_configuration(request, 0, 0)
+    events = [
+        _planned_event(1, request),
+        _prepared_event(1, request, "experiment-1"),
+        _event(1, request.search_type, configuration, 0.7),
+        _prepared_event(2, request, "experiment-2"),
+        _event(2, request.search_type, configuration, 0.7),
+    ]
+    with pytest.raises(
+        ValueError, match="feta_unet_campaign_tree_duplicate_execution"
+    ):
+        apply_portfolio_policy(
+            _original(),
+            run_id="portfolio-run",
+            cycle=2,
+            events=tuple(events),
+            runtime_context=TaskRuntimeContext(task_options=_options()),
+        )
 
 
 def test_trajectory_identity_excludes_only_fidelity():

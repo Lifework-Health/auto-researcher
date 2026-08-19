@@ -149,6 +149,10 @@ def optuna_prepare_study(
                     f"source:{request.proposal_source.value}",
                     f"grounding:{request.grounding_status.value}",
                     f"prompt:{request.prompt_version or 'none'}",
+                    *(
+                        f"evidence_reference:{reference}"
+                        for reference in request.evidence_references
+                    ),
                 ),
                 rationale=request.rationale,
                 timestamp=timestamp,

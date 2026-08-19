@@ -445,6 +445,8 @@ def _tree_request_metadata(
                     metadata[name] = value[len(marker) :]
         if metadata.get("tree-stage"):
             requests[request_id] = metadata
+        elif event.rationale.startswith(f"{TREE_PORTFOLIO_VERSION}:"):
+            raise ValueError("feta_unet_campaign_tree_metadata_missing")
     experiments: dict[str, dict[str, str]] = {}
     for event in events:
         if (
@@ -488,6 +490,16 @@ def _tree_candidates(
                 root_trajectory=root,
             )
         )
+    seen: dict[tuple[str, SearchType, str], str] = {}
+    for candidate in candidates:
+        key = (
+            candidate.stage,
+            candidate.action,
+            candidate.evidence.trajectory_identity,
+        )
+        previous = seen.setdefault(key, candidate.evidence.experiment_id)
+        if previous != candidate.evidence.experiment_id:
+            raise ValueError("feta_unet_campaign_tree_duplicate_execution")
     return tuple(candidates)
 
 
