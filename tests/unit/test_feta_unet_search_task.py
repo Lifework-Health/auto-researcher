@@ -469,6 +469,18 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     assert mutation["maximum_total_cost_usd"] == 50.0
     assert configuration["runtime"]["options"]["continue_after_failed_candidate"]
     options = configuration["runtime"]["options"]
+    assert options["initial_campaign_observations"] == [
+        "Verified fold-0 development aggregate mean macro Dice was "
+        "0.812891818509455 at best epoch 120 for the incumbent DIRECT "
+        "BasicUNet training policy."
+    ]
+    component = FeTAUNetSearchTask().create_evolvable_component(
+        default_feta_unet_search_contract(),
+        _runtime(**options),
+    )
+    assert component.initial_observations == tuple(
+        options["initial_campaign_observations"]
+    )
     assert options["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
     assert options["openevolve_fidelity"] == 25
     assert options["campaign_portfolio"]["screening"] == {
