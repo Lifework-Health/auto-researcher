@@ -1,0 +1,17 @@
+task: {id: feta_unet_direct, version: "1.0"}
+agents: {mode: mock}
+experiment:
+  profile: frozen_baseline
+  maximum_epochs: 300
+  validation_every: 5
+  fold_count: 5
+runtime:
+  # Replace these examples with absolute, access-controlled runtime paths.
+  data_dir: /absolute/protected/feta-2.1
+  workspace_dir: /absolute/protected/feta-unet-baseline-workspace
+  output_dir: /absolute/protected/feta-unet-baseline-results
+  options:
+    protected_storage_acknowledged: true
+    # To import verified completed folds into a new run, set resume_root to the
+    # prior protected experiment directory containing fold-results/ and checkpoints/.
+    # resume_root: /absolute/protected/prior-feta-unet-experiment
