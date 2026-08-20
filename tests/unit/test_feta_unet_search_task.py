@@ -30,6 +30,7 @@ from auto_researcher.graph.nodes.openevolve import (
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.dependencies import task_memory_dependencies
 from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
 from auto_researcher.search.openevolve.models import CandidateOutcome, CandidateStatus
@@ -55,6 +56,7 @@ from auto_researcher.tasks.feta_unet_search import (
 from auto_researcher.tasks.feta_unet_search.configuration import (
     CANDIDATE_CONFIGURATION_FIELDS,
     V6_ARCHITECTURE_BUDGET,
+    V6_BASIC_UNET_FEATURE_PROFILES,
 )
 from auto_researcher.tasks.feta_unet_search.evaluator import (
     AUGMENTATION_ID,
@@ -476,6 +478,43 @@ def test_v6_portfolio_optuna_root_registers_architecture_context():
         "v6_deep_80",
         "v6_decoder_96",
     )
+
+
+def test_v6_direct_replay_preserves_registered_feature_vector():
+    task = FeTAUNetSearchTask()
+    configuration = FeTAUNetSearchConfiguration(
+        maximum_epochs=25,
+        model_variant="basic_unet",
+        feature_width="v6_balanced_96",
+        architecture_budget=V6_ARCHITECTURE_BUDGET,
+        upsample="nontrainable",
+    ).model_dump(mode="json")
+    request = SearchRequest.model_validate_json(
+        _request(SearchType.DIRECT, configuration, budget=1).model_dump_json()
+    )
+    assert isinstance(request.search_space["features"], list)
+
+    experiment = DirectSearchBackend(
+        ExperimentMetadata(
+            evaluator_id="feta-unet-search-evaluator",
+            code_version="test-code",
+            dataset_version="test-data",
+            provenance=ProvenanceKind.REAL,
+        ),
+        task.normalise_configuration,
+    ).create_experiment(
+        request,
+        default_feta_unet_search_contract(),
+        run_id="v6-direct-replay",
+    )
+    reconstructed = FeTAUNetSearchConfiguration.model_validate(
+        experiment.configuration
+    )
+
+    assert reconstructed.feature_width == "v6_balanced_96"
+    assert reconstructed.features == V6_BASIC_UNET_FEATURE_PROFILES[
+        "v6_balanced_96"
+    ]
 
 
 def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path):
