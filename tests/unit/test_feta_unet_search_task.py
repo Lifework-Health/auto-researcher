@@ -46,6 +46,9 @@ from auto_researcher.tasks.feta_unet_search import (
     FeTAUNetSearchTask,
     default_feta_unet_search_contract,
 )
+from auto_researcher.tasks.feta_unet_search.configuration import (
+    V6_ARCHITECTURE_BUDGET,
+)
 from auto_researcher.tasks.feta_unet_search.evaluator import (
     AUGMENTATION_ID,
     EVALUATOR_ID,
@@ -187,7 +190,47 @@ def test_agent_context_exposes_direct_executable_parameter_names():
         "positive_negative_ratio",
         "augmentation_policy",
         "model_variant",
+        "features",
+        "architecture_budget",
+        "upsample",
     }
+
+
+def test_v6_basicunet_architecture_genome_is_bounded_and_contract_validates():
+    configuration = FeTAUNetSearchConfiguration(
+        maximum_epochs=25,
+        model_variant="basic_unet",
+        feature_width="custom",
+        features=(64, 80, 160, 320, 640, 96),
+        architecture_budget=V6_ARCHITECTURE_BUDGET,
+        upsample="pixelshuffle",
+    )
+    assert configuration.features == (64, 80, 160, 320, 640, 96)
+
+    with pytest.raises(ValidationError, match="v6_architecture_invalid"):
+        FeTAUNetSearchConfiguration(
+            maximum_epochs=25,
+            model_variant="unet_residual",
+            feature_width="custom",
+            features=(64, 80, 160, 320, 640, 96),
+            architecture_budget=V6_ARCHITECTURE_BUDGET,
+        )
+    with pytest.raises(ValidationError, match="v6_architecture_invalid"):
+        FeTAUNetSearchConfiguration(
+            maximum_epochs=25,
+            model_variant="basic_unet",
+            feature_width="custom",
+            features=(64, 80, 72, 320, 640, 96),
+            architecture_budget=V6_ARCHITECTURE_BUDGET,
+        )
+
+    root = Path(__file__).resolve().parents[2]
+    contract = ResearchContract.model_validate(
+        yaml.safe_load(
+            (root / "examples/tasks/feta_unet_search/contract-20h-v6.yaml").read_text()
+        )
+    )
+    FeTAUNetSearchTask().validate_contract(contract)
 
 
 def test_one_runtime_assembly_exposes_all_three_backends():
@@ -380,7 +423,7 @@ def test_openevolve_seed_executes_to_a_bounded_unet_experiment():
     backend = OpenEvolveBackend(
         component,
         metadata,
-        "deterministic-verifier-v1@feta-basic-unet-search-evidence-policy-v1",
+        "deterministic-verifier-v1@feta-basic-unet-search-evidence-policy-v2",
         DeterministicMutationOperator(),
         LocalSandboxRunner(),
     )
@@ -426,9 +469,12 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         ),
     )
     assert component.seed_configuration()["seed_training_policy"] == {
-        "policy_version": "feta-unet-training-policy-v3",
+        "policy_version": "feta-unet-training-policy-v4",
         "model_variant": "unet_residual",
         "feature_width": "baseline",
+        "features": [32, 32, 64, 128, 256, 32],
+        "architecture_budget": "legacy",
+        "upsample": "deconv",
         "activation": "LeakyReLU",
         "norm": "instance",
         "optimizer": "AdamW",
@@ -506,7 +552,7 @@ def test_verified_optuna_incumbent_seeds_openevolve_and_parent_feedback():
     backend = OpenEvolveBackend(
         component,
         metadata,
-        "deterministic-verifier-v1@feta-basic-unet-search-evidence-policy-v1",
+        "deterministic-verifier-v1@feta-basic-unet-search-evidence-policy-v2",
         DeterministicMutationOperator(),
         LocalSandboxRunner(),
     )
@@ -516,6 +562,15 @@ def test_verified_optuna_incumbent_seeds_openevolve_and_parent_feedback():
     assert preparation.generated_configuration["learning_rate"] == 2e-4
     assert preparation.generated_configuration["augmentation_policy"] == "geometric"
     assert preparation.generated_configuration["model_variant"] == "unet_plain"
+    experiment = component.candidate_to_experiment(
+        seed,
+        preparation,
+        request,
+        contract,
+        metadata,
+        run_id="run",
+    )
+    assert experiment.experiment_id == "experiment-optuna-winner"
 
     outcome = CandidateOutcome(
         candidate_id=seed.candidate_id,
