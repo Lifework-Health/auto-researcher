@@ -166,6 +166,16 @@ class FeTAUNetSearchConfiguration(BaseModel):
         if not isinstance(value, dict):
             return value
         payload = dict(value)
+        profile = payload.get("feature_width")
+        if (
+            payload.get("architecture_budget") == V6_ARCHITECTURE_BUDGET
+            and profile is None
+        ):
+            profile = "v6_balanced_64"
+            payload["feature_width"] = profile
+        if profile in V6_BASIC_UNET_FEATURE_PROFILES or profile == "custom":
+            payload.setdefault("architecture_budget", V6_ARCHITECTURE_BUDGET)
+            payload.setdefault("model_variant", "basic_unet")
         profile = payload.get("feature_width", "baseline")
         expected = ALL_FEATURE_WIDTH_PROFILES.get(profile)
         if expected is not None and "features" not in payload:

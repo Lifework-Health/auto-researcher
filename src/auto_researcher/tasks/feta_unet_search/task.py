@@ -43,7 +43,6 @@ from auto_researcher.tasks.feta_seg.splits import (
 from auto_researcher.tasks.feta_unet_direct.task import FeTAUNetDirectTask
 from auto_researcher.tasks.feta_unet_search.configuration import (
     ACTIVATIONS,
-    ALL_FEATURE_WIDTH_PROFILES,
     AUGMENTATION_POLICIES,
     CANDIDATE_CONFIGURATION_FIELDS,
     CONFIGURATION_SCHEMA_VERSION,
@@ -586,6 +585,19 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
     ) -> TaskAgentContext:
         del search_capabilities
         self.validate_contract(contract)
+        v6_mode = (
+            contract.constraints.get("architecture_search_mode")
+            == V6_ARCHITECTURE_BUDGET
+        )
+        agent_model_variants = ("basic_unet",) if v6_mode else MODEL_VARIANTS
+        direct_feature_profiles = (
+            V6_OPTUNA_FEATURE_PROFILES if v6_mode else tuple(FEATURE_WIDTH_PROFILES)
+        )
+        all_agent_feature_profiles = (
+            tuple(V6_BASIC_UNET_FEATURE_PROFILES)
+            if v6_mode
+            else tuple(FEATURE_WIDTH_PROFILES)
+        )
         return TaskAgentContext(
             task_id=self.task_id,
             task_version=self.task_version,
@@ -633,12 +645,13 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 SearchType.OPENEVOLVE,
             ),
             direct_configuration_schema={
-                "maximum_epochs": list(FIDELITY_LEVELS),
-                "model_variant": list(MODEL_VARIANTS),
-                "feature_width": list(FEATURE_WIDTH_PROFILES),
-                "features": "registered six-channel BasicUNet tuple",
-                "architecture_budget": ["legacy", V6_ARCHITECTURE_BUDGET],
-                "upsample": list(V6_UPSAMPLE_MODES),
+                "maximum_epochs": [25] if v6_mode else list(FIDELITY_LEVELS),
+                "model_variant": list(agent_model_variants),
+                "feature_width": list(direct_feature_profiles),
+                "architecture_budget": [V6_ARCHITECTURE_BUDGET]
+                if v6_mode
+                else ["legacy"],
+                "upsample": ["deconv"],
                 "activation": list(ACTIVATIONS),
                 "norm": list(NORMALISATIONS),
                 "optimizer": list(OPTIMISERS),
@@ -658,8 +671,8 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "dice_weight": list(DICE_WEIGHT_BOUNDS),
                 "positive_negative_ratio": list(POSITIVE_NEGATIVE_RATIOS),
                 "augmentation_policy": list(AUGMENTATION_POLICIES),
-                "model_variant": list(MODEL_VARIANTS),
-                "feature_width": list(ALL_FEATURE_WIDTH_PROFILES),
+                "model_variant": list(agent_model_variants),
+                "feature_width": list(direct_feature_profiles),
                 "activation": list(ACTIVATIONS),
                 "norm": list(NORMALISATIONS),
                 "optimizer": list(OPTIMISERS),
@@ -676,10 +689,12 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     "dice_weight": list(DICE_WEIGHT_BOUNDS),
                     "positive_negative_ratio": list(POSITIVE_NEGATIVE_RATIOS),
                     "augmentation_policy": list(AUGMENTATION_POLICIES),
-                    "model_variant": list(MODEL_VARIANTS),
-                    "feature_width": list(ALL_FEATURE_WIDTH_PROFILES),
+                    "model_variant": list(agent_model_variants),
+                    "feature_width": list(all_agent_feature_profiles),
                     "features": "six integer channel widths",
-                    "architecture_budget": ["legacy", V6_ARCHITECTURE_BUDGET],
+                    "architecture_budget": [V6_ARCHITECTURE_BUDGET]
+                    if v6_mode
+                    else ["legacy"],
                     "upsample": list(V6_UPSAMPLE_MODES),
                     "activation": list(ACTIVATIONS),
                     "norm": list(NORMALISATIONS),

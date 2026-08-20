@@ -190,7 +190,6 @@ def test_agent_context_exposes_direct_executable_parameter_names():
         "positive_negative_ratio",
         "augmentation_policy",
         "model_variant",
-        "features",
         "architecture_budget",
         "upsample",
     }
@@ -206,6 +205,13 @@ def test_v6_basicunet_architecture_genome_is_bounded_and_contract_validates():
         upsample="pixelshuffle",
     )
     assert configuration.features == (64, 80, 160, 320, 640, 96)
+
+    derived = FeTAUNetSearchConfiguration(
+        maximum_epochs=25,
+        architecture_budget=V6_ARCHITECTURE_BUDGET,
+    )
+    assert derived.feature_width == "v6_balanced_64"
+    assert derived.features == (64, 64, 128, 256, 512, 64)
 
     with pytest.raises(ValidationError, match="v6_architecture_invalid"):
         FeTAUNetSearchConfiguration(
@@ -231,6 +237,14 @@ def test_v6_basicunet_architecture_genome_is_bounded_and_contract_validates():
         )
     )
     FeTAUNetSearchTask().validate_contract(contract)
+    context = FeTAUNetSearchTask().create_agent_context(contract, _runtime(), {})
+    assert context.direct_configuration_schema["maximum_epochs"] == [25]
+    assert context.direct_configuration_schema["model_variant"] == ["basic_unet"]
+    assert context.direct_configuration_schema["architecture_budget"] == [
+        V6_ARCHITECTURE_BUDGET
+    ]
+    assert context.direct_configuration_schema["upsample"] == ["deconv"]
+    assert "features" not in context.direct_configuration_schema
 
 
 def test_one_runtime_assembly_exposes_all_three_backends():
