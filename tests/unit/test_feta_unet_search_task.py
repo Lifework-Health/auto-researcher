@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -19,11 +20,16 @@ from auto_researcher.contracts.models import (
     BudgetState,
     DecisionEvent,
     EvaluationResult,
+    ExperimentSpec,
     ResearchContract,
     SearchRequest,
 )
+from auto_researcher.graph.nodes.openevolve import (
+    _canonical_generation_zero_experiment,
+)
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.dependencies import task_memory_dependencies
+from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
 from auto_researcher.search.openevolve.models import CandidateOutcome, CandidateStatus
@@ -47,6 +53,7 @@ from auto_researcher.tasks.feta_unet_search import (
     default_feta_unet_search_contract,
 )
 from auto_researcher.tasks.feta_unet_search.configuration import (
+    CANDIDATE_CONFIGURATION_FIELDS,
     V6_ARCHITECTURE_BUDGET,
 )
 from auto_researcher.tasks.feta_unet_search.evaluator import (
@@ -469,6 +476,77 @@ def test_v6_portfolio_optuna_root_registers_architecture_context():
         "v6_deep_80",
         "v6_decoder_96",
     )
+
+
+def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path):
+    task = FeTAUNetSearchTask()
+    configuration = FeTAUNetSearchConfiguration(
+        maximum_epochs=25,
+        model_variant="basic_unet",
+        feature_width="v6_balanced_96",
+        architecture_budget=V6_ARCHITECTURE_BUDGET,
+        upsample="deconv",
+        learning_rate=2e-4,
+    ).model_dump(mode="json")
+    candidate_configuration = {
+        name: configuration[name] for name in CANDIDATE_CONFIGURATION_FIELDS
+    }
+    published = ExperimentSpec(
+        experiment_id="experiment-incumbent",
+        hypothesis_id="optuna-hypothesis",
+        search_request_id="optuna-request",
+        configuration=candidate_configuration,
+        evaluator_id="feta-basic-unet-search-evaluator",
+        code_version="search-evaluator-version",
+        dataset_version="feta-dataset-version",
+        provenance=ProvenanceKind.REAL,
+    )
+    proposed = published.model_copy(
+        update={
+            "hypothesis_id": "openevolve-hypothesis",
+            "search_request_id": "openevolve-request",
+            "configuration": configuration,
+        }
+    )
+    reference = "runs/run/experiment-incumbent/experiment_spec.json"
+    published_path = tmp_path / reference
+    published_path.parent.mkdir(parents=True)
+    published_path.write_text(published.model_dump_json(), encoding="utf-8")
+    record = SimpleNamespace(
+        expected_artefact_references=(reference,),
+        experiment_payload_hash=payload_hash(published),
+    )
+    store = SimpleNamespace(
+        get_evaluation_reuse=lambda run_id, experiment_id: record
+        if (run_id, experiment_id) == ("run", "experiment-incumbent")
+        else None
+    )
+    dependencies = SimpleNamespace(
+        provenance_store=store,
+        runtime_context=TaskRuntimeContext(run_id="run", output_dir=tmp_path),
+        task=task,
+    )
+    candidate = SimpleNamespace(generation=0)
+
+    reused = _canonical_generation_zero_experiment(
+        {"run_id": "run"}, dependencies, candidate, proposed
+    )
+    assert reused == published
+
+    conflicting = proposed.model_copy(
+        update={
+            "configuration": {
+                **configuration,
+                "learning_rate": 3e-4,
+            }
+        }
+    )
+    with pytest.raises(
+        ValueError, match="openevolve_incumbent_configuration_conflict"
+    ):
+        _canonical_generation_zero_experiment(
+            {"run_id": "run"}, dependencies, candidate, conflicting
+        )
 
 
 def test_openevolve_seed_executes_to_a_bounded_unet_experiment():
