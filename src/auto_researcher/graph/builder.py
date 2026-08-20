@@ -67,8 +67,10 @@ def build_graph(
     interrupt_after: list[str] | Literal["*"] | None = None,
 ):
     graph = StateGraph(ResearchState)
-    graph.add_node("initialise_run", initialise_run)
-    graph.add_node("supervisor_prepare", supervisor_prepare)
+    graph.add_node("initialise_run", partial(initialise_run, dependencies=dependencies))
+    graph.add_node(
+        "supervisor_prepare", partial(supervisor_prepare, dependencies=dependencies)
+    )
     graph.add_node(
         "retrieve_knowledge",
         partial(retrieve_knowledge, dependencies=dependencies),
@@ -99,7 +101,9 @@ def build_graph(
         "record_provenance",
         partial(record_provenance, dependencies=dependencies),
     )
-    graph.add_node("supervisor_decide", supervisor_decide)
+    graph.add_node(
+        "supervisor_decide", partial(supervisor_decide, dependencies=dependencies)
+    )
     graph.add_node(
         "optuna_prepare_study",
         partial(optuna_prepare_study, dependencies=dependencies),
@@ -120,7 +124,10 @@ def build_graph(
         "optuna_record_trial",
         partial(optuna_record_trial, dependencies=dependencies),
     )
-    graph.add_node("optuna_decide_study", optuna_decide_study)
+    graph.add_node(
+        "optuna_decide_study",
+        partial(optuna_decide_study, dependencies=dependencies),
+    )
     graph.add_node(
         "optuna_finalise_study",
         partial(optuna_finalise_study, dependencies=dependencies),

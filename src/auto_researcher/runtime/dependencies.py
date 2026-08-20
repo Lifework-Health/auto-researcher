@@ -21,7 +21,7 @@ from auto_researcher.agents.call_store import (
     InMemoryAgentCallStore,
     SQLiteAgentCallStore,
 )
-from auto_researcher.agents.context import AgentContextAssembler
+from auto_researcher.agents.context import AgentContextAssembler, AgentContextLimits
 from auto_researcher.agents.live import LiveHypothesisAgent, LivePlannerAgent
 from auto_researcher.agents.models import (
     AgentBudgetPolicy,
@@ -529,9 +529,21 @@ def _assemble_task_dependencies(
         context,
         capabilities,
     )
+    raw_prior_results = context.task_options.get("campaign_prior_results", 5)
+    if (
+        isinstance(raw_prior_results, bool)
+        or not isinstance(raw_prior_results, int)
+        or not 1 <= raw_prior_results <= 30
+    ):
+        raise ValueError("campaign_prior_results_invalid")
     context_assembler = AgentContextAssembler(
         provenance_store,
         knowledge_retrieval_store=retrieval_store,
+        clock=clock,
+        limits=AgentContextLimits(
+            maximum_prior_hypotheses=min(12, raw_prior_results),
+            maximum_prior_results=raw_prior_results,
+        ),
     )
     knowledge_coordinator = KnowledgeRetrievalCoordinator(
         store=retrieval_store,

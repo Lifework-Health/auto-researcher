@@ -8,6 +8,7 @@ from auto_researcher.agents.telemetry import (
 from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
+from auto_researcher.tasks.protocols import CampaignDurationCapableTask
 
 
 def plan_search(
@@ -60,6 +61,32 @@ def plan_search(
                 )
             except ValueError as exc:
                 errors.append(str(exc))
+    deadline_stop_reason = None
+    remaining_time = state["budget"].remaining_seconds(dependencies.clock())
+    if remaining_time is not None and isinstance(
+        dependencies.task, CampaignDurationCapableTask
+    ):
+        try:
+            estimated = dependencies.task.estimate_search_duration_seconds(
+                request, dependencies.runtime_context
+            )
+            raw_reserve = dependencies.runtime_context.task_options.get(
+                "campaign_finalisation_reserve_seconds",
+                state["contract"].constraints.get(
+                    "campaign_finalisation_reserve_seconds", 0
+                ),
+            )
+            if (
+                isinstance(raw_reserve, bool)
+                or not isinstance(raw_reserve, (int, float))
+                or raw_reserve < 0
+            ):
+                raise ValueError("campaign_finalisation_reserve_invalid")
+            reserve = float(raw_reserve)
+            if estimated + reserve > remaining_time:
+                deadline_stop_reason = "campaign_insufficient_time_for_proposed_block"
+        except (TypeError, ValueError) as exc:
+            errors.append(str(exc))
     update = {
         "search_request": request,
         "budget": apply_agent_telemetry(state["budget"], telemetry),
@@ -70,6 +97,11 @@ def plan_search(
         update.update(
             status=RunStatus.STOPPED,
             stop_reason="maximum_agent_call_cost_exceeded",
+        )
+    elif deadline_stop_reason is not None:
+        update.update(
+            status=RunStatus.COMPLETED,
+            stop_reason=deadline_stop_reason,
         )
     elif errors and request.search_type == SearchType.OPENEVOLVE:
         update.update(

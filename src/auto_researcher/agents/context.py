@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from auto_researcher.agents.models import (
@@ -58,9 +60,11 @@ class AgentContextAssembler:
         *,
         limits: AgentContextLimits | None = None,
         knowledge_retrieval_store: KnowledgeRetrievalStore | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._provenance_store = provenance_store
         self._knowledge_store = knowledge_retrieval_store
+        self._clock = clock or (lambda: datetime.now(UTC))
         self.limits = limits or AgentContextLimits()
 
     def _knowledge(
@@ -186,6 +190,14 @@ class AgentContextAssembler:
                     constraint_compliant=values.get("constraints") == "true",
                     concise_verified_finding=event.rationale[:400],
                     safe_artefact_references=artefacts,
+                    safe_configuration=dict(event.safe_payload.get("configuration", {}))
+                    if isinstance(event.safe_payload.get("configuration"), dict)
+                    else {},
+                    aggregate_metrics=dict(
+                        event.safe_payload.get("aggregate_metrics", {})
+                    )
+                    if isinstance(event.safe_payload.get("aggregate_metrics"), dict)
+                    else {},
                 )
             )
         results.sort(
@@ -321,6 +333,12 @@ class AgentContextAssembler:
             "remaining_cost_budget": max(
                 0.0,
                 state["budget"].maximum_cost - state["budget"].cost_used,
+            ),
+            "remaining_time_seconds": state["budget"].remaining_seconds(self._clock()),
+            "campaign_deadline_at": (
+                state["budget"].deadline_at.isoformat()
+                if state["budget"].deadline_at is not None
+                else None
             ),
             "model_calls_used": state["budget"].model_calls_used,
             "approval_requirements": tuple(

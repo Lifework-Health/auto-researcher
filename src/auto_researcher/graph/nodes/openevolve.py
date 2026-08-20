@@ -579,6 +579,11 @@ def decide_openevolve_continue(
     search_contract = state["openevolve_search_contract"]
     assert population is not None and search_contract is not None
     reason = _backend(dependencies).stop_reason(population, search_contract)
+    if (
+        state["budget"].deadline_at is not None
+        and dependencies.clock() >= state["budget"].deadline_at
+    ):
+        reason = "campaign_deadline_reached"
     if reason is not None:
         population = population.model_copy(
             update={"stopping_status": "STOPPED", "stop_reason": reason}

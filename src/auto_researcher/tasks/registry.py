@@ -57,6 +57,7 @@ def default_task_registry() -> TaskRegistry:
     from auto_researcher.tasks.feta_seg_evolve import FeTASegEvolveTask
     from auto_researcher.tasks.feta_seg_search import FeTASegSearchTask
     from auto_researcher.tasks.feta_unet_direct import FeTAUNetDirectTask
+    from auto_researcher.tasks.feta_unet_search import FeTAUNetSearchTask
     from auto_researcher.tasks.synthetic import SyntheticTask
 
     registry = TaskRegistry()
@@ -64,6 +65,7 @@ def default_task_registry() -> TaskRegistry:
     registry.register(IrisKNNTask)
     registry.register(FeTASegTask)
     registry.register(FeTAUNetDirectTask)
+    registry.register(FeTAUNetSearchTask)
     registry.register(FeTASegSearchTask)
     registry.register(FeTASegEvolveTask)
     registry.register(ICCANBSTask)

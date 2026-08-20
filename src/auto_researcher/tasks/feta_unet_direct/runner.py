@@ -67,11 +67,21 @@ class FoldExecutionResult:
     source_data_loader_id: str | None = None
     validation_history: tuple[dict[str, Any], ...] = ()
     milestone_checkpoints: tuple[dict[str, Any], ...] = ()
+    amp_skipped_steps: int = 0
+    maximum_consecutive_amp_skips: int = 0
 
 
 FoldExecutor = Callable[
     [int, tuple[FeTASubject, ...], tuple[FeTASubject, ...]], FoldExecutionResult
 ]
+
+MAX_CONSECUTIVE_AMP_SKIPS = 16
+
+
+def _amp_step_was_skipped(scale_before: float, scale_after: float) -> bool:
+    """GradScaler lowers its scale when it skips an overflowing optimiser step."""
+
+    return scale_after < scale_before
 
 
 def _runner_id(configuration: FeTAUNetDirectConfiguration) -> str:
@@ -178,12 +188,20 @@ def _run_cuda_fold(
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     model = create_basic_unet(configuration).to("cuda")
-    loss_function = create_loss()
+    loss_function = create_loss(configuration)
     optimizer = create_optimizer(model, configuration)
     scaler = torch.amp.GradScaler("cuda")
     training_dataset = PersistentDataset(
         _dataset_records(training_subjects),
-        transform=create_transforms(training=True),
+        transform=create_transforms(
+            training=True,
+            positive_negative_ratio=str(
+                getattr(configuration, "positive_negative_ratio", "1:1")
+            ),
+            augmentation_strength=str(
+                getattr(configuration, "augmentation_strength", "baseline")
+            ),
+        ),
         cache_dir=cache_root / "training",
     )
     validation_dataset = Dataset(
@@ -213,6 +231,9 @@ def _run_cuda_fold(
     best_epoch = 0
     validation_history: list[dict[str, Any]] = []
     milestone_checkpoints: list[dict[str, Any]] = []
+    amp_skipped_steps = 0
+    consecutive_amp_skips = 0
+    maximum_consecutive_amp_skips = 0
     started = time.perf_counter()
     for epoch in range(1, configuration.maximum_epochs + 1):
         model.train()
@@ -227,16 +248,28 @@ def _run_cuda_fold(
                 loss = loss_function(output, labels)
             if not bool(torch.isfinite(loss)):
                 raise ValueError("feta_unet_training_loss_non_finite")
+            scale_before = float(scaler.get_scale())
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            if any(
-                parameter.grad is not None
-                and not bool(torch.isfinite(parameter.grad).all())
-                for parameter in model.parameters()
-            ):
-                raise ValueError("feta_unet_training_gradient_non_finite")
             scaler.step(optimizer)
             scaler.update()
+            scale_after = float(scaler.get_scale())
+            if _amp_step_was_skipped(scale_before, scale_after):
+                amp_skipped_steps += 1
+                consecutive_amp_skips += 1
+                maximum_consecutive_amp_skips = max(
+                    maximum_consecutive_amp_skips, consecutive_amp_skips
+                )
+                print(
+                    "FETA_UNET_AMP_STEP_SKIPPED "
+                    f"fold={fold} epoch={epoch} total={amp_skipped_steps} "
+                    f"consecutive={consecutive_amp_skips} "
+                    f"scale_before={scale_before:g} scale_after={scale_after:g}",
+                    flush=True,
+                )
+                if consecutive_amp_skips >= MAX_CONSECUTIVE_AMP_SKIPS:
+                    raise ValueError("feta_unet_repeated_amp_overflow")
+            else:
+                consecutive_amp_skips = 0
 
         if epoch % configuration.validation_every:
             continue
@@ -366,6 +399,8 @@ def _run_cuda_fold(
         source_data_loader_id=DATA_LOADER_ID,
         validation_history=tuple(validation_history),
         milestone_checkpoints=tuple(milestone_checkpoints),
+        amp_skipped_steps=amp_skipped_steps,
+        maximum_consecutive_amp_skips=maximum_consecutive_amp_skips,
     )
 
 
@@ -458,9 +493,20 @@ def run_profile(
     partition = locked_partition(
         {subject.subject_id: subject.reconstruction_method for subject in subjects}
     )
-    root = context.workspace_dir / "feta_unet_direct" / experiment_id
+    raw_namespace = context.task_options.get("workspace_namespace", "feta_unet_direct")
+    if (
+        not isinstance(raw_namespace, str)
+        or not raw_namespace
+        or any(item in raw_namespace for item in ("/", "\\", ".."))
+    ):
+        raise ValueError("feta_unet_workspace_namespace_invalid")
+    root = context.workspace_dir / raw_namespace / experiment_id
     checkpoint_root = root / "checkpoints"
-    cache_root = root / "cache"
+    cache_root = (
+        context.workspace_dir / raw_namespace / "_shared_cache"
+        if context.task_options.get("shared_preprocessing_cache") is True
+        else root / "cache"
+    )
 
     resume_value = context.task_options.get("resume_root")
     resume_root = (
@@ -526,6 +572,8 @@ def run_profile(
                 "source_data_loader_id": result.source_data_loader_id,
                 "validation_history": list(result.validation_history),
                 "milestone_checkpoints": list(result.milestone_checkpoints),
+                "amp_skipped_steps": result.amp_skipped_steps,
+                "maximum_consecutive_amp_skips": result.maximum_consecutive_amp_skips,
             }
             for result in fold_results
         ],

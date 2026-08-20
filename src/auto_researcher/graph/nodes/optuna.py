@@ -418,14 +418,23 @@ def optuna_record_trial(
     }
 
 
-def optuna_decide_study(state: ResearchState) -> dict:
+def optuna_decide_study(
+    state: ResearchState, dependencies: RuntimeDependencies | None = None
+) -> dict:
     summary = state["optuna_study_state"]
     assert summary is not None
     asked_enough = summary.trials_asked >= summary.trial_budget
     budget_exhausted = state["budget"].exhausted
-    if asked_enough or budget_exhausted:
+    deadline_reached = (
+        dependencies is not None
+        and state["budget"].deadline_at is not None
+        and dependencies.clock() >= state["budget"].deadline_at
+    )
+    if asked_enough or budget_exhausted or deadline_reached:
         reason = (
-            state["budget"].exhaustion_reason
+            "campaign_deadline_reached"
+            if deadline_reached
+            else state["budget"].exhaustion_reason
             if budget_exhausted
             else "effective_trial_budget_reached"
         )

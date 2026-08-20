@@ -17,7 +17,10 @@ from auto_researcher.tasks.feta_unet_direct.evaluator import (
     EVALUATOR_VERSION,
     RESULT_ID,
 )
-from auto_researcher.tasks.feta_unet_direct.identities import DATA_LOADER_ID
+from auto_researcher.tasks.feta_unet_direct.identities import (
+    AMP_POLICY_ID,
+    DATA_LOADER_ID,
+)
 from auto_researcher.tasks.feta_unet_direct.model import (
     ARCHITECTURE_ID,
     TRAINABLE_PARAMETER_COUNT,
@@ -59,8 +62,18 @@ class FeTAUNetDirectVerificationPolicy:
             "development_baseline",
             "validation_scope",
             "contains_subject_identifiers",
+            "amp_policy_identity",
         }
     )
+
+    def __init__(
+        self,
+        *,
+        evaluator_version: str = EVALUATOR_VERSION,
+        result_identity: str = RESULT_ID,
+    ) -> None:
+        self.evaluator_version = evaluator_version
+        self.result_identity = result_identity
 
     def evaluate_constraints(
         self, evaluation: EvaluationResult, contract: ResearchContract
@@ -91,12 +104,14 @@ class FeTAUNetDirectVerificationPolicy:
             != TRAINABLE_PARAMETER_COUNT
         ):
             reasons.append("feta_unet_architecture_identity_mismatch")
-        if evaluation.metrics.get("evaluator_version") != EVALUATOR_VERSION:
+        if evaluation.metrics.get("evaluator_version") != self.evaluator_version:
             reasons.append("feta_unet_evaluator_identity_mismatch")
-        if evaluation.metrics.get("result_identity") != RESULT_ID:
+        if evaluation.metrics.get("result_identity") != self.result_identity:
             reasons.append("feta_unet_result_identity_mismatch")
         if evaluation.metrics.get("data_loader_id") != DATA_LOADER_ID:
             reasons.append("feta_unet_data_loader_identity_mismatch")
+        if evaluation.metrics.get("amp_policy_identity") != AMP_POLICY_ID:
+            reasons.append("feta_unet_amp_policy_identity_mismatch")
         if evaluation.metrics.get("holdout_subjects_evaluated") != 0:
             reasons.append("feta_unet_holdout_accessed")
         if evaluation.metrics.get("failed_training_folds") != 0:

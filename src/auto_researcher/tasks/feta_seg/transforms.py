@@ -5,7 +5,12 @@ AUGMENTATION_VERSION = "feta-flip-scale-shift-v1"
 CACHE_IDENTITY_VERSION = "feta-persistent-cache-identity-v1"
 
 
-def create_transforms(*, training: bool):
+def create_transforms(
+    *,
+    training: bool,
+    positive_negative_ratio: str = "1:1",
+    augmentation_strength: str = "baseline",
+):
     try:
         from monai.transforms import (
             Compose,
@@ -41,6 +46,23 @@ def create_transforms(*, training: bool):
     ]
     if not training:
         return Compose(deterministic)
+    try:
+        positive, negative = (
+            int(item) for item in positive_negative_ratio.split(":", maxsplit=1)
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("feta_positive_negative_ratio_invalid") from exc
+    augmentation = {
+        "light": (0.1, 0.05, 0.05),
+        "baseline": (0.2, 0.1, 0.1),
+        "strong": (0.35, 0.2, 0.2),
+    }
+    try:
+        probability, intensity_scale, intensity_shift = augmentation[
+            augmentation_strength
+        ]
+    except KeyError as exc:
+        raise ValueError("feta_augmentation_strength_invalid") from exc
     return Compose(
         deterministic
         + [
@@ -48,8 +70,8 @@ def create_transforms(*, training: bool):
                 keys=("image", "label"),
                 label_key="label",
                 spatial_size=(128, 128, 128),
-                pos=1,
-                neg=1,
+                pos=positive,
+                neg=negative,
                 num_samples=2,
                 allow_smaller=True,
             ),
@@ -59,10 +81,14 @@ def create_transforms(*, training: bool):
                 method="symmetric",
                 mode="constant",
             ),
-            RandFlipd(keys=("image", "label"), prob=0.2, spatial_axis=0),
-            RandFlipd(keys=("image", "label"), prob=0.2, spatial_axis=1),
-            RandFlipd(keys=("image", "label"), prob=0.2, spatial_axis=2),
-            RandScaleIntensityd(keys="image", factors=0.1, prob=0.2),
-            RandShiftIntensityd(keys="image", offsets=0.1, prob=0.2),
+            RandFlipd(keys=("image", "label"), prob=probability, spatial_axis=0),
+            RandFlipd(keys=("image", "label"), prob=probability, spatial_axis=1),
+            RandFlipd(keys=("image", "label"), prob=probability, spatial_axis=2),
+            RandScaleIntensityd(
+                keys="image", factors=intensity_scale, prob=probability
+            ),
+            RandShiftIntensityd(
+                keys="image", offsets=intensity_shift, prob=probability
+            ),
         ]
     )

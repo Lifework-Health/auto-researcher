@@ -49,6 +49,10 @@ from auto_researcher.search.openevolve.live_runtime import (
     MetadataOnlyLiveOpenEvolveConfiguration,
     MetadataOnlyLiveOpenEvolveRuntime,
 )
+from auto_researcher.search.openevolve.development_runtime import (
+    DevelopmentLiveOpenEvolveConfiguration,
+    assemble_development_live_openevolve,
+)
 from auto_researcher.runtime.dependencies import (
     task_sqlite_dependencies,
     utc_now,
@@ -297,6 +301,39 @@ def _load_live_openevolve_runtime(
         ),
         thread_id=thread_id,
     )
+
+
+def _load_development_openevolve_runtime(
+    payload: dict[str, Any],
+) -> DevelopmentLiveOpenEvolveConfiguration | None:
+    configured = payload.get("openevolve_development_mutation")
+    if configured is None:
+        return None
+    if not isinstance(configured, dict):
+        raise ValueError("openevolve_development_mutation section must be a mapping")
+    prohibited = {
+        "api_key",
+        "access_token",
+        "credential_value",
+        "credentials",
+        "password",
+        "secret",
+        "secret_value",
+        "service_account_json",
+        "token",
+    }
+    if prohibited & _nested_keys(configured):
+        raise ValueError("development mutation credentials must use a secret reference")
+    configuration_payload = dict(configured)
+    credential_payload = configuration_payload.get("credential")
+    if not isinstance(credential_payload, dict):
+        raise ValueError(
+            "openevolve_development_mutation.credential must be a secret reference mapping"
+        )
+    from auto_researcher.secrets import parse_secret_reference
+
+    configuration_payload["credential"] = parse_secret_reference(credential_payload)
+    return DevelopmentLiveOpenEvolveConfiguration.model_validate(configuration_payload)
 
 
 def _load_live_agents(payload: dict[str, Any]):
@@ -665,6 +702,23 @@ def run(
             raw_config,
             thread_id=thread_id,
         )
+        openevolve_development_configuration = _load_development_openevolve_runtime(
+            raw_config
+        )
+        if (
+            openevolve_live_runtime is not None
+            and openevolve_development_configuration is not None
+        ):
+            raise ValueError("openevolve_mutation_runtime_conflict")
+        openevolve_development_operator = None
+        openevolve_development_client = None
+        if openevolve_development_configuration is not None:
+            (
+                openevolve_development_operator,
+                openevolve_development_client,
+            ) = assemble_development_live_openevolve(
+                openevolve_development_configuration
+            )
         with task_sqlite_dependencies(
             task,
             runtime_context,
@@ -683,6 +737,7 @@ def run(
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
             search_type=search_type,
+            openevolve_mutation_operator=openevolve_development_operator,
             openevolve_live_runtime=openevolve_live_runtime,
             clock=utc_now,
         ) as dependencies:
@@ -710,8 +765,14 @@ def run(
     typer.echo(f"Grounding mode: {contract.grounding.mode.value}")
     typer.echo(
         "OpenEvolve mutation mode: "
-        f"{'metadata_only_live' if openevolve_live_runtime else 'default'}"
+        f"{'metadata_only_live' if openevolve_live_runtime else 'development_native_live' if openevolve_development_configuration else 'default'}"
     )
+    if openevolve_development_client is not None:
+        typer.echo(
+            "OpenEvolve development model usage: "
+            f"calls={openevolve_development_client.calls_used} "
+            f"cost_usd={openevolve_development_client.total_cost:.6f}"
+        )
     typer.echo(
         "Knowledge provider: "
         f"{knowledge_configuration.provider_id if knowledge_configuration else 'none'}"
@@ -948,6 +1009,19 @@ def resume_cli(
             raw_config,
             thread_id=thread_id,
         )
+        openevolve_development_configuration = _load_development_openevolve_runtime(
+            raw_config
+        )
+        if (
+            openevolve_live_runtime is not None
+            and openevolve_development_configuration is not None
+        ):
+            raise ValueError("openevolve_mutation_runtime_conflict")
+        openevolve_development_operator = None
+        if openevolve_development_configuration is not None:
+            openevolve_development_operator, _ = assemble_development_live_openevolve(
+                openevolve_development_configuration
+            )
         with task_sqlite_dependencies(
             task,
             runtime_context,
@@ -966,6 +1040,7 @@ def resume_cli(
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
             search_type=search_type,
+            openevolve_mutation_operator=openevolve_development_operator,
             openevolve_live_runtime=openevolve_live_runtime,
             clock=utc_now,
         ) as dependencies:

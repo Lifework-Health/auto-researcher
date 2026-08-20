@@ -1,0 +1,116 @@
+# Development-only, single-GPU, 20-hour BasicUNet campaign.
+# Set runtime paths and campaign_seconds_per_epoch from the completed baseline.
+task: {id: feta_unet_search, version: "1.0"}
+
+agents:
+  mode: live
+  provider: anthropic
+  model_id: claude-sonnet-4-5-20250929
+  pricing:
+    version: anthropic-sonnet45-usd-3-15-v1
+    input_cost_per_million_tokens: 3.0
+    output_cost_per_million_tokens: 15.0
+    cache_write_cost_per_million_tokens: null
+    cache_read_cost_per_million_tokens: null
+    currency: USD
+  budget:
+    maximum_hypothesis_calls_per_cycle: 1
+    maximum_planner_calls_per_cycle: 1
+    maximum_attempts_per_agent_call: 2
+    maximum_input_context_size: 24000
+    maximum_output_tokens: 2048
+    maximum_cost_per_call: 0.50
+    maximum_total_model_calls: 24
+  hypothesis:
+    temperature: 0.2
+    maximum_output_tokens: 1200
+    timeout_seconds: 120
+    maximum_attempts: 2
+    maximum_cost_per_call: 0.50
+    prompt_version: 2.0.0
+    structured_output_strategy: pydantic
+  planner:
+    temperature: 0.0
+    maximum_output_tokens: 1600
+    timeout_seconds: 120
+    maximum_attempts: 2
+    maximum_cost_per_call: 0.50
+    prompt_version: 2.0.0
+    structured_output_strategy: pydantic
+
+openevolve_development_mutation:
+  protocol_version: development-live-openevolve-runtime-v1
+  mode: local_development
+  acknowledgement: public-data-non-production-development
+  maximum_model_calls: 12
+  maximum_total_cost_usd: 5.0
+  usage_log_file: /absolute/path/to/runtime/openevolve-model-usage.jsonl
+  credential:
+    logical_name: anthropic_api_key
+    provider: environment
+    provider_identifier: ANTHROPIC_API_KEY
+    version: null
+    required: true
+  model:
+    provider: anthropic
+    model_id: claude-sonnet-4-5-20250929
+    temperature: 0.2
+    maximum_output_tokens: 4096
+    timeout_seconds: 180
+    maximum_attempts: 1
+    maximum_cost_per_call: 0.40
+    prompt_version: openevolve-mutation-prompt-v2
+    structured_output_strategy: pydantic
+    pricing:
+      version: anthropic-sonnet45-usd-3-15-v1
+      input_cost_per_million_tokens: 3.0
+      output_cost_per_million_tokens: 15.0
+      cache_write_cost_per_million_tokens: null
+      cache_read_cost_per_million_tokens: null
+      currency: USD
+
+# OPTUNA is the bootstrap type so durable Optuna storage is opened. The live
+# planner may select DIRECT, OPTUNA or OPENEVOLVE on every graph cycle.
+search:
+  type: OPTUNA
+  trial_budget: 3
+  seed: 20260815
+  fixed:
+    maximum_epochs: 5
+  openevolve:
+    population_size: 1
+    maximum_generations: 2
+    maximum_candidate_evaluations: 3
+    maximum_wall_time_seconds: 72000
+    maximum_model_calls: 2
+    maximum_failed_candidates: 2
+    maximum_consecutive_failures: 2
+    maximum_artefact_bytes: 20000000
+    random_seed: 20260815
+    objective_direction: MAXIMIZE
+    objective_threshold: null
+    sandbox_policy_id: openevolve-sandbox-v1
+    candidate_cpu_time_seconds: 2
+    candidate_wall_time_seconds: 3.0
+    candidate_memory_bytes: 268435456
+    candidate_process_limit: 1
+    candidate_output_bytes: 64000
+    candidate_log_bytes: 8000
+    candidate_file_count_limit: 8
+    candidate_workspace_bytes: 1048576
+    candidate_file_size_bytes: 64000
+
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: /absolute/path/to/runtime/output
+  workspace_dir: /absolute/path/to/runtime/workspace
+  environment:
+    CUDA_VISIBLE_DEVICES: "0"
+  options:
+    protected_storage_acknowledged: true
+    workspace_namespace: feta_unet_campaign
+    shared_preprocessing_cache: true
+    openevolve_fidelity: 5
+    campaign_seconds_per_epoch: 120.0
+    campaign_finalisation_reserve_seconds: 1800.0
+    campaign_prior_results: 12
