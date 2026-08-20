@@ -1,4 +1,4 @@
-"""Bounded BasicUNet development search task."""
+"""Bounded U-Net family development search task."""
 
 from auto_researcher.tasks.feta_unet_search.configuration import (
     FeTAUNetSearchConfiguration,

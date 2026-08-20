@@ -1,6 +1,8 @@
-# Development-only, single-GPU, staged 20-hour BasicUNet campaign.
-# Screening: 36 OPTUNA + 12 OPENEVOLVE + 12 DIRECT at 25 epochs.
-# Graduation: 18 at 50, 7 at 100, and 2 at 150 epochs.
+# Development-only, single-GPU, lineage-aware 20-hour U-Net v5 campaign.
+# Roots: 8 OPTUNA + 8 OPENEVOLVE + 8 DIRECT at 25 epochs, balanced
+# as 12 BasicUNet, 6 plain MONAI UNet and 6 residual MONAI UNet roots.
+# Branching: 18 children and 6 grandchildren at 25 epochs.
+# Graduation: 8 at 50, 4 at 100, and 2 at 150 epochs.
 task: {id: feta_unet_search, version: "1.0"}
 
 agents:
@@ -21,7 +23,7 @@ agents:
     maximum_input_context_size: 48000
     maximum_output_tokens: 2048
     maximum_cost_per_call: 0.50
-    maximum_total_model_calls: 192
+    maximum_total_model_calls: 288
   hypothesis:
     temperature: 0.0
     maximum_output_tokens: 1200
@@ -74,14 +76,14 @@ openevolve_development_mutation:
 # method mix and graduation order; live agents still supply scientific context.
 search:
   type: OPTUNA
-  trial_budget: 36
+  trial_budget: 8
   seed: 20260815
   fixed:
     maximum_epochs: 25
   openevolve:
     population_size: 1
     maximum_generations: 2
-    maximum_candidate_evaluations: 13
+    maximum_candidate_evaluations: 9
     maximum_wall_time_seconds: 72000
     maximum_model_calls: 2
     maximum_failed_candidates: 2
@@ -109,11 +111,16 @@ runtime:
     CUDA_VISIBLE_DEVICES: "0"
   options:
     protected_storage_acknowledged: true
-    workspace_namespace: feta_unet_campaign_v4
+    workspace_namespace: feta_unet_campaign_v5
     shared_preprocessing_cache: true
     openevolve_fidelity: 25
-    # Replace with the measured p90 seconds/epoch from the host baseline.
-    campaign_seconds_per_epoch: 22.0
+    # Measured 2026-08-19 on this A6000. Family rates include the warm-cache
+    # validation allowance; the global value is the mixed-portfolio fallback.
+    campaign_seconds_per_epoch: 30.0
+    campaign_seconds_per_epoch_by_model_variant:
+      basic_unet: 25.0
+      unet_plain: 26.0
+      unet_residual: 49.0
     campaign_finalisation_reserve_seconds: 10800.0
     campaign_prior_results: 30
     # Record a failed candidate as inconclusive evidence and continue the campaign.
@@ -121,45 +128,63 @@ runtime:
     # Replace from the completed, verified fold-0 baseline before launch.
     initial_incumbent_configuration:
       maximum_epochs: 150
-      learning_rate: 0.0001
-      weight_decay: 0.000001
-      dropout: 0.0
-      dice_weight: 1.2
+      model_variant: basic_unet
+      feature_width: baseline
+      activation: LeakyReLU
+      norm: instance
+      optimizer: AdamW
+      lr_schedule: constant
+      loss_variant: dice_ce
+      learning_rate: 0.0002571864984165606
+      weight_decay: 0.0000062147089411317485
+      dropout: 0.020113868409613763
+      dice_weight: 1.1956546747501025
       positive_negative_ratio: "1:1"
-      augmentation_strength: baseline
+      augmentation_policy: reference_light
     # Aggregate results only; no paths, rows, images, masks or predictions.
     initial_campaign_observations:
-      - "Verified fold-0 development aggregate mean macro Dice was 0.812891818509455 at best epoch 120 for the incumbent DIRECT BasicUNet training policy."
+      - "Verified fold-0 development aggregate mean macro Dice was 0.8169983918129687 at epoch 150 for the incumbent OPTUNA BasicUNet policy."
+      - "V4 rank correlation was 0.1859504132231405 from 25 to 50 epochs and 0.03571428571428571 from 50 to 100 epochs, so early endpoint rank alone is weak evidence."
+      - "A separately trained U-Net reportedly reached approximately 0.84 under a believed-comparable evaluation, but its architecture and training policy are deliberately withheld from this bottom-up campaign."
     campaign_portfolio:
-      version: feta-unet-60-18-7-2-portfolio-v1
-      screening:
-        OPTUNA: 36
-        OPENEVOLVE: 12
-        DIRECT: 12
+      version: feta-unet-family-lineage-tree-24-18-6-8-4-2-v3
+      root_screening:
+        OPTUNA: 8
+        OPENEVOLVE: 8
+        DIRECT: 8
+      root_model_variants:
+        basic_unet: 4
+        unet_plain: 2
+        unet_residual: 2
+      root_parent_count: 6
+      children_per_parent:
+        OPTUNA: 1
+        OPENEVOLVE: 1
+        DIRECT: 1
+      child_parent_count: 3
+      grandchildren_per_parent:
+        OPTUNA: 1
+        OPENEVOLVE: 1
       promotion_targets:
-        "50": 18
-        "100": 7
+        "50": 8
+        "100": 4
         "150": 2
       wildcard_counts:
-        "50": 2
+        "50": 3
         "100": 1
-        "150": 0
-      direct_screening_configurations:
-        - {maximum_epochs: 25, learning_rate: 0.00005, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.000075, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.000125, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.00015, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000003, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.00001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.00003, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.05, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.1, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.0, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.1, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.3, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.4, positive_negative_ratio: "1:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "2:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "3:1", augmentation_strength: baseline}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: light}
-        - {maximum_epochs: 25, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_strength: strong}
-        - {maximum_epochs: 25, learning_rate: 0.000075, weight_decay: 0.000003, dropout: 0.05, dice_weight: 1.1, positive_negative_ratio: "2:1", augmentation_strength: light}
+        "150": 1
+      direct_root_configurations:
+        - {maximum_epochs: 25, model_variant: basic_unet, feature_width: baseline, activation: LeakyReLU, norm: instance, optimizer: AdamW, lr_schedule: constant, loss_variant: dice_ce, learning_rate: 0.0002571864984165606, weight_decay: 0.0000062147089411317485, dropout: 0.020113868409613763, dice_weight: 1.1956546747501025, positive_negative_ratio: "1:1", augmentation_policy: reference_light}
+        - {maximum_epochs: 25, model_variant: basic_unet, feature_width: wide, activation: ReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_tversky, learning_rate: 0.0002, weight_decay: 0.00001, dropout: 0.05, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_policy: geometric}
+        - {maximum_epochs: 25, model_variant: basic_unet, feature_width: narrow, activation: PReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.0002, weight_decay: 0.00001, dropout: 0.05, dice_weight: 1.1, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: basic_unet, feature_width: baseline, activation: ReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_ce, learning_rate: 0.00015, weight_decay: 0.00003, dropout: 0.1, dice_weight: 1.25, positive_negative_ratio: "2:1", augmentation_policy: combined}
+        - {maximum_epochs: 25, model_variant: basic_unet, feature_width: wide, activation: LeakyReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.0001, weight_decay: 0.000003, dropout: 0.05, dice_weight: 1.3, positive_negative_ratio: "3:1", augmentation_policy: reference_light}
+        - {maximum_epochs: 25, model_variant: basic_unet, feature_width: narrow, activation: ReLU, norm: group, optimizer: AdamW, lr_schedule: constant, loss_variant: dice_tversky, learning_rate: 0.0003, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.0, positive_negative_ratio: "1:1", augmentation_policy: combined}
+        - {maximum_epochs: 25, model_variant: unet_plain, feature_width: baseline, activation: LeakyReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_tversky, learning_rate: 0.0002, weight_decay: 0.00001, dropout: 0.02, dice_weight: 1.2, positive_negative_ratio: "1:1", augmentation_policy: geometric}
+        - {maximum_epochs: 25, model_variant: unet_plain, feature_width: wide, activation: ReLU, norm: group, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_ce, learning_rate: 0.00015, weight_decay: 0.00003, dropout: 0.05, dice_weight: 1.1, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: unet_plain, feature_width: narrow, activation: PReLU, norm: instance, optimizer: AdamW, lr_schedule: constant, loss_variant: dice_focal, learning_rate: 0.0003, weight_decay: 0.000003, dropout: 0.0, dice_weight: 1.25, positive_negative_ratio: "1:1", augmentation_policy: combined}
+        - {maximum_epochs: 25, model_variant: unet_plain, feature_width: baseline, activation: ReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_ce, learning_rate: 0.0001, weight_decay: 0.000001, dropout: 0.1, dice_weight: 1.0, positive_negative_ratio: "3:1", augmentation_policy: reference_light}
+        - {maximum_epochs: 25, model_variant: unet_residual, feature_width: narrow, activation: LeakyReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0002, weight_decay: 0.00001, dropout: 0.05, dice_weight: 1.2, positive_negative_ratio: "2:1", augmentation_policy: combined}
+        - {maximum_epochs: 25, model_variant: unet_residual, feature_width: baseline, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_tversky, learning_rate: 0.00015, weight_decay: 0.00003, dropout: 0.02, dice_weight: 1.25, positive_negative_ratio: "1:1", augmentation_policy: geometric}
+        - {maximum_epochs: 25, model_variant: unet_residual, feature_width: wide, activation: PReLU, norm: group, optimizer: AdamW, lr_schedule: constant, loss_variant: dice_ce, learning_rate: 0.0001, weight_decay: 0.000003, dropout: 0.1, dice_weight: 1.1, positive_negative_ratio: "1:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: unet_residual, feature_width: baseline, activation: LeakyReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.00025, weight_decay: 0.000001, dropout: 0.0, dice_weight: 1.3, positive_negative_ratio: "3:1", augmentation_policy: reference_light}

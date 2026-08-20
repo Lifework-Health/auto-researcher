@@ -38,12 +38,15 @@ from auto_researcher.tasks.feta_unet_direct.identities import (
 )
 from auto_researcher.tasks.feta_unet_direct.model import (
     ARCHITECTURE_ID,
-    create_basic_unet,
+    architecture_identity,
+    create_unet_model,
+    trainable_parameter_count,
 )
 from auto_researcher.tasks.feta_unet_direct.trainer import (
     checkpoint_reference,
     create_loss,
     create_optimizer,
+    create_scheduler,
     require_full_baseline_environment,
     seed_everything,
     sliding_window_predict,
@@ -72,6 +75,8 @@ class FoldExecutionResult:
     resumed: bool = False
     resumed_from_epoch: int | None = None
     trajectory_identity: str | None = None
+    architecture_identity: str = ARCHITECTURE_ID
+    architecture_trainable_parameters: int | None = None
 
 
 FoldExecutor = Callable[
@@ -79,6 +84,8 @@ FoldExecutor = Callable[
 ]
 
 MAX_CONSECUTIVE_AMP_SKIPS = 16
+SEARCH_RUNNER_ID = "feta-unet-family-fold0-development-runner-v3"
+SEARCH_DATA_LOADER_ID = "monai-unet-family-explicit-augmentation-loader-v4"
 
 
 def _amp_step_was_skipped(scale_before: float, scale_after: float) -> bool:
@@ -88,7 +95,15 @@ def _amp_step_was_skipped(scale_before: float, scale_after: float) -> bool:
 
 
 def _runner_id(configuration: FeTAUNetDirectConfiguration) -> str:
+    if hasattr(configuration, "model_variant"):
+        return SEARCH_RUNNER_ID
     return runner_id(configuration.profile)
+
+
+def _data_loader_id(configuration: FeTAUNetDirectConfiguration) -> str:
+    if hasattr(configuration, "augmentation_policy"):
+        return SEARCH_DATA_LOADER_ID
+    return DATA_LOADER_ID
 
 
 def _is_progress_milestone(
@@ -208,9 +223,12 @@ def _run_cuda_fold(
     seed = seed_everything(fold)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
-    model = create_basic_unet(configuration).to("cuda")
+    model = create_unet_model(configuration).to("cuda")
+    candidate_architecture_identity = architecture_identity(configuration)
+    candidate_trainable_parameters = trainable_parameter_count(model)
     loss_function = create_loss(configuration)
     optimizer = create_optimizer(model, configuration)
+    scheduler = create_scheduler(optimizer, configuration)
     scaler = torch.amp.GradScaler("cuda")
     training_dataset = PersistentDataset(
         _dataset_records(training_subjects),
@@ -222,6 +240,7 @@ def _run_cuda_fold(
             augmentation_strength=str(
                 getattr(configuration, "augmentation_strength", "baseline")
             ),
+            augmentation_policy=getattr(configuration, "augmentation_policy", None),
         ),
         cache_dir=cache_root / "training",
     )
@@ -278,13 +297,21 @@ def _run_cuda_fold(
                 source_root,
                 configuration,
                 runner_id=_runner_id(configuration),
-                data_loader_id=DATA_LOADER_ID,
+                data_loader_id=_data_loader_id(configuration),
             )
             copy_prior_checkpoints(plan, fold_checkpoint_root)
             try:
                 model.load_state_dict(plan.last_payload["model_state_dict"])
                 optimizer.load_state_dict(plan.last_payload["optimizer_state_dict"])
                 scaler.load_state_dict(plan.last_payload["scaler_state_dict"])
+                scheduler_state = plan.last_payload["scheduler_state_dict"]
+                if scheduler is None:
+                    if scheduler_state is not None:
+                        raise ValueError("feta_unet_resume_scheduler_state_invalid")
+                elif not isinstance(scheduler_state, dict):
+                    raise ValueError("feta_unet_resume_scheduler_state_invalid")
+                else:
+                    scheduler.load_state_dict(scheduler_state)
             except (KeyError, RuntimeError, TypeError, ValueError) as exc:
                 raise ValueError("feta_unet_resume_optimisation_state_invalid") from exc
             restore_rng_state(plan.last_payload["rng_state"], torch, np, generator)
@@ -348,6 +375,9 @@ def _run_cuda_fold(
             else:
                 consecutive_amp_skips = 0
 
+        if scheduler is not None:
+            scheduler.step()
+
         if epoch % configuration.validation_every:
             continue
         model.eval()
@@ -366,7 +396,8 @@ def _run_cuda_fold(
         checkpoint_payload = {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
-            "architecture_identity": ARCHITECTURE_ID,
+            "architecture_identity": candidate_architecture_identity,
+            "architecture_trainable_parameters": candidate_trainable_parameters,
             "configuration_identity": payload_hash(configuration),
             "fold": fold,
             "epoch": epoch,
@@ -426,6 +457,9 @@ def _run_cuda_fold(
         last_payload = build_last_payload(
             model_state_dict=model.state_dict(),
             optimizer_state_dict=optimizer.state_dict(),
+            scheduler_state_dict=(
+                scheduler.state_dict() if scheduler is not None else None
+            ),
             scaler_state_dict=scaler.state_dict(),
             completed_epoch=configuration.maximum_epochs,
             configuration=configuration,
@@ -439,7 +473,7 @@ def _run_cuda_fold(
                 output_root=checkpoint_root,
             )["sha256"],
             runner_id=_runner_id(configuration),
-            data_loader_id=DATA_LOADER_ID,
+            data_loader_id=_data_loader_id(configuration),
             rng_state=capture_rng_state(torch, np, generator),
         )
         torch.save(last_payload, last_checkpoint_path)
@@ -457,7 +491,9 @@ def _run_cuda_fold(
         raise RuntimeError("feta_unet_best_checkpoint_missing")
     saved = torch.load(checkpoint_path, map_location="cuda", weights_only=True)
     if (
-        saved.get("architecture_identity") != ARCHITECTURE_ID
+        saved.get("architecture_identity") != candidate_architecture_identity
+        or saved.get("architecture_trainable_parameters")
+        != candidate_trainable_parameters
         or int(saved.get("fold", -1)) != fold
         or int(saved.get("seed", -1)) != seed
     ):
@@ -496,7 +532,15 @@ def _run_cuda_fold(
         score=best_score,
         output_root=checkpoint_root,
     )
-    del model, optimizer, scaler, training_loader, training_dataset, validation_dataset
+    del (
+        model,
+        optimizer,
+        scheduler,
+        scaler,
+        training_loader,
+        training_dataset,
+        validation_dataset,
+    )
     torch.cuda.empty_cache()
     return FoldExecutionResult(
         fold=fold,
@@ -509,7 +553,7 @@ def _run_cuda_fold(
         checkpoint=reference,
         seed=seed,
         source_runner_id=_runner_id(configuration),
-        source_data_loader_id=DATA_LOADER_ID,
+        source_data_loader_id=_data_loader_id(configuration),
         validation_history=tuple(validation_history),
         milestone_checkpoints=tuple(milestone_checkpoints),
         amp_skipped_steps=amp_skipped_steps,
@@ -517,6 +561,8 @@ def _run_cuda_fold(
         resumed=resumed,
         resumed_from_epoch=resumed_from_epoch,
         trajectory_identity=candidate_trajectory_identity,
+        architecture_identity=candidate_architecture_identity,
+        architecture_trainable_parameters=candidate_trainable_parameters,
     )
 
 
@@ -673,6 +719,10 @@ def run_profile(
     aggregate.pop("subject_metrics", None)
     return {
         **aggregate,
+        "architecture_identity": fold_results[0].architecture_identity,
+        "architecture_trainable_parameters": fold_results[
+            0
+        ].architecture_trainable_parameters,
         "fold_summaries": [
             {
                 "fold": result.fold,
@@ -699,7 +749,7 @@ def run_profile(
         "checkpoint_references": [result.checkpoint for result in fold_results],
         "environment": environment,
         "runner_id": _runner_id(configuration),
-        "data_loader_id": DATA_LOADER_ID,
+        "data_loader_id": _data_loader_id(configuration),
         "folds_completed": len(fold_results),
         "oof_subject_count": sum(
             len(result.subject_metrics) for result in fold_results

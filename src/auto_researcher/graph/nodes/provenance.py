@@ -199,7 +199,15 @@ def record_provenance(
                 EventType.EXPERIMENT_PREPARED,
                 f"{search_type.lower()}_search",
                 (experiment.search_request_id,),
-                (experiment.experiment_id,),
+                (
+                    experiment.experiment_id,
+                    *(
+                        f"evidence_reference:{reference}"
+                        for reference in (
+                            request.evidence_references if request else ()
+                        )
+                    ),
+                ),
                 (
                     "Prepared one task-owned experiment without evaluating it; "
                     f"the selected generic backend was {search_type}."

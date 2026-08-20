@@ -55,6 +55,7 @@ from auto_researcher.tasks.feta_unet_direct.model import (
     MEASURED_PEAK_CUDA_ALLOCATED_MIB,
     MEASURED_PEAK_CUDA_RESERVED_MIB,
     TRAINABLE_PARAMETER_COUNT,
+    architecture_identity,
 )
 from auto_researcher.tasks.feta_unet_direct.runner import run_profile
 from auto_researcher.tasks.models import (
@@ -146,6 +147,9 @@ def evaluator_code_version(dataset_version: str) -> str:
 class FeTAUNetDirectEvaluator:
     evaluator_id = EVALUATOR_ID
     version = EVALUATOR_VERSION
+    architecture_family_identity = ARCHITECTURE_ID
+    development_runner_identity = DEVELOPMENT_BASELINE_RUNNER_ID
+    data_loader_identity = DATA_LOADER_ID
     cost_per_experiment = 0.0
 
     def __init__(
@@ -180,7 +184,7 @@ class FeTAUNetDirectEvaluator:
             "task_id": self.task_id,
             "task_version": "1.0",
             "scientific_identity": self.scientific_identity,
-            "architecture_identity": ARCHITECTURE_ID,
+            "architecture_identity": self.architecture_family_identity,
             "evaluator_id": self.evaluator_id,
             "evaluator_version": self.version,
             "result_identity": self.result_identity,
@@ -291,6 +295,7 @@ class FeTAUNetDirectEvaluator:
                 "feta_unet_validation_metric_non_finite",
                 "feta_unet_checkpoint_identity_mismatch",
                 "feta_unet_fold_restart_checkpoint_identity_mismatch",
+                "feta_unet_resume_scheduler_state_invalid",
             }
             return self._failure(
                 experiment,
@@ -311,6 +316,18 @@ class FeTAUNetDirectEvaluator:
             "development_baseline": "fold0-development-oof",
             "frozen_baseline": "five-fold-development-oof",
         }[configuration.profile]
+        expected_architecture_identity = architecture_identity(configuration)
+        reported_parameter_count = metrics.get(
+            "architecture_trainable_parameters", TRAINABLE_PARAMETER_COUNT
+        )
+        if (
+            isinstance(reported_parameter_count, bool)
+            or not isinstance(reported_parameter_count, int)
+            or reported_parameter_count <= 0
+        ):
+            return self._failure(
+                experiment, "feta_unet_architecture_parameter_count_invalid"
+            )
         metrics.update(
             {
                 "scientific_baseline": scientific_baseline,
@@ -318,8 +335,8 @@ class FeTAUNetDirectEvaluator:
                 "validation_scope": validation_scope,
                 "profile": configuration.profile,
                 "scientific_identity": self.scientific_identity,
-                "architecture_identity": ARCHITECTURE_ID,
-                "architecture_trainable_parameters": TRAINABLE_PARAMETER_COUNT,
+                "architecture_identity": expected_architecture_identity,
+                "architecture_trainable_parameters": reported_parameter_count,
                 "architecture_measured_input_shape": list(MEASURED_INPUT_SHAPE),
                 "architecture_measured_output_shape": list(MEASURED_OUTPUT_SHAPE),
                 "architecture_measured_peak_cuda_allocated_mib": (
@@ -396,7 +413,7 @@ class FeTAUNetDirectEvaluator:
             expected_runner = BASELINE_RUNNER_ID
         elif development_baseline:
             expected_folds, expected_subjects = 1, 14
-            expected_runner = DEVELOPMENT_BASELINE_RUNNER_ID
+            expected_runner = self.development_runner_identity
         else:
             expected_folds, expected_subjects = 1, 1
             expected_runner = ENGINEERING_SMOKE_RUNNER_ID
@@ -417,13 +434,14 @@ class FeTAUNetDirectEvaluator:
             "fold_identity_exact": metrics["fold_identity"] == FOLD_ID
             and metrics["fold_hash"] == EXPECTED_FOLD_HASH,
             "architecture_identity_exact": metrics["architecture_identity"]
-            == ARCHITECTURE_ID
+            == expected_architecture_identity
             and metrics["architecture_trainable_parameters"]
-            == TRAINABLE_PARAMETER_COUNT,
+            == reported_parameter_count,
             "evaluator_identity_exact": metrics["evaluator_version"] == self.version
             and metrics["evaluator_code_version"] == self.metadata.code_version,
             "runner_identity_exact": metrics["runner_id"] == expected_runner,
-            "data_loader_identity_exact": metrics["data_loader_id"] == DATA_LOADER_ID,
+            "data_loader_identity_exact": metrics["data_loader_id"]
+            == self.data_loader_identity,
             "oof_subject_count_exact": metrics["oof_subject_count"]
             == expected_subjects,
             "no_subject_identifiers": metrics["contains_subject_identifiers"] is False

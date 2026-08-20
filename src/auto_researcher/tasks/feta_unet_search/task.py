@@ -1,4 +1,4 @@
-"""Planner-ready BasicUNet fold-0 development campaign task."""
+"""Planner-ready U-Net family fold-0 development campaign task."""
 
 from __future__ import annotations
 
@@ -40,20 +40,24 @@ from auto_researcher.tasks.feta_seg.splits import (
     FOLD_ID,
     SPLIT_ID,
 )
-from auto_researcher.tasks.feta_unet_direct.model import (
-    ARCHITECTURE_ID,
-    TRAINABLE_PARAMETER_COUNT,
-)
 from auto_researcher.tasks.feta_unet_direct.task import FeTAUNetDirectTask
 from auto_researcher.tasks.feta_unet_search.configuration import (
-    AUGMENTATION_STRENGTHS,
+    AUGMENTATION_POLICIES,
+    ACTIVATIONS,
     CANDIDATE_CONFIGURATION_FIELDS,
     CONFIGURATION_SCHEMA_VERSION,
     DICE_WEIGHT_BOUNDS,
     DROPOUT_BOUNDS,
     FIDELITY_LEVELS,
+    FEATURE_WIDTH_PROFILES,
     LEARNING_RATE_BOUNDS,
+    LEARNING_RATE_SCHEDULES,
+    LOSS_VARIANTS,
+    MODEL_VARIANTS,
+    NORMALISATIONS,
+    OPTIMISERS,
     POSITIVE_NEGATIVE_RATIOS,
+    SEARCH_ARCHITECTURE_FAMILY_ID,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
     baseline_search_configuration,
@@ -116,7 +120,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         return TaskDescriptor(
             task_id=self.task_id,
             task_version=self.task_version,
-            display_name="FeTA BasicUNet Development Search",
+            display_name="FeTA U-Net Family Development Search",
             domain="fetal MRI segmentation",
             description=(
                 "Planner-driven DIRECT, Optuna and OpenEvolve training-policy "
@@ -151,8 +155,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             "dataset_manifest_hash": EXPECTED_MANIFEST_HASH,
             "split_hash": EXPECTED_SPLIT_HASH,
             "fold_hash": EXPECTED_FOLD_HASH,
-            "architecture_identity": ARCHITECTURE_ID,
-            "architecture_trainable_parameters": TRAINABLE_PARAMETER_COUNT,
+            "architecture_identity": SEARCH_ARCHITECTURE_FAMILY_ID,
+            "architecture_model_variants": list(MODEL_VARIANTS),
+            "architecture_feature_width_profiles": list(FEATURE_WIDTH_PROFILES),
             "holdout_policy": "sealed-no-evaluation",
             "search_scope": "development-fold-0-only",
         }
@@ -235,22 +240,52 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     choices=POSITIVE_NEGATIVE_RATIOS,
                 ),
                 CategoricalParameterSpec(
-                    name="augmentation_strength",
-                    choices=AUGMENTATION_STRENGTHS,
+                    name="augmentation_policy",
+                    choices=AUGMENTATION_POLICIES,
+                ),
+                CategoricalParameterSpec(
+                    name="model_variant",
+                    choices=MODEL_VARIANTS,
+                ),
+                CategoricalParameterSpec(
+                    name="feature_width",
+                    choices=tuple(FEATURE_WIDTH_PROFILES),
+                ),
+                CategoricalParameterSpec(
+                    name="activation",
+                    choices=ACTIVATIONS,
+                ),
+                CategoricalParameterSpec(
+                    name="norm",
+                    choices=NORMALISATIONS,
+                ),
+                CategoricalParameterSpec(
+                    name="optimizer",
+                    choices=OPTIMISERS,
+                ),
+                CategoricalParameterSpec(
+                    name="lr_schedule",
+                    choices=LEARNING_RATE_SCHEDULES,
+                ),
+                CategoricalParameterSpec(
+                    name="loss_variant",
+                    choices=LOSS_VARIANTS,
                 ),
             ),
             fixed_configuration={
                 key: value
                 for key, value in fixed.items()
-                if key
-                not in {
-                    "learning_rate",
-                    "weight_decay",
-                    "dropout",
-                    "dice_weight",
-                    "positive_negative_ratio",
-                    "augmentation_strength",
-                }
+                if key == "maximum_epochs"
+                or (
+                    key not in CANDIDATE_CONFIGURATION_FIELDS
+                    and key
+                    not in {
+                        "features",
+                        "channels",
+                        "network_family",
+                        "residual_units",
+                    }
+                )
             },
             trial_budget=request.experiment_budget,
             seed=20260807,
@@ -421,6 +456,47 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             or raw_seconds_per_epoch <= 0
         ):
             raise ValueError("feta_unet_campaign_epoch_duration_invalid")
+        seconds_per_epoch = float(raw_seconds_per_epoch)
+        raw_family_rates = runtime_context.task_options.get(
+            "campaign_seconds_per_epoch_by_model_variant"
+        )
+        if raw_family_rates is not None:
+            if not isinstance(raw_family_rates, dict) or set(raw_family_rates) != set(
+                MODEL_VARIANTS
+            ):
+                raise ValueError("feta_unet_campaign_family_durations_invalid")
+            family_rates: dict[str, float] = {}
+            for name in MODEL_VARIANTS:
+                value = raw_family_rates[name]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or value <= 0
+                ):
+                    raise ValueError("feta_unet_campaign_family_durations_invalid")
+                family_rates[name] = float(value)
+
+            model_variant = None
+            if request.search_type == SearchType.DIRECT:
+                model_variant = request.search_space.get("model_variant")
+            elif request.search_type == SearchType.OPTUNA:
+                fixed = request.search_space.get("fixed", {})
+                if isinstance(fixed, dict):
+                    model_variant = fixed.get("model_variant")
+            else:
+                campaign_context = request.search_space.get("campaign_context", {})
+                if isinstance(campaign_context, dict):
+                    model_variant = campaign_context.get("required_model_variant")
+            if model_variant is None:
+                # A mutable or mixed-family block must reserve for the slowest
+                # registered family so the wall-time deadline remains real.
+                seconds_per_epoch = max(family_rates.values())
+            elif (
+                not isinstance(model_variant, str) or model_variant not in family_rates
+            ):
+                raise ValueError("feta_unet_campaign_model_variant_invalid")
+            else:
+                seconds_per_epoch = family_rates[model_variant]
         if request.search_type == SearchType.OPENEVOLVE:
             fidelity = runtime_context.task_options.get("openevolve_fidelity", 25)
             candidates = request.experiment_budget
@@ -452,7 +528,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             if source_fidelity >= fidelity or source_fidelity not in FIDELITY_LEVELS:
                 raise ValueError("feta_unet_campaign_promotion_reference_invalid")
             marginal_fidelity = fidelity - source_fidelity
-        return float(raw_seconds_per_epoch) * marginal_fidelity * candidates
+        return seconds_per_epoch * marginal_fidelity * candidates
 
     def artefact_policy(self) -> ArtefactPolicy:
         baseline = super().artefact_policy()
@@ -481,16 +557,24 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         return TaskAgentContext(
             task_id=self.task_id,
             task_version=self.task_version,
-            display_name="FeTA BasicUNet Development Search",
+            display_name="FeTA U-Net Family Development Search",
             domain="fetal MRI segmentation",
             task_description=(
-                "Improve the fixed MONAI BasicUNet through bounded fold-0 "
-                "training-policy experiments."
+                "Improve a bounded MONAI U-Net family through fold-0 "
+                "micro-architecture and training-policy experiments."
             ),
             safe_scientific_vocabulary=(
                 "macro Dice",
                 "BasicUNet",
+                "residual U-Net",
                 "learning rate",
+                "learning-rate schedule",
+                "model family",
+                "feature width",
+                "normalisation",
+                "activation",
+                "optimiser",
+                "loss variant",
                 "augmentation strength",
                 "training fidelity",
             ),
@@ -501,8 +585,8 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             scientific_constraint_summary=(
                 "fold 0 only",
                 "holdout sealed",
-                "fixed BasicUNet architecture and preprocessing",
-                "bounded training-policy search",
+                "fixed preprocessing and evaluation",
+                "bounded U-Net family, micro-architecture and training-policy search",
             ),
             dataset_summary={
                 "dataset_release": DATASET_RELEASE,
@@ -518,12 +602,19 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             ),
             direct_configuration_schema={
                 "maximum_epochs": list(FIDELITY_LEVELS),
+                "model_variant": list(MODEL_VARIANTS),
+                "feature_width": list(FEATURE_WIDTH_PROFILES),
+                "activation": list(ACTIVATIONS),
+                "norm": list(NORMALISATIONS),
+                "optimizer": list(OPTIMISERS),
+                "lr_schedule": list(LEARNING_RATE_SCHEDULES),
+                "loss_variant": list(LOSS_VARIANTS),
                 "learning_rate": list(LEARNING_RATE_BOUNDS),
                 "weight_decay": list(WEIGHT_DECAY_BOUNDS),
                 "dropout": list(DROPOUT_BOUNDS),
                 "dice_weight": list(DICE_WEIGHT_BOUNDS),
                 "positive_negative_ratio": list(POSITIVE_NEGATIVE_RATIOS),
-                "augmentation_strength": list(AUGMENTATION_STRENGTHS),
+                "augmentation_policy": list(AUGMENTATION_POLICIES),
             },
             optuna_space_summary={
                 "learning_rate": list(LEARNING_RATE_BOUNDS),
@@ -531,7 +622,14 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "dropout": list(DROPOUT_BOUNDS),
                 "dice_weight": list(DICE_WEIGHT_BOUNDS),
                 "positive_negative_ratio": list(POSITIVE_NEGATIVE_RATIOS),
-                "augmentation_strength": list(AUGMENTATION_STRENGTHS),
+                "augmentation_policy": list(AUGMENTATION_POLICIES),
+                "model_variant": list(MODEL_VARIANTS),
+                "feature_width": list(FEATURE_WIDTH_PROFILES),
+                "activation": list(ACTIVATIONS),
+                "norm": list(NORMALISATIONS),
+                "optimizer": list(OPTIMISERS),
+                "lr_schedule": list(LEARNING_RATE_SCHEDULES),
+                "loss_variant": list(LOSS_VARIANTS),
                 "fidelity_levels": list(FIDELITY_LEVELS),
             },
             openevolve_space_summary={
@@ -542,12 +640,19 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     "dropout": list(DROPOUT_BOUNDS),
                     "dice_weight": list(DICE_WEIGHT_BOUNDS),
                     "positive_negative_ratio": list(POSITIVE_NEGATIVE_RATIOS),
-                    "augmentation_strength": list(AUGMENTATION_STRENGTHS),
+                    "augmentation_policy": list(AUGMENTATION_POLICIES),
+                    "model_variant": list(MODEL_VARIANTS),
+                    "feature_width": list(FEATURE_WIDTH_PROFILES),
+                    "activation": list(ACTIVATIONS),
+                    "norm": list(NORMALISATIONS),
+                    "optimizer": list(OPTIMISERS),
+                    "lr_schedule": list(LEARNING_RATE_SCHEDULES),
+                    "loss_variant": list(LOSS_VARIANTS),
                 },
                 "fidelity": runtime_context.task_options.get("openevolve_fidelity", 25),
             },
             fixed_scientific_context={
-                "architecture_identity": ARCHITECTURE_ID,
+                "architecture_identity": SEARCH_ARCHITECTURE_FAMILY_ID,
                 "split_identity": SPLIT_ID,
                 "split_hash": EXPECTED_SPLIT_HASH,
                 "fold_identity": FOLD_ID,
@@ -557,12 +662,15 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "campaign_seconds_per_epoch": runtime_context.task_options.get(
                     "campaign_seconds_per_epoch", 120.0
                 ),
+                "campaign_seconds_per_epoch_by_model_variant": runtime_context.task_options.get(
+                    "campaign_seconds_per_epoch_by_model_variant"
+                ),
                 "campaign_finalisation_reserve_seconds": runtime_context.task_options.get(
                     "campaign_finalisation_reserve_seconds", 10_800.0
                 ),
             },
             task_limitations=(
-                "No holdout evaluation, architecture mutation, multiple folds or multiple GPUs.",
+                "No holdout evaluation, unbounded topology mutation, multiple folds or multiple GPUs.",
             ),
             safety_notes=(
                 "Raw MRI, masks, subject rows, predictions and checkpoint bytes are excluded from model context.",
@@ -571,7 +679,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
 
 
 def default_feta_unet_search_contract(
-    *, maximum_cycles: int = 64, maximum_experiments: int = 120
+    *, maximum_cycles: int = 96, maximum_experiments: int = 140
 ) -> ResearchContract:
     return ResearchContract(
         contract_id="feta-basic-unet-fold0-campaign-contract",
@@ -581,8 +689,11 @@ def default_feta_unet_search_contract(
         objective_version=SCIENTIFIC_ID,
         primary_metric="mean_subject_macro_dice",
         task_constraints_version=CONFIGURATION_SCHEMA_VERSION,
-        question="Which bounded BasicUNet training policy improves fold-0 development macro Dice?",
-        objective="maximise BasicUNet fold-0 development mean subject-level macro Dice",
+        question="Which bounded U-Net lineage improves fold-0 development macro Dice?",
+        objective=(
+            "maximise U-Net fold-0 development mean subject-level macro Dice "
+            "through lineage-aware tree search"
+        ),
         constraints={
             "dataset_release": DATASET_RELEASE,
             "dataset_manifest_hash": EXPECTED_MANIFEST_HASH,
@@ -592,8 +703,9 @@ def default_feta_unet_search_contract(
             "fold_hash": EXPECTED_FOLD_HASH,
             "holdout_policy": "sealed-no-evaluation",
             "search_scope": "development-fold-0-only",
-            "architecture_identity": ARCHITECTURE_ID,
-            "architecture_trainable_parameters": TRAINABLE_PARAMETER_COUNT,
+            "architecture_identity": SEARCH_ARCHITECTURE_FAMILY_ID,
+            "architecture_model_variants": list(MODEL_VARIANTS),
+            "architecture_feature_width_profiles": list(FEATURE_WIDTH_PROFILES),
             "score_minimum": 0.0,
             "score_maximum": 1.0,
             "campaign_duration_seconds": 72_000,

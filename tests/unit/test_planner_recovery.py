@@ -23,6 +23,9 @@ from auto_researcher.graph.nodes.hypothesis import generate_hypothesis
 from auto_researcher.graph.nodes.planner import plan_search
 from auto_researcher.graph.nodes.provenance import record_provenance
 from auto_researcher.tasks.feta_unet_search import FeTAUNetSearchTask
+from auto_researcher.tasks.feta_unet_search.configuration import (
+    normalise_search_configuration,
+)
 from auto_researcher.tasks.models import TaskRuntimeContext
 from auto_researcher.tasks.synthetic import default_synthetic_configuration
 
@@ -77,7 +80,7 @@ def test_valid_hypothesis_uses_identity_stable_direct_fallback(
         "dropout": 0.0,
         "dice_weight": 1.0,
         "positive_negative_ratio": "1:1",
-        "augmentation_strength": "baseline",
+        "augmentation_policy": "reference_light",
     }
     hypothesis = Hypothesis(
         hypothesis_id="hyp-cycle-four",
@@ -125,7 +128,9 @@ def test_valid_hypothesis_uses_identity_stable_direct_fallback(
     assert first["planner_failure_stage"] == "context_assembly"
     assert first["search_request"].search_type == SearchType.DIRECT
     assert first["search_request"].proposal_source == ProposalSource.DETERMINISTIC
-    assert first["search_request"].search_space == cycle_four_configuration
+    assert first["search_request"].search_space == normalise_search_configuration(
+        cycle_four_configuration
+    )
     assert first["search_request"].request_id == second["search_request"].request_id
     assert first["errors"] == []
 
@@ -349,7 +354,7 @@ def test_first_cycle_context_failure_uses_configured_incumbent(
         "dropout": 0.0,
         "dice_weight": 1.0,
         "positive_negative_ratio": "1:1",
-        "augmentation_strength": "baseline",
+        "augmentation_policy": "reference_light",
     }
     state = {
         "run_id": "run-first-cycle-fallback",
@@ -386,7 +391,7 @@ def test_first_cycle_context_failure_uses_configured_incumbent(
     assert first["hypothesis_failure_stage"] == "context_assembly"
     assert hypothesis.proposal_source == ProposalSource.DETERMINISTIC
     assert hypothesis.grounding_status == GroundingStatus.CONTRACT_GROUNDED
-    assert hypothesis.predicted_subspace == incumbent
+    assert hypothesis.predicted_subspace == normalise_search_configuration(incumbent)
     assert hypothesis.evidence_references == (contract.contract_id,)
     assert hypothesis.hypothesis_id == second["active_hypothesis"].hypothesis_id
 

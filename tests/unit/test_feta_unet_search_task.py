@@ -18,6 +18,7 @@ from auto_researcher.contracts.enums import (
 from auto_researcher.contracts.models import (
     BudgetState,
     DecisionEvent,
+    EvaluationResult,
     ResearchContract,
     SearchRequest,
 )
@@ -31,6 +32,15 @@ from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
     EXPECTED_MANIFEST_HASH,
 )
+from auto_researcher.tasks.feta_seg.splits import (
+    EXPECTED_FOLD_HASH,
+    EXPECTED_SPLIT_HASH,
+    FOLD_ID,
+    SPLIT_ID,
+)
+from auto_researcher.tasks.feta_unet_direct.identities import AMP_POLICY_ID
+from auto_researcher.tasks.feta_unet_direct.model import architecture_identity
+from auto_researcher.tasks.feta_unet_direct.runner import SEARCH_DATA_LOADER_ID
 from auto_researcher.tasks.feta_unet_search import (
     FeTAUNetSearchConfiguration,
     FeTAUNetSearchTask,
@@ -39,8 +49,10 @@ from auto_researcher.tasks.feta_unet_search import (
 from auto_researcher.tasks.feta_unet_search.evaluator import (
     AUGMENTATION_ID,
     EVALUATOR_ID,
+    EVALUATOR_VERSION,
     LOSS_ID,
     OPTIMISER_ID,
+    RESULT_ID,
     FeTAUNetSearchEvaluator,
     evaluator_code_version,
 )
@@ -91,6 +103,67 @@ def test_registry_exposes_three_method_unet_campaign_task():
     assert task.descriptor().supported_search_types == frozenset(SearchType)
 
 
+def test_search_verifier_accepts_registered_family_architecture():
+    task = FeTAUNetSearchTask()
+    policy = task.create_verification_policy(default_feta_unet_search_contract())
+    configuration = FeTAUNetSearchConfiguration(
+        maximum_epochs=25,
+        model_variant="unet_plain",
+        feature_width="wide",
+        norm="group",
+    )
+    metrics = {name: None for name in policy.required_metrics}
+    metrics.update(
+        {
+            "dataset_manifest_hash": EXPECTED_MANIFEST_HASH,
+            "split_identity": SPLIT_ID,
+            "split_hash": EXPECTED_SPLIT_HASH,
+            "fold_identity": FOLD_ID,
+            "fold_hash": EXPECTED_FOLD_HASH,
+            "architecture_identity": architecture_identity(configuration),
+            "architecture_trainable_parameters": 12_378_136,
+            "evaluator_version": EVALUATOR_VERSION,
+            "result_identity": RESULT_ID,
+            "data_loader_id": SEARCH_DATA_LOADER_ID,
+            "amp_policy_identity": AMP_POLICY_ID,
+            "holdout_subjects_evaluated": 0,
+            "failed_training_folds": 0,
+            "profile": "development_baseline",
+            "folds_completed": 1,
+            "oof_subject_count": 14,
+            "contains_subject_identifiers": False,
+            "configuration": configuration.model_dump(mode="json"),
+            "augmentation_version": AUGMENTATION_ID,
+            "loss_identity": LOSS_ID,
+            "optimiser_identity": OPTIMISER_ID,
+        }
+    )
+    evaluation = EvaluationResult(
+        experiment_id="experiment-family",
+        success=True,
+        primary_score=0.7,
+        metrics=metrics,
+        constraint_results={"evaluator_integrity": True},
+        evaluator_version=EVALUATOR_VERSION,
+        provenance=ProvenanceKind.REAL,
+    )
+
+    accepted = policy.evaluate_constraints(
+        evaluation, default_feta_unet_search_contract()
+    )
+    rejected = policy.evaluate_constraints(
+        evaluation.model_copy(
+            update={"metrics": {**metrics, "architecture_identity": "wrong"}}
+        ),
+        default_feta_unet_search_contract(),
+    )
+
+    assert accepted.constraint_compliant is True
+    assert accepted.evidence_status == EvidenceStatus.SUPPORTED
+    assert rejected.constraint_compliant is False
+    assert "feta_unet_architecture_identity_mismatch" in rejected.reasons
+
+
 def test_agent_context_exposes_direct_executable_parameter_names():
     task = FeTAUNetSearchTask()
     context = task.create_agent_context(
@@ -101,12 +174,19 @@ def test_agent_context_exposes_direct_executable_parameter_names():
 
     assert set(context.direct_configuration_schema) == {
         "maximum_epochs",
+        "feature_width",
+        "activation",
+        "norm",
+        "optimizer",
+        "lr_schedule",
+        "loss_variant",
         "learning_rate",
         "weight_decay",
         "dropout",
         "dice_weight",
         "positive_negative_ratio",
-        "augmentation_strength",
+        "augmentation_policy",
+        "model_variant",
     }
 
 
@@ -157,7 +237,7 @@ def test_one_runtime_assembly_exposes_all_three_backends():
     } == set(SearchType)
 
 
-def test_search_configuration_keeps_architecture_fixed_and_training_bounded():
+def test_search_configuration_keeps_family_bounded_and_training_bounded():
     candidate = FeTAUNetSearchConfiguration(
         maximum_epochs=25,
         learning_rate=2e-4,
@@ -165,9 +245,12 @@ def test_search_configuration_keeps_architecture_fixed_and_training_bounded():
         dropout=0.2,
         dice_weight=1.2,
         positive_negative_ratio="2:1",
-        augmentation_strength="strong",
+        model_variant="unet_residual",
+        augmentation_policy="combined",
     )
     assert candidate.features == (32, 32, 64, 128, 256, 32)
+    assert candidate.network_family == "UNet"
+    assert candidate.residual_units == 2
     with pytest.raises(ValidationError, match="learning_rate"):
         FeTAUNetSearchConfiguration(learning_rate=0.1)
     with pytest.raises(ValidationError, match="fixed_context"):
@@ -197,7 +280,7 @@ def test_search_evaluator_binds_variable_training_policy_identities():
     assert evaluator.optimiser_identity == OPTIMISER_ID
 
 
-def test_optuna_space_has_six_axes_and_fixed_fidelity():
+def test_optuna_space_has_thirteen_axes_and_fixed_fidelity():
     task = FeTAUNetSearchTask()
     specification = task.create_optuna_study_spec(
         default_feta_unet_search_contract(),
@@ -215,8 +298,70 @@ def test_optuna_space_has_six_axes_and_fixed_fidelity():
         "dropout",
         "dice_weight",
         "positive_negative_ratio",
-        "augmentation_strength",
+        "augmentation_policy",
+        "model_variant",
+        "feature_width",
+        "activation",
+        "norm",
+        "optimizer",
+        "lr_schedule",
+        "loss_variant",
     }
+    assert {
+        "features",
+        "channels",
+        "network_family",
+        "residual_units",
+    }.isdisjoint(specification.fixed_configuration)
+
+
+def test_optuna_fixed_residual_family_recomputes_derived_architecture():
+    task = FeTAUNetSearchTask()
+    specification = task.create_optuna_study_spec(
+        default_feta_unet_search_contract(),
+        _request(
+            SearchType.OPTUNA,
+            {
+                "fixed": {
+                    "maximum_epochs": 25,
+                    "model_variant": "unet_residual",
+                    "feature_width": "wide",
+                }
+            },
+            budget=2,
+        ),
+    )
+    assert specification.fixed_configuration["model_variant"] == "unet_residual"
+    assert specification.fixed_configuration["feature_width"] == "wide"
+    assert {
+        "features",
+        "channels",
+        "network_family",
+        "residual_units",
+    }.isdisjoint(specification.fixed_configuration)
+
+    normalised = task.normalise_configuration(
+        {
+            **dict(specification.fixed_configuration),
+            "learning_rate": 2e-4,
+            "weight_decay": 5e-5,
+            "dropout": 0.1,
+            "dice_weight": 1.1,
+            "positive_negative_ratio": "2:1",
+            "augmentation_policy": "combined",
+            "activation": "PReLU",
+            "norm": "group",
+            "optimizer": "Adam",
+            "lr_schedule": "cosine",
+            "loss_variant": "dice_tversky",
+        }
+    )
+    candidate = FeTAUNetSearchConfiguration.model_validate(normalised)
+    assert candidate.model_variant == "unet_residual"
+    assert candidate.feature_width == "wide"
+    assert candidate.network_family == "UNet"
+    assert candidate.residual_units == 2
+    assert candidate.channels == (40, 80, 160, 320, 640)
 
 
 def test_openevolve_seed_executes_to_a_bounded_unet_experiment():
@@ -272,7 +417,8 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
                 "dropout": 0.05,
                 "dice_weight": 1.2,
                 "positive_negative_ratio": "2:1",
-                "augmentation_strength": "strong",
+                "augmentation_policy": "combined",
+                "model_variant": "unet_residual",
             },
             initial_campaign_observations=[
                 "Verified fold-0 baseline mean macro Dice was 0.807986."
@@ -280,13 +426,20 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         ),
     )
     assert component.seed_configuration()["seed_training_policy"] == {
-        "policy_version": "feta-basic-unet-training-policy-v1",
+        "policy_version": "feta-unet-training-policy-v3",
+        "model_variant": "unet_residual",
+        "feature_width": "baseline",
+        "activation": "LeakyReLU",
+        "norm": "instance",
+        "optimizer": "AdamW",
+        "lr_schedule": "constant",
+        "loss_variant": "dice_ce",
         "learning_rate": 2e-4,
         "weight_decay": 6e-6,
         "dropout": 0.05,
         "dice_weight": 1.2,
         "positive_negative_ratio": "2:1",
-        "augmentation_strength": "strong",
+        "augmentation_policy": "combined",
     }
     assert component.component_spec().task_mutation_context[
         "aggregate_campaign_observations"
@@ -314,7 +467,8 @@ def test_verified_optuna_incumbent_seeds_openevolve_and_parent_feedback():
         dropout=0.05,
         dice_weight=1.2,
         positive_negative_ratio="2:1",
-        augmentation_strength="strong",
+        model_variant="unet_plain",
+        augmentation_policy="geometric",
     ).model_dump(mode="json")
     prior = PriorResearchSummary(
         hypothesis_reference="hypothesis-optuna",
@@ -360,7 +514,8 @@ def test_verified_optuna_incumbent_seeds_openevolve_and_parent_feedback():
     seed = backend.seed_candidate(search_contract)
     preparation = backend.prepare(seed, search_contract)
     assert preparation.generated_configuration["learning_rate"] == 2e-4
-    assert preparation.generated_configuration["augmentation_strength"] == "strong"
+    assert preparation.generated_configuration["augmentation_policy"] == "geometric"
+    assert preparation.generated_configuration["model_variant"] == "unet_plain"
 
     outcome = CandidateOutcome(
         candidate_id=seed.candidate_id,
@@ -419,11 +574,42 @@ def test_campaign_duration_estimate_counts_candidate_epochs():
             "dropout": 0.0,
             "dice_weight": 1.2,
             "positive_negative_ratio": "1:1",
-            "augmentation_strength": "baseline",
+            "augmentation_policy": "reference_light",
         },
         budget=1,
     ).model_copy(update={"evidence_references": ("promotion-from-epoch:50",)})
     assert task.estimate_search_duration_seconds(promoted, runtime) == 500.0
+
+
+def test_campaign_duration_estimate_uses_measured_model_family_rates():
+    task = FeTAUNetSearchTask()
+    runtime = _runtime(
+        campaign_seconds_per_epoch=30.0,
+        campaign_seconds_per_epoch_by_model_variant={
+            "basic_unet": 25.0,
+            "unet_plain": 26.0,
+            "unet_residual": 49.0,
+        },
+        openevolve_fidelity=25,
+    )
+    basic = _request(
+        SearchType.OPTUNA,
+        {"fixed": {"maximum_epochs": 25, "model_variant": "basic_unet"}},
+        budget=4,
+    )
+    residual = _request(
+        SearchType.DIRECT,
+        {"maximum_epochs": 50, "model_variant": "unet_residual"},
+        budget=1,
+    ).model_copy(update={"evidence_references": ("promotion-from-epoch:25",)})
+    mutable = _request(
+        SearchType.OPENEVOLVE,
+        default_openevolve_configuration(candidate_evaluations=2),
+        budget=2,
+    )
+    assert task.estimate_search_duration_seconds(basic, runtime) == 2_500.0
+    assert task.estimate_search_duration_seconds(residual, runtime) == 1_225.0
+    assert task.estimate_search_duration_seconds(mutable, runtime) == 2_450.0
 
 
 def test_budget_deadline_survives_cycles_and_exhausts():
@@ -449,8 +635,8 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     )
     assert contract.constraints["campaign_duration_seconds"] == 20 * 60 * 60
     assert contract.constraints["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
-    assert contract.maximum_cycles == 64
-    assert contract.maximum_experiments == 120
+    assert contract.maximum_cycles == 96
+    assert contract.maximum_experiments == 140
     assert contract.allowed_search_types == frozenset(SearchType)
     assert contract.maximum_cost == 50.0
     assert default_feta_unet_search_contract().maximum_cost == 50.0
@@ -462,7 +648,7 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         "maximum_input_context_size": 48_000,
         "maximum_output_tokens": 2_048,
         "maximum_cost_per_call": 0.5,
-        "maximum_total_model_calls": 192,
+        "maximum_total_model_calls": 288,
     }
     mutation = configuration["openevolve_development_mutation"]
     assert mutation["maximum_model_calls"] == 48
@@ -471,8 +657,14 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     options = configuration["runtime"]["options"]
     assert options["initial_campaign_observations"] == [
         "Verified fold-0 development aggregate mean macro Dice was "
-        "0.812891818509455 at best epoch 120 for the incumbent DIRECT "
-        "BasicUNet training policy."
+        "0.8169983918129687 at epoch 150 for the incumbent OPTUNA "
+        "BasicUNet policy.",
+        "V4 rank correlation was 0.1859504132231405 from 25 to 50 epochs "
+        "and 0.03571428571428571 from 50 to 100 epochs, so early endpoint "
+        "rank alone is weak evidence.",
+        "A separately trained U-Net reportedly reached approximately 0.84 "
+        "under a believed-comparable evaluation, but its architecture and "
+        "training policy are deliberately withheld from this bottom-up campaign.",
     ]
     component = FeTAUNetSearchTask().create_evolvable_component(
         default_feta_unet_search_contract(),
@@ -482,21 +674,31 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         options["initial_campaign_observations"]
     )
     assert options["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
+    assert options["campaign_prior_results"] == 30
     assert options["openevolve_fidelity"] == 25
-    assert options["campaign_portfolio"]["screening"] == {
-        "OPTUNA": 36,
-        "OPENEVOLVE": 12,
-        "DIRECT": 12,
+    assert options["campaign_portfolio"]["root_screening"] == {
+        "OPTUNA": 8,
+        "OPENEVOLVE": 8,
+        "DIRECT": 8,
+    }
+    assert options["campaign_portfolio"]["root_model_variants"] == {
+        "basic_unet": 4,
+        "unet_plain": 2,
+        "unet_residual": 2,
     }
     assert options["campaign_portfolio"]["promotion_targets"] == {
-        "50": 18,
-        "100": 7,
+        "50": 8,
+        "100": 4,
         "150": 2,
     }
-    # OpenEvolve evaluates one imported seed plus twelve novel mutations.
-    total_epoch_work = (
-        36 * 25 + 13 * 25 + 12 * 25 + 18 * (50 - 25) + 7 * (100 - 50) + 2 * (150 - 100)
-    )
+    assert options["campaign_seconds_per_epoch_by_model_variant"] == {
+        "basic_unet": 25.0,
+        "unet_plain": 26.0,
+        "unet_residual": 49.0,
+    }
+    # Forty-eight unique 25-epoch nodes, twelve imported OpenEvolve parent
+    # seeds, and continuation-only graduation to 50/100/150.
+    total_epoch_work = 48 * 25 + 12 * 25 + 8 * 25 + 4 * 50 + 2 * 50
     estimated_seconds = total_epoch_work * options["campaign_seconds_per_epoch"]
     assert estimated_seconds + options["campaign_finalisation_reserve_seconds"] < (
         20 * 60 * 60
