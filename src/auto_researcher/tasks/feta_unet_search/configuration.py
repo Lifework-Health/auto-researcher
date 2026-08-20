@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 CONFIGURATION_SCHEMA_VERSION = "feta-basic-unet-search-configuration-v1"
-FIDELITY_LEVELS = (5, 25, 100, 150)
+FIDELITY_LEVELS = (5, 25, 50, 100, 150)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
 DROPOUT_BOUNDS = (0.0, 0.3)
@@ -46,7 +46,7 @@ class FeTAUNetSearchConfiguration(BaseModel):
     patch_size: tuple[int, int, int] = (128, 128, 128)
     batch_size: Literal[1] = 1
     samples_per_volume: Literal[2] = 2
-    maximum_epochs: Literal[5, 25, 100, 150] = 25
+    maximum_epochs: Literal[5, 25, 50, 100, 150] = 25
     validation_every: Literal[5] = 5
     fold_count: Literal[1] = 1
     learning_rate: float = 1e-4
@@ -59,8 +59,11 @@ class FeTAUNetSearchConfiguration(BaseModel):
     inference_blending: Literal["gaussian"] = "gaussian"
     sliding_window_batch_size: Literal[1] = 1
     seed: Literal[20260807] = 20260807
-    progress_milestone_epochs: tuple[Literal[25], Literal[100], Literal[150]] = (
+    progress_milestone_epochs: tuple[
+        Literal[25], Literal[50], Literal[100], Literal[150]
+    ] = (
         25,
+        50,
         100,
         150,
     )

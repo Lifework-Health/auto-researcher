@@ -21,12 +21,12 @@ constraints:
   score_minimum: 0.0
   score_maximum: 1.0
   campaign_duration_seconds: 72000
-  campaign_finalisation_reserve_seconds: 1800
+  campaign_finalisation_reserve_seconds: 10800
 allowed_search_types: [DIRECT, OPTUNA, OPENEVOLVE]
 evaluator_id: feta-basic-unet-search-evaluator
 verifier_id: deterministic-verifier
-maximum_cycles: 12
-maximum_experiments: 30
+maximum_cycles: 64
+maximum_experiments: 120
 maximum_cost: 50.0
 requires_approval_for: []
 provenance: REAL

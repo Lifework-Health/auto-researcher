@@ -8,7 +8,13 @@ from pydantic import JsonValue
 
 from auto_researcher.agents.models import PriorResearchSummary, TaskAgentContext
 from auto_researcher.contracts.enums import EvidenceStatus, ProvenanceKind, SearchType
-from auto_researcher.contracts.models import ResearchContract, SearchRequest
+from auto_researcher.contracts.models import (
+    EvaluationResult,
+    ExperimentSpec,
+    ResearchContract,
+    SearchRequest,
+    VerificationResult,
+)
 from auto_researcher.search.optuna.models import (
     CategoricalParameterSpec,
     FloatParameterSpec,
@@ -23,6 +29,7 @@ from auto_researcher.tasks.feta_unet_search.openevolve import (
     default_openevolve_configuration,
     policy_from_configuration,
 )
+from auto_researcher.tasks.feta_unet_search.portfolio import apply_portfolio_policy
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
     EXPECTED_MANIFEST_HASH,
@@ -283,9 +290,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 if key in CANDIDATE_CONFIGURATION_FIELDS
             }
             validated = FeTAUNetSearchConfiguration.model_validate(candidate)
-            seed_policy = policy_from_configuration(
-                validated.model_dump(mode="json")
-            )
+            seed_policy = policy_from_configuration(validated.model_dump(mode="json"))
         raw_observations = runtime_context.task_options.get(
             "initial_campaign_observations", ()
         )
@@ -319,14 +324,10 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     if key in CANDIDATE_CONFIGURATION_FIELDS
                 }
                 validated = FeTAUNetSearchConfiguration.model_validate(candidate)
-                policy = policy_from_configuration(
-                    validated.model_dump(mode="json")
-                )
+                policy = policy_from_configuration(validated.model_dump(mode="json"))
             except (KeyError, TypeError, ValueError):
                 continue
-            compatible.append(
-                (finding, policy, validated.model_dump(mode="json"))
-            )
+            compatible.append((finding, policy, validated.model_dump(mode="json")))
         if not compatible:
             return request
         compatible.sort(
@@ -357,6 +358,54 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         search_space = dict(request.search_space)
         search_space["campaign_context"] = context
         return request.model_copy(update={"search_space": search_space})
+
+    def apply_campaign_portfolio(
+        self,
+        request: SearchRequest,
+        *,
+        run_id: str,
+        cycle: int,
+        events: tuple,
+        runtime_context: TaskRuntimeContext,
+    ) -> SearchRequest | None:
+        return apply_portfolio_policy(
+            request,
+            run_id=run_id,
+            cycle=cycle,
+            events=events,
+            runtime_context=runtime_context,
+        )
+
+    def safe_evidence_payload(
+        self,
+        experiment: ExperimentSpec,
+        evaluation: EvaluationResult,
+        verification: VerificationResult,
+    ) -> dict[str, JsonValue]:
+        del verification
+        fold_summaries = evaluation.metrics.get("fold_summaries", [])
+        first_fold = (
+            fold_summaries[0]
+            if isinstance(fold_summaries, list) and fold_summaries
+            else {}
+        )
+        return {
+            "configuration": dict(experiment.configuration),
+            "aggregate_metrics": {
+                "primary_score": evaluation.primary_score,
+                "per_tissue_dice": evaluation.metrics.get("per_tissue_dice"),
+                "reconstruction_gap": evaluation.metrics.get("reconstruction_gap"),
+                "best_epoch": first_fold.get("best_epoch")
+                if isinstance(first_fold, dict)
+                else None,
+                "training_duration_seconds": first_fold.get("training_duration_seconds")
+                if isinstance(first_fold, dict)
+                else None,
+                "validation_history": first_fold.get("validation_history", [])
+                if isinstance(first_fold, dict)
+                else [],
+            },
+        }
 
     def estimate_search_duration_seconds(
         self,
@@ -390,7 +439,20 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             or fidelity not in FIDELITY_LEVELS
         ):
             raise ValueError("feta_unet_campaign_fidelity_invalid")
-        return float(raw_seconds_per_epoch) * fidelity * candidates
+        marginal_fidelity = fidelity
+        for reference in request.evidence_references:
+            if not reference.startswith("promotion-from-epoch:"):
+                continue
+            try:
+                source_fidelity = int(reference.split(":", 1)[1])
+            except ValueError as exc:
+                raise ValueError(
+                    "feta_unet_campaign_promotion_reference_invalid"
+                ) from exc
+            if source_fidelity >= fidelity or source_fidelity not in FIDELITY_LEVELS:
+                raise ValueError("feta_unet_campaign_promotion_reference_invalid")
+            marginal_fidelity = fidelity - source_fidelity
+        return float(raw_seconds_per_epoch) * marginal_fidelity * candidates
 
     def artefact_policy(self) -> ArtefactPolicy:
         baseline = super().artefact_policy()
@@ -496,7 +558,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     "campaign_seconds_per_epoch", 120.0
                 ),
                 "campaign_finalisation_reserve_seconds": runtime_context.task_options.get(
-                    "campaign_finalisation_reserve_seconds", 1800.0
+                    "campaign_finalisation_reserve_seconds", 10_800.0
                 ),
             },
             task_limitations=(
@@ -509,7 +571,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
 
 
 def default_feta_unet_search_contract(
-    *, maximum_cycles: int = 12, maximum_experiments: int = 30
+    *, maximum_cycles: int = 64, maximum_experiments: int = 120
 ) -> ResearchContract:
     return ResearchContract(
         contract_id="feta-basic-unet-fold0-campaign-contract",
@@ -535,7 +597,7 @@ def default_feta_unet_search_contract(
             "score_minimum": 0.0,
             "score_maximum": 1.0,
             "campaign_duration_seconds": 72_000,
-            "campaign_finalisation_reserve_seconds": 1_800,
+            "campaign_finalisation_reserve_seconds": 10_800,
         },
         allowed_search_types=frozenset(
             {SearchType.DIRECT, SearchType.OPTUNA, SearchType.OPENEVOLVE}

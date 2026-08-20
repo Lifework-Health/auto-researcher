@@ -410,6 +410,20 @@ def test_campaign_duration_estimate_counts_candidate_epochs():
     )
     assert task.estimate_search_duration_seconds(optuna, runtime) == 150.0
     assert task.estimate_search_duration_seconds(evolve, runtime) == 500.0
+    promoted = _request(
+        SearchType.DIRECT,
+        {
+            "maximum_epochs": 100,
+            "learning_rate": 0.0001,
+            "weight_decay": 0.000001,
+            "dropout": 0.0,
+            "dice_weight": 1.2,
+            "positive_negative_ratio": "1:1",
+            "augmentation_strength": "baseline",
+        },
+        budget=1,
+    ).model_copy(update={"evidence_references": ("promotion-from-epoch:50",)})
+    assert task.estimate_search_duration_seconds(promoted, runtime) == 500.0
 
 
 def test_budget_deadline_survives_cycles_and_exhausts():
@@ -434,6 +448,9 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         yaml.safe_load((root / "contract-20h.yaml").read_text())
     )
     assert contract.constraints["campaign_duration_seconds"] == 20 * 60 * 60
+    assert contract.constraints["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
+    assert contract.maximum_cycles == 64
+    assert contract.maximum_experiments == 120
     assert contract.allowed_search_types == frozenset(SearchType)
     assert contract.maximum_cost == 50.0
     assert default_feta_unet_search_contract().maximum_cost == 50.0
@@ -445,12 +462,45 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
         "maximum_input_context_size": 48_000,
         "maximum_output_tokens": 2_048,
         "maximum_cost_per_call": 0.5,
-        "maximum_total_model_calls": 96,
+        "maximum_total_model_calls": 192,
     }
     mutation = configuration["openevolve_development_mutation"]
     assert mutation["maximum_model_calls"] == 48
     assert mutation["maximum_total_cost_usd"] == 50.0
     assert configuration["runtime"]["options"]["continue_after_failed_candidate"]
+    options = configuration["runtime"]["options"]
+    assert options["initial_campaign_observations"] == [
+        "Verified fold-0 development aggregate mean macro Dice was "
+        "0.812891818509455 at best epoch 120 for the incumbent DIRECT "
+        "BasicUNet training policy."
+    ]
+    component = FeTAUNetSearchTask().create_evolvable_component(
+        default_feta_unet_search_contract(),
+        _runtime(**options),
+    )
+    assert component.initial_observations == tuple(
+        options["initial_campaign_observations"]
+    )
+    assert options["campaign_finalisation_reserve_seconds"] == 3 * 60 * 60
+    assert options["openevolve_fidelity"] == 25
+    assert options["campaign_portfolio"]["screening"] == {
+        "OPTUNA": 36,
+        "OPENEVOLVE": 12,
+        "DIRECT": 12,
+    }
+    assert options["campaign_portfolio"]["promotion_targets"] == {
+        "50": 18,
+        "100": 7,
+        "150": 2,
+    }
+    # OpenEvolve evaluates one imported seed plus twelve novel mutations.
+    total_epoch_work = (
+        36 * 25 + 13 * 25 + 12 * 25 + 18 * (50 - 25) + 7 * (100 - 50) + 2 * (150 - 100)
+    )
+    estimated_seconds = total_epoch_work * options["campaign_seconds_per_epoch"]
+    assert estimated_seconds + options["campaign_finalisation_reserve_seconds"] < (
+        20 * 60 * 60
+    )
 
 
 def test_prior_result_context_retains_safe_configuration_and_learning_curve():

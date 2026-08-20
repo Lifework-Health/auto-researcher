@@ -8,6 +8,7 @@ from auto_researcher.contracts.enums import EventType, ProvenanceKind
 from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.agents.provenance import append_model_call_events
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.tasks.protocols import SafeEvidencePayloadCapableTask
 from auto_researcher.knowledge.models import KnowledgeBundleReference
 from auto_researcher.knowledge.provenance import append_knowledge_retrieval_events
 from auto_researcher.runtime.dependencies import RuntimeDependencies
@@ -287,35 +288,16 @@ def record_provenance(
         safe_payload: dict[str, Any] = {}
         if (
             event_type == EventType.EVIDENCE_VERIFIED
-            and state["contract"].task_id == "feta_unet_search"
             and experiment is not None
             and evaluation is not None
+            and verification is not None
+            and isinstance(dependencies.task, SafeEvidencePayloadCapableTask)
         ):
-            fold_summaries = evaluation.metrics.get("fold_summaries", ())
-            first_fold = (
-                fold_summaries[0]
-                if isinstance(fold_summaries, (list, tuple)) and fold_summaries
-                else {}
+            safe_payload = dependencies.task.safe_evidence_payload(
+                experiment,
+                evaluation,
+                verification,
             )
-            safe_payload = {
-                "configuration": dict(experiment.configuration),
-                "aggregate_metrics": {
-                    "primary_score": evaluation.primary_score,
-                    "per_tissue_dice": evaluation.metrics.get("per_tissue_dice"),
-                    "reconstruction_gap": evaluation.metrics.get("reconstruction_gap"),
-                    "best_epoch": first_fold.get("best_epoch")
-                    if isinstance(first_fold, dict)
-                    else None,
-                    "training_duration_seconds": first_fold.get(
-                        "training_duration_seconds"
-                    )
-                    if isinstance(first_fold, dict)
-                    else None,
-                    "validation_history": first_fold.get("validation_history", ())
-                    if isinstance(first_fold, dict)
-                    else (),
-                },
-            }
         event = DecisionEvent(
             event_id=(
                 f"event-{semantic[0][:24]}"
