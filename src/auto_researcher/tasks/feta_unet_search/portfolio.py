@@ -486,6 +486,12 @@ def _tree_request_metadata(
             requests[request_id] = metadata
         elif event.rationale.startswith(f"{TREE_PORTFOLIO_VERSION}:"):
             missing_requests.add(request_id)
+    openevolve_prepared_experiments = {
+        event.output_references[0]
+        for event in events
+        if event.event_type == EventType.OPENEVOLVE_CANDIDATE_PREPARED
+        and event.output_references
+    }
     experiments: dict[str, dict[str, str]] = {}
     for event in events:
         if (
@@ -501,8 +507,30 @@ def _tree_request_metadata(
             and embedded_metadata
             and request_metadata != embedded_metadata
         ):
-            raise ValueError("feta_unet_campaign_tree_metadata_conflict")
-        metadata = embedded_metadata or request_metadata
+            experiment_id = event.output_references[0]
+            matching_reuse_requests = tuple(
+                request_id
+                for request_id, metadata in requests.items()
+                if metadata == embedded_metadata
+            )
+            canonical_openevolve_reuse = (
+                experiment_id in openevolve_prepared_experiments
+                and request_metadata.get("tree-action")
+                != SearchType.OPENEVOLVE.value
+                and embedded_metadata.get("tree-action")
+                == SearchType.OPENEVOLVE.value
+                and len(matching_reuse_requests) == 1
+            )
+            if not canonical_openevolve_reuse:
+                raise ValueError("feta_unet_campaign_tree_metadata_conflict")
+            # This is a legacy provenance shape produced when OpenEvolve reused
+            # a canonical generation-zero experiment.  Keep the experiment's
+            # original method ownership, while marking the OpenEvolve request
+            # as consumed by the explicitly recorded reuse operation.
+            missing_requests.discard(matching_reuse_requests[0])
+            metadata = request_metadata
+        else:
+            metadata = embedded_metadata or request_metadata
         if metadata is not None:
             experiments[event.output_references[0]] = metadata
             missing_requests.discard(event.input_references[0])
