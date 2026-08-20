@@ -234,6 +234,32 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         v6_architecture = (
             raw_fixed.get("architecture_budget") == V6_ARCHITECTURE_BUDGET
         )
+        registered_fixed_configuration = {
+            key: value
+            for key, value in fixed.items()
+            if key == "maximum_epochs"
+            or (
+                key not in CANDIDATE_CONFIGURATION_FIELDS
+                and key
+                not in {
+                    "features",
+                    "channels",
+                    "network_family",
+                    "residual_units",
+                }
+            )
+        }
+        if v6_architecture:
+            v6_upsample = raw_fixed.get("upsample", "deconv")
+            if v6_upsample not in V6_UPSAMPLE_MODES:
+                raise ValueError("feta_unet_v6_upsample_invalid")
+            # These are task-owned V6 scientific context, not Optuna axes. Register
+            # them before structural narrowing so a portfolio request can bind the
+            # architecture envelope without being mistaken for an unknown field.
+            registered_fixed_configuration.update(
+                architecture_budget=V6_ARCHITECTURE_BUDGET,
+                upsample=v6_upsample,
+            )
         registered = OptunaStudySpec(
             schema_version="1.0",
             task_id=self.task_id,
@@ -302,21 +328,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     choices=LOSS_VARIANTS,
                 ),
             ),
-            fixed_configuration={
-                key: value
-                for key, value in fixed.items()
-                if key == "maximum_epochs"
-                or (
-                    key not in CANDIDATE_CONFIGURATION_FIELDS
-                    and key
-                    not in {
-                        "features",
-                        "channels",
-                        "network_family",
-                        "residual_units",
-                    }
-                )
-            },
+            fixed_configuration=registered_fixed_configuration,
             trial_budget=request.experiment_budget,
             seed=20260807,
             sampler="TPE",

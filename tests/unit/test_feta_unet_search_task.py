@@ -421,6 +421,56 @@ def test_optuna_fixed_residual_family_recomputes_derived_architecture():
     assert candidate.channels == (40, 80, 160, 320, 640)
 
 
+def test_v6_portfolio_optuna_root_registers_architecture_context():
+    task = FeTAUNetSearchTask()
+    specification = task.create_optuna_study_spec(
+        default_feta_unet_search_contract(),
+        _request(
+            SearchType.OPTUNA,
+            {
+                "fixed": {
+                    "maximum_epochs": 25,
+                    "model_variant": "basic_unet",
+                    "architecture_budget": V6_ARCHITECTURE_BUDGET,
+                    "upsample": "deconv",
+                },
+                "parameters": {
+                    "feature_width": {
+                        "choices": [
+                            "v6_balanced_64",
+                            "v6_balanced_80",
+                            "v6_balanced_96",
+                            "v6_deep_64",
+                            "v6_deep_80",
+                            "v6_decoder_96",
+                        ]
+                    }
+                },
+            },
+            budget=4,
+        ),
+    )
+    assert specification.trial_budget == 4
+    assert specification.fixed_configuration["maximum_epochs"] == 25
+    assert (
+        specification.fixed_configuration["architecture_budget"]
+        == V6_ARCHITECTURE_BUDGET
+    )
+    assert specification.fixed_configuration["upsample"] == "deconv"
+    assert specification.fixed_configuration["model_variant"] == "basic_unet"
+    feature_width = next(
+        item for item in specification.parameters if item.name == "feature_width"
+    )
+    assert feature_width.choices == (
+        "v6_balanced_64",
+        "v6_balanced_80",
+        "v6_balanced_96",
+        "v6_deep_64",
+        "v6_deep_80",
+        "v6_decoder_96",
+    )
+
+
 def test_openevolve_seed_executes_to_a_bounded_unet_experiment():
     task = FeTAUNetSearchTask()
     contract = default_feta_unet_search_contract()
