@@ -19,7 +19,8 @@ def approval_router(
             "pending_human_request": None,
             "executed_nodes": ["approval_router"],
         }
-    if state["errors"]:
+    recovered = set(state.get("recovered_error_codes", ()))
+    if any(code not in recovered for code in state["errors"]):
         return {
             "status": RunStatus.FAILED,
             "stop_reason": "fatal_error",

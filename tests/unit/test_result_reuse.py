@@ -304,6 +304,43 @@ def test_failed_evaluation_never_creates_reuse_record(tmp_path):
     assert failed.calls == 1
 
 
+def test_campaign_can_record_one_failed_direct_candidate_and_continue(tmp_path):
+    dependencies, evaluator, _, _, initial, config = _runtime(tmp_path)
+
+    class FailedEvaluator(CountingEvaluator):
+        def evaluate(self, experiment, contract):
+            self.calls += 1
+            return EvaluationResult(
+                experiment_id=experiment.experiment_id,
+                success=False,
+                primary_score=None,
+                metrics={},
+                constraint_results={},
+                artefact_references=(),
+                evaluator_version=self.version,
+                provenance=experiment.provenance,
+                error="controlled_candidate_failure",
+            )
+
+    failed = FailedEvaluator(evaluator.inner)
+    tolerant_context = dependencies.runtime_context.model_copy(
+        update={"task_options": {"continue_after_failed_candidate": True}}
+    )
+    tolerant = replace(
+        dependencies,
+        evaluator=failed,
+        runtime_context=tolerant_context,
+    )
+    final = start_run(build_graph(tolerant), initial, config)
+
+    assert final["status"].value == "COMPLETED"
+    assert final["evaluation_result"].success is False
+    assert final["evaluation_result"].error == "controlled_candidate_failure"
+    assert final["verification_result"].verified is False
+    assert final["errors"] == []
+    assert failed.calls == 1
+
+
 def test_published_failure_bundle_is_still_not_reusable(tmp_path):
     dependencies, evaluator, _, _, initial, config = _runtime(tmp_path)
 

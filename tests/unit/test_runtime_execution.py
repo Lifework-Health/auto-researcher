@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.execution import (
     EXECUTION_ERROR_VOCABULARY_VERSION,
@@ -111,6 +111,39 @@ def test_resume_unknown_and_terminal_threads_are_rejected(
     start_run(graph, _input(contract_factory()), _config())
     with pytest.raises(RunExecutionError, match="thread_is_terminal_use_inspect"):
         resume_run(graph, _config())
+
+
+def test_resume_recovers_exact_legacy_planner_failure_without_new_hypothesis(
+    contract_factory,
+    deterministic_dependencies,
+):
+    paused_graph = build_graph(
+        deterministic_dependencies,
+        interrupt_after=["generate_hypothesis"],
+    )
+    state = start_run(paused_graph, _input(contract_factory()), _config())
+    hypothesis_id = state["active_hypothesis"].hypothesis_id
+    paused_graph.update_state(
+        _config(),
+        {
+            "status": RunStatus.FAILED,
+            "stop_reason": "planner_agent_failed",
+            "search_request": None,
+            "errors": ["planner_agent_failed"],
+            "executed_nodes": ["plan_search"],
+        },
+        as_node="plan_search",
+    )
+
+    final = resume_run(build_graph(deterministic_dependencies), _config())
+
+    assert final.get("recovered_error_codes") == ["planner_agent_failed"], final.get(
+        "recovered_error_codes"
+    )
+    assert final["status"] == RunStatus.COMPLETED, final.get("stop_reason")
+    assert final["active_hypothesis"].hypothesis_id == hypothesis_id
+    assert final["recovered_error_codes"] == ["planner_agent_failed"]
+    assert final["last_executed_search_type"] == SearchType.DIRECT
 
 
 @pytest.mark.parametrize(

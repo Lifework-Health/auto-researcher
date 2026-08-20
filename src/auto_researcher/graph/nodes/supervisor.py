@@ -10,7 +10,8 @@ def supervisor_prepare(
 ) -> dict:
     if state["status"] != RunStatus.RUNNING:
         return {"executed_nodes": ["supervisor_prepare"]}
-    if state["errors"]:
+    recovered = set(state.get("recovered_error_codes", ()))
+    if any(code not in recovered for code in state["errors"]):
         return {
             "status": RunStatus.FAILED,
             "stop_reason": "fatal_error",
@@ -45,5 +46,11 @@ def supervisor_prepare(
         "diagnostic_evaluation_result": None,
         "diagnostic_verification_result": None,
         "knowledge_bundle_reference": None,
+        "planner_failure_code": None,
+        "planner_failure_stage": None,
+        "planner_fallback_code": None,
+        "hypothesis_failure_code": None,
+        "hypothesis_failure_stage": None,
+        "hypothesis_fallback_code": None,
         "executed_nodes": ["supervisor_prepare"],
     }

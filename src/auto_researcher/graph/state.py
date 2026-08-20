@@ -5,7 +5,11 @@ from __future__ import annotations
 import operator
 from typing import Annotated, NotRequired, TypedDict
 
-from auto_researcher.contracts.enums import KnowledgeRetrievalStatus, RunStatus
+from auto_researcher.contracts.enums import (
+    KnowledgeRetrievalStatus,
+    RunStatus,
+    SearchType,
+)
 from auto_researcher.contracts.models import (
     ApprovalRequest,
     BudgetState,
@@ -61,6 +65,14 @@ class ResearchState(TypedDict):
     pending_human_request: NotRequired[ApprovalRequest | None]
     human_approval_granted: NotRequired[bool | None]
     stop_reason: NotRequired[str | None]
+    planner_failure_code: NotRequired[str | None]
+    planner_failure_stage: NotRequired[str | None]
+    planner_fallback_code: NotRequired[str | None]
+    hypothesis_failure_code: NotRequired[str | None]
+    hypothesis_failure_stage: NotRequired[str | None]
+    hypothesis_fallback_code: NotRequired[str | None]
+    recovered_error_codes: NotRequired[list[str]]
+    last_executed_search_type: NotRequired[SearchType | None]
     optuna_study_spec: NotRequired[OptunaStudySpec | None]
     optuna_study_state: NotRequired[OptunaStudyState | None]
     optuna_study_result: NotRequired[OptunaStudyResult | None]

@@ -47,8 +47,8 @@ class DevelopmentLiveOpenEvolveConfiguration(DevelopmentRuntimeModel):
     acknowledgement: Literal["public-data-non-production-development"]
     model: ModelCallConfig
     credential: SecretReference
-    maximum_model_calls: int = Field(default=2, ge=1, le=20)
-    maximum_total_cost_usd: float = Field(gt=0, le=5)
+    maximum_model_calls: int = Field(default=2, ge=1, le=100)
+    maximum_total_cost_usd: float = Field(gt=0, le=50)
     usage_log_file: Path
 
     @model_validator(mode="after")
@@ -217,6 +217,8 @@ class DevelopmentStructuredMutationClient:
 
 
 class DevelopmentOpenEvolveModelBridge(AutoResearcherOpenEvolveModelBridge):
+    development_dynamic_feedback = True
+
     @property
     def creation_provenance(self) -> str:
         return "LIVE_MODEL"

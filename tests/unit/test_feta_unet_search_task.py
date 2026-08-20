@@ -8,7 +8,13 @@ import yaml
 from pydantic import ValidationError
 
 from auto_researcher.agents.context import AgentContextAssembler
-from auto_researcher.contracts.enums import EventType, ProvenanceKind, SearchType
+from auto_researcher.agents.models import PriorResearchSummary
+from auto_researcher.contracts.enums import (
+    EvidenceStatus,
+    EventType,
+    ProvenanceKind,
+    SearchType,
+)
 from auto_researcher.contracts.models import (
     BudgetState,
     DecisionEvent,
@@ -19,6 +25,7 @@ from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.dependencies import task_memory_dependencies
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
+from auto_researcher.search.openevolve.models import CandidateOutcome, CandidateStatus
 from auto_researcher.search.openevolve.sandbox import LocalSandboxRunner
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
@@ -82,6 +89,25 @@ def test_registry_exposes_three_method_unet_campaign_task():
     assert isinstance(task, OpenEvolveCapableTask)
     assert isinstance(task, CampaignDurationCapableTask)
     assert task.descriptor().supported_search_types == frozenset(SearchType)
+
+
+def test_agent_context_exposes_direct_executable_parameter_names():
+    task = FeTAUNetSearchTask()
+    context = task.create_agent_context(
+        default_feta_unet_search_contract(),
+        _runtime(),
+        {},
+    )
+
+    assert set(context.direct_configuration_schema) == {
+        "maximum_epochs",
+        "learning_rate",
+        "weight_decay",
+        "dropout",
+        "dice_weight",
+        "positive_negative_ratio",
+        "augmentation_strength",
+    }
 
 
 def test_one_runtime_assembly_exposes_all_three_backends():
@@ -233,6 +259,142 @@ def test_openevolve_seed_executes_to_a_bounded_unet_experiment():
     assert experiment.configuration["profile"] == "development_baseline"
 
 
+def test_openevolve_uses_verified_initial_incumbent_and_observations():
+    task = FeTAUNetSearchTask()
+    component = task.create_evolvable_component(
+        default_feta_unet_search_contract(),
+        _runtime(
+            openevolve_fidelity=5,
+            initial_incumbent_configuration={
+                "maximum_epochs": 150,
+                "learning_rate": 2e-4,
+                "weight_decay": 6e-6,
+                "dropout": 0.05,
+                "dice_weight": 1.2,
+                "positive_negative_ratio": "2:1",
+                "augmentation_strength": "strong",
+            },
+            initial_campaign_observations=[
+                "Verified fold-0 baseline mean macro Dice was 0.807986."
+            ],
+        ),
+    )
+    assert component.seed_configuration()["seed_training_policy"] == {
+        "policy_version": "feta-basic-unet-training-policy-v1",
+        "learning_rate": 2e-4,
+        "weight_decay": 6e-6,
+        "dropout": 0.05,
+        "dice_weight": 1.2,
+        "positive_negative_ratio": "2:1",
+        "augmentation_strength": "strong",
+    }
+    assert component.component_spec().task_mutation_context[
+        "aggregate_campaign_observations"
+    ] == ["Verified fold-0 baseline mean macro Dice was 0.807986."]
+
+
+def test_openevolve_rejects_nonaggregate_initial_observation():
+    with pytest.raises(ValueError, match="feta_unet_campaign_observations_invalid"):
+        FeTAUNetSearchTask().create_evolvable_component(
+            default_feta_unet_search_contract(),
+            _runtime(
+                openevolve_fidelity=5,
+                initial_campaign_observations=["subject 1 prediction was poor"],
+            ),
+        )
+
+
+def test_verified_optuna_incumbent_seeds_openevolve_and_parent_feedback():
+    task = FeTAUNetSearchTask()
+    contract = default_feta_unet_search_contract()
+    winning = FeTAUNetSearchConfiguration(
+        maximum_epochs=25,
+        learning_rate=2e-4,
+        weight_decay=6e-6,
+        dropout=0.05,
+        dice_weight=1.2,
+        positive_negative_ratio="2:1",
+        augmentation_strength="strong",
+    ).model_dump(mode="json")
+    prior = PriorResearchSummary(
+        hypothesis_reference="hypothesis-optuna",
+        experiment_reference="experiment-optuna-winner",
+        search_type=SearchType.OPTUNA,
+        primary_score=0.81,
+        evidence_status=EvidenceStatus.SUPPORTED,
+        constraint_compliant=True,
+        concise_verified_finding="Verified aggregate Optuna winner.",
+        safe_configuration=winning,
+    )
+    request = task.enrich_search_request(
+        _request(
+            SearchType.OPENEVOLVE,
+            default_openevolve_configuration(candidate_evaluations=2),
+            budget=2,
+        ),
+        (prior,),
+    )
+    context = request.search_space["campaign_context"]
+    assert context["incumbent_primary_score"] == 0.81
+    assert context["incumbent_training_policy"]["learning_rate"] == 2e-4
+
+    component = task.create_evolvable_component(
+        contract,
+        _runtime(openevolve_fidelity=5),
+    )
+    dataset_version = f"{DATASET_RELEASE}+{EXPECTED_MANIFEST_HASH}"
+    metadata = ExperimentMetadata(
+        evaluator_id=EVALUATOR_ID,
+        code_version=evaluator_code_version(dataset_version),
+        dataset_version=dataset_version,
+        provenance=ProvenanceKind.REAL,
+    )
+    backend = OpenEvolveBackend(
+        component,
+        metadata,
+        "deterministic-verifier-v1@feta-basic-unet-search-evidence-policy-v1",
+        DeterministicMutationOperator(),
+        LocalSandboxRunner(),
+    )
+    search_contract = backend.create_search_contract(request, contract)
+    seed = backend.seed_candidate(search_contract)
+    preparation = backend.prepare(seed, search_contract)
+    assert preparation.generated_configuration["learning_rate"] == 2e-4
+    assert preparation.generated_configuration["augmentation_strength"] == "strong"
+
+    outcome = CandidateOutcome(
+        candidate_id=seed.candidate_id,
+        source_hash=seed.source_hash,
+        status=CandidateStatus.VERIFIED,
+        objective_value=0.81,
+        constraint_compliant=True,
+        verified=True,
+        evidence_status=EvidenceStatus.SUPPORTED,
+        selection_outcome="selected",
+        replacement_outcome="active",
+    )
+    population = backend.initialise_population(search_contract).model_copy(
+        update={
+            "outcomes": (outcome,),
+            "active_population_candidate_ids": (seed.candidate_id,),
+            "best_known_candidate_ids": (seed.candidate_id,),
+        }
+    )
+    reservation = backend.reserve_mutation(
+        search_contract,
+        population,
+        seed,
+    )
+    assert reservation.campaign_context["incumbent_primary_score"] == 0.81
+    assert reservation.parent_feedback == {
+        "objective_value": 0.81,
+        "constraint_compliant": True,
+        "verified": True,
+        "evidence_status": "SUPPORTED",
+        "aggregate_metrics": {},
+    }
+
+
 def test_campaign_duration_estimate_counts_candidate_epochs():
     task = FeTAUNetSearchTask()
     runtime = _runtime(campaign_seconds_per_epoch=10.0, openevolve_fidelity=25)
@@ -273,6 +435,22 @@ def test_campaign_contract_template_is_exactly_twenty_hours():
     )
     assert contract.constraints["campaign_duration_seconds"] == 20 * 60 * 60
     assert contract.allowed_search_types == frozenset(SearchType)
+    assert contract.maximum_cost == 50.0
+    assert default_feta_unet_search_contract().maximum_cost == 50.0
+    configuration = yaml.safe_load((root / "campaign-20h-template.yaml").read_text())
+    assert configuration["agents"]["budget"] == {
+        "maximum_hypothesis_calls_per_cycle": 1,
+        "maximum_planner_calls_per_cycle": 1,
+        "maximum_attempts_per_agent_call": 4,
+        "maximum_input_context_size": 48_000,
+        "maximum_output_tokens": 2_048,
+        "maximum_cost_per_call": 0.5,
+        "maximum_total_model_calls": 96,
+    }
+    mutation = configuration["openevolve_development_mutation"]
+    assert mutation["maximum_model_calls"] == 48
+    assert mutation["maximum_total_cost_usd"] == 50.0
+    assert configuration["runtime"]["options"]["continue_after_failed_candidate"]
 
 
 def test_prior_result_context_retains_safe_configuration_and_learning_curve():
@@ -310,4 +488,6 @@ def test_prior_result_context_retains_safe_configuration_and_learning_curve():
     )
     _, prior = AgentContextAssembler(store)._prior("run", 2)
     assert prior[0].safe_configuration["learning_rate"] == 0.0002
-    assert prior[0].aggregate_metrics["validation_history"][-1]["epoch"] == 25
+    history = prior[0].aggregate_metrics["validation_history_summary"]
+    assert history["observation_count"] == 2
+    assert history["selected_entries"][-1]["epoch"] == 25

@@ -11,7 +11,8 @@ def supervisor_decide(
     update: dict = {"executed_nodes": ["supervisor_decide"]}
     if state["status"] in {RunStatus.STOPPED, RunStatus.FAILED}:
         return update
-    if state["errors"]:
+    recovered = set(state.get("recovered_error_codes", ()))
+    if any(code not in recovered for code in state["errors"]):
         update.update(status=RunStatus.FAILED, stop_reason="fatal_error")
         return update
 
@@ -62,6 +63,12 @@ def supervisor_decide(
         diagnostic_evaluation_result=None,
         diagnostic_verification_result=None,
         knowledge_bundle_reference=None,
+        planner_failure_code=None,
+        planner_failure_stage=None,
+        planner_fallback_code=None,
+        hypothesis_failure_code=None,
+        hypothesis_failure_stage=None,
+        hypothesis_fallback_code=None,
         stop_reason=None,
     )
     return update

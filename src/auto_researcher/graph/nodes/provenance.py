@@ -103,6 +103,7 @@ def record_provenance(
         bundle_reference = KnowledgeBundleReference.model_validate(bundle_reference)
 
     if hypothesis:
+        hypothesis_fallback_code = state.get("hypothesis_fallback_code")
         rows.append(
             (
                 EventType.HYPOTHESIS_PROPOSED,
@@ -123,6 +124,11 @@ def record_provenance(
                     f"prompt:{hypothesis.prompt_version or 'none'}",
                     f"prior_weight:{hypothesis.prior_weight}",
                     *(
+                        (f"fallback:{hypothesis_fallback_code}",)
+                        if hypothesis_fallback_code
+                        else ()
+                    ),
+                    *(
                         f"evidence_reference:{reference}"
                         for reference in hypothesis.evidence_references
                     ),
@@ -132,6 +138,7 @@ def record_provenance(
             )
         )
     if request:
+        fallback_code = state.get("planner_fallback_code")
         rows.append(
             (
                 EventType.SEARCH_PLANNED,
@@ -151,6 +158,7 @@ def record_provenance(
                     f"source:{request.proposal_source.value}",
                     f"grounding:{request.grounding_status.value}",
                     f"prompt:{request.prompt_version or 'none'}",
+                    *((f"fallback:{fallback_code}",) if fallback_code else ()),
                     *(
                         f"evidence_reference:{reference}"
                         for reference in request.evidence_references
@@ -238,7 +246,30 @@ def record_provenance(
                 verification.provenance,
             )
         )
-    if not rows:
+    failure_code = state.get("planner_failure_code") or state.get(
+        "hypothesis_failure_code"
+    )
+    if failure_code:
+        planner_failure = state.get("planner_failure_code") is not None
+        failure_stage = (
+            state.get("planner_failure_stage")
+            if planner_failure
+            else state.get("hypothesis_failure_stage")
+        )
+        rows.append(
+            (
+                EventType.RUN_STOPPED,
+                "planner_agent" if planner_failure else "hypothesis_agent",
+                (hypothesis.hypothesis_id,) if hypothesis else (),
+                (
+                    f"error_code:{failure_code}",
+                    f"failure_stage:{failure_stage or 'unknown'}",
+                ),
+                failure_code,
+                ProvenanceKind.REAL,
+            )
+        )
+    elif not rows:
         rows.append(
             (
                 EventType.RUN_STOPPED,

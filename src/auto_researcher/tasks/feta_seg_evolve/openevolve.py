@@ -121,7 +121,8 @@ class FeTASegEvolvableComponent:
             "legal_training_policy_schema": TrainingPolicy.model_json_schema(),
             "aggregate_hpo_observations": list(self.hpo_observations),
             "domain_guidance": [
-                "Strong augmentation underperformed in the preceding aggregate HPO screen.",
+                "Treat aggregate_hpo_observations as the only evidence "
+                "about preceding search outcomes.",
                 "Reconstruction-method robustness is important.",
                 "Grey matter is a difficult tissue.",
             ],

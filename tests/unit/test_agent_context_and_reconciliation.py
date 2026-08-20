@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from auto_researcher.agents.models import (
+    AgentBudgetPolicy,
     HypothesisProposal,
     PlannerProposal,
     PriorResearchSummary,
@@ -15,11 +18,13 @@ from auto_researcher.agents.reconciliation import (
 )
 from auto_researcher.contracts.enums import (
     EvidenceStatus,
+    EventType,
     GroundingStatus,
     ProposalSource,
+    ProvenanceKind,
     SearchType,
 )
-from auto_researcher.contracts.models import BudgetState
+from auto_researcher.contracts.models import BudgetState, DecisionEvent
 from auto_researcher.graph.nodes.supervisor import supervisor_prepare
 from auto_researcher.knowledge.models import (
     KnowledgeContextReference,
@@ -89,6 +94,94 @@ def test_context_size_limit_fails_before_a_model_call():
         assembler.hypothesis_context(state, dependencies.task_agent_context)
 
 
+def test_runtime_agent_context_limit_uses_configured_policy():
+    contract = default_synthetic_contract()
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        contract,
+        default_synthetic_configuration(),
+        agent_budget_policy=AgentBudgetPolicy(maximum_input_context_size=48_000),
+    )
+    assert (
+        dependencies.agent_context_assembler.limits.maximum_context_characters
+        == 48_000
+    )
+
+
+def test_cycle_four_context_compacts_full_validation_histories():
+    dependencies, state, hypothesis_context = _contexts()
+    history = [
+        {
+            "epoch": epoch,
+            "validation_score": 0.4 + epoch / 1000,
+            "best_epoch": epoch,
+            "best_validation_score": 0.4 + epoch / 1000,
+            "milestone": epoch in {25, 100, 150},
+        }
+        for epoch in range(5, 151, 5)
+    ]
+    for cycle in range(1, 13):
+        dependencies.provenance_store.append_event(
+            DecisionEvent(
+                event_id=f"evidence-{cycle}",
+                run_id=state["run_id"],
+                cycle=cycle,
+                event_type=EventType.EVIDENCE_VERIFIED,
+                actor="verifier",
+                input_references=(f"experiment-{cycle}",),
+                output_references=(
+                    "evidence:SUPPORTED",
+                    "verified:true",
+                    "constraints:true",
+                    f"score:{0.7 + cycle / 100}",
+                    "search_type:DIRECT",
+                    f"hypothesis:hypothesis-{cycle}",
+                ),
+                rationale="Verified fold-zero BasicUNet result.",
+                timestamp=datetime(2026, 8, 16, tzinfo=UTC),
+                code_version="test",
+                provenance=ProvenanceKind.REAL,
+                safe_payload={
+                    "configuration": {"complexity": 3},
+                    "aggregate_metrics": {
+                        "primary_score": 0.7 + cycle / 100,
+                        "best_epoch": 150,
+                        "validation_history": history,
+                    },
+                },
+            )
+        )
+    state["cycle"] = 13
+    state["active_hypothesis"] = HypothesisReconciler().reconcile(
+        HypothesisProposal(
+            statement="Complexity may improve the objective.",
+            rationale="Use compact prior evidence.",
+            predicted_subspace={"complexity": 3},
+            expected_observation="objective_score increases",
+            falsification_condition="objective_score does not increase",
+            confidence=0.5,
+        ),
+        hypothesis_context,
+        call_id="call-cycle-four",
+        prompt_version="2.0.0",
+    )
+
+    context = dependencies.agent_context_assembler.planner_context(
+        state,
+        dependencies.task_agent_context,
+        dependencies.search_capabilities,
+    )
+    dumped = context.model_dump_json()
+
+    assert len(dumped) < 24_000
+    assert '"validation_history":' not in dumped
+    assert '"validation_history_summary":' in dumped
+    assert context.prior_verified_findings[-1].aggregate_metrics[
+        "validation_history_summary"
+    ]["observation_count"] == 30
+
+
 def test_hypothesis_reconciliation_derives_grounding_and_caps_weight():
     _, _, context = _contexts()
     hypothesis = HypothesisReconciler().reconcile(
@@ -122,6 +215,53 @@ def test_hypothesis_reconciliation_derives_grounding_and_caps_weight():
             ),
             context,
             call_id="call-2",
+            prompt_version="1.0.0",
+        )
+
+
+def test_hypothesis_reconciliation_normalises_wrapped_mixed_subspace():
+    _, _, context = _contexts()
+    hypothesis = HypothesisReconciler().reconcile(
+        HypothesisProposal(
+            statement="Tree complexity may improve the bounded objective.",
+            rationale="Contract-bounded test.",
+            predicted_subspace={
+                "training_policy": {
+                    "complexity": [3, 5],
+                    "invented_parameter": [1, 2],
+                },
+                "unregistered_metadata": "ignored",
+            },
+            expected_observation="objective_score increases",
+            falsification_condition="objective_score does not increase",
+            evidence_references=(context.contract.contract_id,),
+            confidence=0.5,
+        ),
+        context,
+        call_id="call-normalised",
+        prompt_version="1.0.0",
+    )
+
+    assert hypothesis.predicted_subspace == {"complexity": [3, 5]}
+
+
+def test_hypothesis_reconciliation_rejects_entirely_unregistered_subspace():
+    _, _, context = _contexts()
+    with pytest.raises(
+        ReconciliationError,
+        match="predicted_subspace_not_task_compatible",
+    ):
+        HypothesisReconciler().reconcile(
+            HypothesisProposal(
+                statement="An invented control may alter the bounded objective.",
+                rationale="Contract-bounded test.",
+                predicted_subspace={"invented_parameter": [1, 2]},
+                expected_observation="objective_score changes",
+                falsification_condition="objective_score does not change",
+                confidence=0.5,
+            ),
+            context,
+            call_id="call-rejected",
             prompt_version="1.0.0",
         )
 

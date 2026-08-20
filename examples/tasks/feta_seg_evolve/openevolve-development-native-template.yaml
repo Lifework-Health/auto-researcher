@@ -67,7 +67,7 @@ runtime:
   output_dir: /absolute/path/to/openevolve-development-output
   workspace_dir: /absolute/path/to/openevolve-development-workspace
   options:
-    # Replace these eight values with the selected Optuna configuration.
+    # Replace these values and observations from the same completed Optuna study.
     base_configuration:
       fold: 0
       maximum_epochs: 25
@@ -77,6 +77,8 @@ runtime:
       dice_weight: 1.0
       positive_negative_ratio: "1:1"
       augmentation_strength: baseline
+    # Aggregate metrics only; do not include paths, subject rows or predictions.
+    hpo_observations: []
     gpu_scheduler:
       mode: primary
       physical_gpu_index: 0

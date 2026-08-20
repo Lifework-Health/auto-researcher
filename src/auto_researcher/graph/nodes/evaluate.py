@@ -306,8 +306,19 @@ def evaluate_experiment(
     budget = state["budget"].record_experiment(cost)
     request = state.get("search_request")
     is_optuna = request is not None and request.search_type == SearchType.OPTUNA
+    continue_after_failed_candidate = (
+        dependencies.runtime_context.task_options.get(
+            "continue_after_failed_candidate",
+            False,
+        )
+        is True
+        and request is not None
+        and request.search_type in {SearchType.DIRECT, SearchType.OPENEVOLVE}
+    )
     errors = (
-        [] if result.success or is_optuna else [result.error or "evaluation_failed"]
+        []
+        if result.success or is_optuna or continue_after_failed_candidate
+        else [result.error or "evaluation_failed"]
     )
     return {
         "evaluation_result": result,

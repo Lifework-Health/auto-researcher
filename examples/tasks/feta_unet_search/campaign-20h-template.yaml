@@ -16,16 +16,16 @@ agents:
   budget:
     maximum_hypothesis_calls_per_cycle: 1
     maximum_planner_calls_per_cycle: 1
-    maximum_attempts_per_agent_call: 2
-    maximum_input_context_size: 24000
+    maximum_attempts_per_agent_call: 4
+    maximum_input_context_size: 48000
     maximum_output_tokens: 2048
     maximum_cost_per_call: 0.50
-    maximum_total_model_calls: 24
+    maximum_total_model_calls: 96
   hypothesis:
-    temperature: 0.2
+    temperature: 0.0
     maximum_output_tokens: 1200
     timeout_seconds: 120
-    maximum_attempts: 2
+    maximum_attempts: 4
     maximum_cost_per_call: 0.50
     prompt_version: 2.0.0
     structured_output_strategy: pydantic
@@ -33,7 +33,7 @@ agents:
     temperature: 0.0
     maximum_output_tokens: 1600
     timeout_seconds: 120
-    maximum_attempts: 2
+    maximum_attempts: 4
     maximum_cost_per_call: 0.50
     prompt_version: 2.0.0
     structured_output_strategy: pydantic
@@ -42,8 +42,8 @@ openevolve_development_mutation:
   protocol_version: development-live-openevolve-runtime-v1
   mode: local_development
   acknowledgement: public-data-non-production-development
-  maximum_model_calls: 12
-  maximum_total_cost_usd: 5.0
+  maximum_model_calls: 48
+  maximum_total_cost_usd: 50.0
   usage_log_file: /absolute/path/to/runtime/openevolve-model-usage.jsonl
   credential:
     logical_name: anthropic_api_key
@@ -114,3 +114,16 @@ runtime:
     campaign_seconds_per_epoch: 120.0
     campaign_finalisation_reserve_seconds: 1800.0
     campaign_prior_results: 12
+    # Record a failed candidate as inconclusive evidence and continue the campaign.
+    continue_after_failed_candidate: true
+    # Replace from the completed, verified fold-0 baseline before launch.
+    initial_incumbent_configuration:
+      maximum_epochs: 150
+      learning_rate: 0.0001
+      weight_decay: 0.00001
+      dropout: 0.0
+      dice_weight: 1.0
+      positive_negative_ratio: "1:1"
+      augmentation_strength: baseline
+    # Aggregate results only; no paths, rows, images, masks or predictions.
+    initial_campaign_observations: []

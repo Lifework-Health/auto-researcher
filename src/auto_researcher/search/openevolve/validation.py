@@ -60,6 +60,48 @@ FORBIDDEN_CALLS = frozenset(
         "vars",
     }
 )
+FORBIDDEN_ATTRIBUTE_CALLS = frozenset(
+    {
+        "system",
+        "popen",
+        "fork",
+        "spawn",
+        "connect",
+        "bind",
+        "request",
+        "write_text",
+        "write_bytes",
+        "unlink",
+        "chmod",
+        "link",
+        "hardlink_to",
+        "symlink",
+        "symlink_to",
+        "mkfifo",
+        "mknod",
+    }
+)
+
+
+def candidate_static_validation_guidance(
+    component: EvolvableComponentSpec,
+) -> tuple[str, ...]:
+    """Exact development-model guidance derived from the fail-closed validator."""
+
+    return (
+        f"Define exactly one synchronous `def {component.entry_point}(configuration)` entry point.",
+        "Do not define classes or async functions, and do not use while, global, "
+        "nonlocal, or delete statements.",
+        "Never assign or augmented-assign through an attribute or subscript. Build "
+        "and return a new dictionary instead of mutating `configuration` in place.",
+        "Do not use names or attributes beginning with double underscores.",
+        "Do not call the entry point recursively.",
+        "Do not use these names or module roots: "
+        + ", ".join(sorted(FORBIDDEN_ROOTS)),
+        "Do not call these builtins: " + ", ".join(sorted(FORBIDDEN_CALLS)),
+        "Do not call methods named: "
+        + ", ".join(sorted(FORBIDDEN_ATTRIBUTE_CALLS)),
+    )
 
 
 class _SafetyVisitor(ast.NodeVisitor):
@@ -119,25 +161,7 @@ class _SafetyVisitor(ast.NodeVisitor):
             ):
                 self.reasons.add("candidate_forbidden_operation")
         elif isinstance(node.func, ast.Attribute):
-            if node.func.attr in {
-                "system",
-                "popen",
-                "fork",
-                "spawn",
-                "connect",
-                "bind",
-                "request",
-                "write_text",
-                "write_bytes",
-                "unlink",
-                "chmod",
-                "link",
-                "hardlink_to",
-                "symlink",
-                "symlink_to",
-                "mkfifo",
-                "mknod",
-            }:
+            if node.func.attr in FORBIDDEN_ATTRIBUTE_CALLS:
                 self.reasons.add("candidate_forbidden_operation")
         self.generic_visit(node)
 

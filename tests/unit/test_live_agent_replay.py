@@ -211,7 +211,7 @@ def test_conflicting_completed_snapshots_fail_closed():
         dependencies.hypothesis_agent.generate(context)
 
 
-def test_timeout_retries_once_but_rate_limit_does_not_auto_retry():
+def test_timeout_retries_once_but_rate_limit_does_not_auto_retry(capsys):
     contract = default_synthetic_contract()
     timeout_client = ErrorThenSuccessClient(
         _proposal(contract.contract_id),
@@ -236,6 +236,10 @@ def test_timeout_retries_once_but_rate_limit_does_not_auto_retry():
     assert timeout_telemetry.cache_creation_input_tokens == 3
     assert timeout_telemetry.cache_read_input_tokens == 2
     assert timeout_telemetry.estimated_cost > 0.00001
+    assert (
+        "AUTO_RESEARCHER_AGENT_RETRY role=HYPOTHESIS attempt=1 reason=TIMEOUT"
+        in capsys.readouterr().out
+    )
 
     rate_client = ErrorThenSuccessClient(
         _proposal(contract.contract_id),

@@ -115,6 +115,21 @@ def test_development_configuration_rejects_budget_drift(tmp_path):
         DevelopmentLiveOpenEvolveConfiguration.model_validate(payload)
 
 
+def test_development_configuration_accepts_fifty_dollar_campaign_ceiling(tmp_path):
+    payload = _configuration(tmp_path).model_dump(mode="python")
+    payload.update(
+        maximum_model_calls=48,
+        maximum_total_cost_usd=50.0,
+    )
+    configuration = DevelopmentLiveOpenEvolveConfiguration.model_validate(payload)
+    assert configuration.maximum_model_calls == 48
+    assert configuration.maximum_total_cost_usd == 50.0
+
+    payload["maximum_total_cost_usd"] = 50.01
+    with pytest.raises(ValidationError):
+        DevelopmentLiveOpenEvolveConfiguration.model_validate(payload)
+
+
 def test_development_parent_relaxation_is_explicit_and_truthfully_labelled():
     backend = OpenEvolveBackend.__new__(OpenEvolveBackend)
     backend.development_allow_verified_infeasible_parents = False
