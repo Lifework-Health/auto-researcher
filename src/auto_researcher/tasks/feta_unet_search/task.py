@@ -63,6 +63,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V6_BASIC_UNET_FEATURE_PROFILES,
     V6_MAXIMUM_TRAINABLE_PARAMETERS,
     V6_MINIMUM_TRAINABLE_PARAMETERS,
+    V6_OPTUNA_FEATURE_PROFILES,
     V6_UPSAMPLE_MODES,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
@@ -276,7 +277,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 CategoricalParameterSpec(
                     name="feature_width",
                     choices=tuple(
-                        V6_BASIC_UNET_FEATURE_PROFILES
+                        V6_OPTUNA_FEATURE_PROFILES
                         if v6_architecture
                         else FEATURE_WIDTH_PROFILES
                     ),

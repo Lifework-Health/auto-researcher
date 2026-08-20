@@ -24,6 +24,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     MODEL_VARIANTS,
     V6_ARCHITECTURE_BUDGET,
     V6_BASIC_UNET_FEATURE_PROFILES,
+    V6_OPTUNA_FEATURE_PROFILES,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
 )
@@ -786,7 +787,7 @@ def apply_tree_portfolio_policy(
             fixed["architecture_budget"] = V6_ARCHITECTURE_BUDGET
             fixed["upsample"] = "deconv"
             parameters["feature_width"] = {
-                "choices": list(V6_BASIC_UNET_FEATURE_PROFILES)
+                "choices": list(V6_OPTUNA_FEATURE_PROFILES)
             }
         return _request(
             original,

@@ -18,6 +18,7 @@ from auto_researcher.contracts.models import DecisionEvent, SearchRequest
 from auto_researcher.tasks.feta_unet_search.configuration import (
     V6_ARCHITECTURE_BUDGET,
     V6_BASIC_UNET_FEATURE_PROFILES,
+    V6_OPTUNA_FEATURE_PROFILES,
     FeTAUNetSearchConfiguration,
 )
 from auto_researcher.tasks.feta_unet_search.continuation import (
@@ -175,8 +176,8 @@ def test_v6_starts_with_four_architecture_optuna_roots_then_reuses_oe_anchor():
         "architecture_budget": V6_ARCHITECTURE_BUDGET,
         "upsample": "deconv",
     }
-    assert set(first.search_space["parameters"]["feature_width"]["choices"]) == set(
-        V6_BASIC_UNET_FEATURE_PROFILES
+    assert first.search_space["parameters"]["feature_width"]["choices"] == list(
+        V6_OPTUNA_FEATURE_PROFILES
     )
 
     events: list[DecisionEvent] = [_planned_event(1, first)]

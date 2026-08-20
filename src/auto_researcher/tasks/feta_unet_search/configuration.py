@@ -54,6 +54,14 @@ V6_PIXELSHUFFLE_FEATURE_PROFILES = frozenset(
         "v6_decoder_96",
     }
 )
+V6_OPTUNA_FEATURE_PROFILES = (
+    "v6_balanced_64",
+    "v6_balanced_80",
+    "v6_balanced_96",
+    "v6_deep_64",
+    "v6_deep_80",
+    "v6_decoder_96",
+)
 RESIDUAL_CHANNEL_PROFILES = {
     "narrow": (24, 48, 96, 192, 384),
     "baseline": (32, 64, 128, 256, 512),
