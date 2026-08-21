@@ -260,6 +260,34 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 architecture_budget=V6_ARCHITECTURE_BUDGET,
                 upsample=v6_upsample,
             )
+        fixed_feature_vector = "features" in raw_fixed
+        if fixed_feature_vector:
+            # A resumed or cross-method V6 branch can bind an exact architecture
+            # vector produced by OpenEvolve. It is task-owned fixed context for
+            # the local Optuna study, not a scalar or categorical search axis.
+            # Validate the complete architecture before registering the vector
+            # so generic narrowing does not accept arbitrary fixed fields.
+            validated_architecture = FeTAUNetSearchConfiguration.model_validate(
+                {**fixed, **raw_fixed}
+            ).model_dump(mode="json")
+            registered_fixed_configuration.update(
+                feature_width=validated_architecture["feature_width"],
+                features=validated_architecture["features"],
+            )
+        feature_width_parameters = (
+            ()
+            if fixed_feature_vector
+            else (
+                CategoricalParameterSpec(
+                    name="feature_width",
+                    choices=tuple(
+                        V6_OPTUNA_FEATURE_PROFILES
+                        if v6_architecture
+                        else FEATURE_WIDTH_PROFILES
+                    ),
+                ),
+            )
+        )
         registered = OptunaStudySpec(
             schema_version="1.0",
             task_id=self.task_id,
@@ -299,14 +327,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     name="model_variant",
                     choices=MODEL_VARIANTS,
                 ),
-                CategoricalParameterSpec(
-                    name="feature_width",
-                    choices=tuple(
-                        V6_OPTUNA_FEATURE_PROFILES
-                        if v6_architecture
-                        else FEATURE_WIDTH_PROFILES
-                    ),
-                ),
+                *feature_width_parameters,
                 CategoricalParameterSpec(
                     name="activation",
                     choices=ACTIVATIONS,

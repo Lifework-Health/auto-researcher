@@ -480,6 +480,105 @@ def test_v6_portfolio_optuna_root_registers_architecture_context():
     )
 
 
+def test_v6_optuna_replay_preserves_fixed_structured_feature_vector():
+    task = FeTAUNetSearchTask()
+    features = V6_BASIC_UNET_FEATURE_PROFILES["v6_decoder_96"]
+    request = SearchRequest.model_validate_json(
+        _request(
+            SearchType.OPTUNA,
+            {
+                "fixed": {
+                    "maximum_epochs": 25,
+                    "model_variant": "basic_unet",
+                    "feature_width": "v6_decoder_96",
+                    "features": list(features),
+                    "architecture_budget": V6_ARCHITECTURE_BUDGET,
+                    "upsample": "deconv",
+                }
+            },
+            budget=2,
+        ).model_dump_json()
+    )
+    assert isinstance(request.search_space["fixed"]["features"], list)
+
+    specification = task.create_optuna_study_spec(
+        default_feta_unet_search_contract(),
+        request,
+    )
+
+    assert specification.fixed_configuration["feature_width"] == "v6_decoder_96"
+    assert specification.fixed_configuration["features"] == list(features)
+    assert "feature_width" not in {
+        parameter.name for parameter in specification.parameters
+    }
+
+
+def test_v6_optuna_accepts_valid_fixed_custom_feature_vector():
+    task = FeTAUNetSearchTask()
+    features = [96, 96, 160, 256, 512, 128]
+    specification = task.create_optuna_study_spec(
+        default_feta_unet_search_contract(),
+        _request(
+            SearchType.OPTUNA,
+            {
+                "fixed": {
+                    "maximum_epochs": 25,
+                    "model_variant": "basic_unet",
+                    "feature_width": "custom",
+                    "features": features,
+                    "architecture_budget": V6_ARCHITECTURE_BUDGET,
+                    "upsample": "deconv",
+                }
+            },
+            budget=2,
+        ),
+    )
+
+    assert specification.fixed_configuration["feature_width"] == "custom"
+    assert specification.fixed_configuration["features"] == features
+    assert "feature_width" not in {
+        parameter.name for parameter in specification.parameters
+    }
+
+
+@pytest.mark.parametrize(
+    ("feature_width", "features", "message"),
+    [
+        (
+            "v6_decoder_96",
+            [96, 96, 192, 384, 768, 96],
+            "feta_unet_search_v6_architecture_invalid",
+        ),
+        ("custom", [96, 96, 160], "features.3"),
+        ("custom", [24, 32, 64, 128, 256, 32], "v6_architecture_invalid"),
+    ],
+)
+def test_v6_optuna_rejects_invalid_fixed_feature_vectors(
+    feature_width,
+    features,
+    message,
+):
+    task = FeTAUNetSearchTask()
+    with pytest.raises(ValidationError, match=message):
+        task.create_optuna_study_spec(
+            default_feta_unet_search_contract(),
+            _request(
+                SearchType.OPTUNA,
+                {
+                    "fixed": {
+                        "maximum_epochs": 25,
+                        "model_variant": "basic_unet",
+                        "feature_width": feature_width,
+                        "features": features,
+                        "architecture_budget": V6_ARCHITECTURE_BUDGET,
+                        "upsample": "deconv",
+                    }
+                },
+                budget=2,
+            ),
+        )
+
+
 def test_v6_direct_replay_preserves_registered_feature_vector():
     task = FeTAUNetSearchTask()
     configuration = FeTAUNetSearchConfiguration(
