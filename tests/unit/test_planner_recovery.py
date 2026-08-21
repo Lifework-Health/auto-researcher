@@ -65,6 +65,36 @@ class _FailingLiveHypothesisAgent:
         raise LiveAgentExecutionError("invalid_structured_output")
 
 
+class _PortfolioRecoveryTask(FeTAUNetSearchTask):
+    def apply_campaign_portfolio(
+        self,
+        request,
+        *,
+        run_id,
+        cycle,
+        events,
+        runtime_context,
+    ):
+        del run_id, cycle, events, runtime_context
+        return request.model_copy(
+            update={
+                "request_id": "search-controller-recovery",
+                "search_type": SearchType.OPTUNA,
+                "search_space": {
+                    "fixed": {"maximum_epochs": 25},
+                    "parameters": {
+                        "learning_rate": {
+                            "low": 0.0001,
+                            "high": 0.0002,
+                        }
+                    },
+                },
+                "experiment_budget": 1,
+                "rationale": "Controller-owned portfolio recovery request.",
+            }
+        )
+
+
 def test_valid_hypothesis_uses_identity_stable_direct_fallback(
     contract_factory,
     deterministic_dependencies,
@@ -142,6 +172,150 @@ def test_valid_hypothesis_uses_identity_stable_direct_fallback(
     ]
     assert len(planned) == 1
     assert "fallback:agent_context_too_large" in planned[0].output_references
+
+
+def test_campaign_portfolio_overrides_direct_fallback_after_planner_exhaustion(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-portfolio-recovery",
+        statement="The controller can continue after planner exhaustion.",
+        rationale="Exercise deterministic portfolio recovery.",
+        predicted_subspace={
+            "maximum_epochs": 25,
+            "learning_rate": 0.0003,
+            "weight_decay": 0.000003,
+            "dropout": 0.0,
+            "dice_weight": 1.0,
+            "positive_negative_ratio": "1:1",
+            "augmentation_policy": "reference_light",
+        },
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-portfolio-recovery",
+        "thread_id": "thread-portfolio-recovery",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_PortfolioRecoveryTask(),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["planner_fallback_code"] == "agent_context_too_large"
+    assert update["planner_failure_stage"] == "context_assembly"
+    assert update["search_request"].request_id == "search-controller-recovery"
+    assert update["search_request"].search_type == SearchType.OPTUNA
+    assert update["search_request"].rationale == (
+        "Controller-owned portfolio recovery request."
+    )
+    assert update["errors"] == []
+
+
+def test_direct_fallback_rejects_an_exact_verified_configuration(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT}),
+        maximum_experiments=4,
+    )
+    configuration = default_synthetic_configuration()
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-duplicate-recovery",
+        statement="The fallback repeats prior work.",
+        rationale="Exercise the pre-execution duplicate guard.",
+        predicted_subspace=configuration,
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    deterministic_dependencies.provenance_store.append_event(
+        DecisionEvent(
+            event_id="prior-duplicate-evidence",
+            run_id="run-duplicate-recovery",
+            cycle=1,
+            event_type=EventType.EVIDENCE_VERIFIED,
+            actor="verifier",
+            input_references=("experiment-prior",),
+            output_references=(
+                "evidence:SUPPORTED",
+                "verified:true",
+                "constraints:true",
+                "score:0.8",
+                "search_type:DIRECT",
+            ),
+            rationale="Verified prior result.",
+            timestamp=deterministic_dependencies.clock(),
+            code_version="test",
+            provenance=ProvenanceKind.REAL,
+            safe_payload={"configuration": configuration},
+        )
+    )
+    state = {
+        "run_id": "run-duplicate-recovery",
+        "thread_id": "thread-duplicate-recovery",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert update["status"] == RunStatus.FAILED
+    assert update["search_request"] is None
+    assert update["stop_reason"] == "planner_fallback_duplicate_configuration"
+    assert update["planner_failure_stage"] == "fallback_deduplication"
+    assert update["planner_fallback_code"] == "agent_context_too_large"
 
 
 def test_unusable_hypothesis_records_specific_safe_planner_failure(

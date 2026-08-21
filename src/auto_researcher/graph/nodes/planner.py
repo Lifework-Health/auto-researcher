@@ -8,7 +8,12 @@ from auto_researcher.agents.telemetry import (
     apply_agent_telemetry,
     consume_agent_telemetry,
 )
-from auto_researcher.contracts.enums import ProposalSource, RunStatus, SearchType
+from auto_researcher.contracts.enums import (
+    EventType,
+    ProposalSource,
+    RunStatus,
+    SearchType,
+)
 from auto_researcher.contracts.models import SearchRequest
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
@@ -81,6 +86,41 @@ def _deterministic_direct_fallback(
     )
 
 
+def _duplicates_verified_direct_configuration(
+    state: ResearchState,
+    dependencies: RuntimeDependencies,
+    request: SearchRequest,
+) -> bool:
+    if request.search_type != SearchType.DIRECT:
+        return False
+    try:
+        proposed = dependencies.task.normalise_configuration(
+            dict(request.search_space)
+        )
+    except (TypeError, ValueError):
+        return False
+    for event in dependencies.provenance_store.list_events(state["run_id"]):
+        if event.event_type != EventType.EVIDENCE_VERIFIED:
+            continue
+        outputs = set(event.output_references)
+        if not {
+            "evidence:SUPPORTED",
+            "verified:true",
+            "constraints:true",
+        }.issubset(outputs):
+            continue
+        raw = event.safe_payload.get("configuration")
+        if not isinstance(raw, dict):
+            continue
+        try:
+            existing = dependencies.task.normalise_configuration(dict(raw))
+        except (TypeError, ValueError):
+            continue
+        if existing == proposed:
+            return True
+    return False
+
+
 def plan_search(
     state: ResearchState,
     dependencies: RuntimeDependencies,
@@ -108,27 +148,6 @@ def plan_search(
                 request,
                 context.prior_verified_findings,
             )
-        if isinstance(dependencies.task, CampaignPortfolioCapableTask):
-            stage = "portfolio_policy"
-            request = dependencies.task.apply_campaign_portfolio(
-                request,
-                run_id=state["run_id"],
-                cycle=state["cycle"],
-                events=tuple(
-                    dependencies.provenance_store.list_events(state["run_id"])
-                ),
-                runtime_context=dependencies.runtime_context,
-            )
-            if request is None:
-                telemetry = consume_agent_telemetry(dependencies.planner_agent)
-                return {
-                    "status": RunStatus.COMPLETED,
-                    "budget": apply_agent_telemetry(state["budget"], telemetry),
-                    "search_request": None,
-                    "errors": [],
-                    "stop_reason": "campaign_portfolio_complete",
-                    "executed_nodes": ["plan_search"],
-                }
     except Exception as exc:
         telemetry = consume_agent_telemetry(dependencies.planner_agent)
         code = _safe_failure_code(exc)
@@ -158,6 +177,54 @@ def plan_search(
             }
     else:
         telemetry = consume_agent_telemetry(dependencies.planner_agent)
+    if isinstance(dependencies.task, CampaignPortfolioCapableTask):
+        stage = "portfolio_policy"
+        try:
+            request = dependencies.task.apply_campaign_portfolio(
+                request,
+                run_id=state["run_id"],
+                cycle=state["cycle"],
+                events=tuple(
+                    dependencies.provenance_store.list_events(state["run_id"])
+                ),
+                runtime_context=dependencies.runtime_context,
+            )
+        except Exception as exc:
+            code = _safe_failure_code(exc)
+            return {
+                "status": RunStatus.FAILED,
+                "budget": apply_agent_telemetry(state["budget"], telemetry),
+                "search_request": None,
+                "errors": [code],
+                "stop_reason": code,
+                "planner_failure_code": code,
+                "planner_failure_stage": stage,
+                "executed_nodes": ["plan_search"],
+            }
+        if request is None:
+            return {
+                "status": RunStatus.COMPLETED,
+                "budget": apply_agent_telemetry(state["budget"], telemetry),
+                "search_request": None,
+                "errors": [],
+                "stop_reason": "campaign_portfolio_complete",
+                "executed_nodes": ["plan_search"],
+            }
+    if fallback_code is not None and _duplicates_verified_direct_configuration(
+        state, dependencies, request
+    ):
+        code = "planner_fallback_duplicate_configuration"
+        return {
+            "status": RunStatus.FAILED,
+            "budget": apply_agent_telemetry(state["budget"], telemetry),
+            "search_request": None,
+            "errors": [code],
+            "stop_reason": code,
+            "planner_failure_code": code,
+            "planner_failure_stage": "fallback_deduplication",
+            "planner_fallback_code": fallback_code,
+            "executed_nodes": ["plan_search"],
+        }
     errors: list[str] = []
     if request.hypothesis_id != hypothesis.hypothesis_id:
         errors.append("planner_hypothesis_mismatch")
