@@ -17,7 +17,33 @@ def create_structural_basic_unet(configuration):
     encoder_features = features[:-1]
     terminal_decoder_width = features[-1]
     depth = len(encoder_features)
-    convolutions = int(configuration.convolutions_per_stage)
+    uniform_convolutions = int(configuration.convolutions_per_stage)
+
+    def stage_convolutions(stage: int) -> int:
+        profile = str(getattr(configuration, "stage_block_profile", "uniform"))
+        if profile == "uniform":
+            return uniform_convolutions
+        if profile == "shallow_to_deep":
+            return min(3, 1 + stage)
+        if profile == "deep_to_shallow":
+            return max(1, 3 - stage)
+        if profile == "bottleneck_heavy":
+            return 3 if stage == depth - 1 else 1
+        raise ValueError("feta_unet_stage_block_profile_invalid")
+
+    def stage_has_residual(stage: int, branch: str) -> bool:
+        if not bool(configuration.residual_blocks):
+            return False
+        profile = str(getattr(configuration, "residual_profile", "uniform"))
+        if profile == "uniform":
+            return True
+        if profile == "encoder_only":
+            return branch == "encoder"
+        if profile == "decoder_only":
+            return branch == "decoder"
+        if profile == "deep_only":
+            return stage >= depth // 2
+        raise ValueError("feta_unet_residual_profile_invalid")
 
     def activation():
         if configuration.activation == "ReLU":
@@ -42,16 +68,18 @@ def create_structural_basic_unet(configuration):
         profile = configuration.dilation_profile
         if profile == "deep" and stage >= depth // 2:
             return 2
-        if profile == "multiscale" and convolution == convolutions - 1:
+        if profile == "multiscale" and convolution == stage_convolutions(stage) - 1:
             return 2 if stage < depth - 1 else 3
         return 1
 
     class ConvStage(nn.Module):
-        def __init__(self, in_channels: int, out_channels: int, stage: int):
+        def __init__(
+            self, in_channels: int, out_channels: int, stage: int, branch: str
+        ):
             super().__init__()
             blocks = []
             current = in_channels
-            for convolution in range(convolutions):
+            for convolution in range(stage_convolutions(stage)):
                 kernel = stage_kernel(stage)
                 dilation = stage_dilation(stage, convolution)
                 padding = dilation * (kernel // 2)
@@ -72,7 +100,7 @@ def create_structural_basic_unet(configuration):
                 )
                 current = out_channels
             self.body = nn.Sequential(*blocks)
-            self.residual = bool(configuration.residual_blocks)
+            self.residual = stage_has_residual(stage, branch)
             self.projection = (
                 nn.Identity()
                 if in_channels == out_channels
@@ -162,7 +190,7 @@ def create_structural_basic_unet(configuration):
             downsamplers = []
             current = int(configuration.in_channels)
             for stage, channels in enumerate(encoder_features):
-                encoders.append(ConvStage(current, channels, stage))
+                encoders.append(ConvStage(current, channels, stage, "encoder"))
                 current = channels
                 if stage < depth - 1:
                     downsamplers.append(Downsample(channels))
@@ -191,7 +219,9 @@ def create_structural_basic_unet(configuration):
                     else decoder_channels + skip_channels
                 )
                 stage = depth - decoder_index - 2
-                decoders.append(ConvStage(decoder_input, decoder_channels, stage))
+                decoders.append(
+                    ConvStage(decoder_input, decoder_channels, stage, "decoder")
+                )
                 auxiliary.append(
                     nn.Conv3d(
                         decoder_channels, configuration.out_channels, kernel_size=1

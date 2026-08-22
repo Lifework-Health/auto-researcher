@@ -745,7 +745,7 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         ),
     )
     assert component.seed_configuration()["seed_training_policy"] == {
-        "policy_version": "feta-unet-training-policy-v5",
+        "policy_version": "feta-unet-training-policy-v6",
         "model_variant": "unet_residual",
         "feature_width": "baseline",
         "features": [32, 32, 64, 128, 256, 32],
@@ -755,6 +755,8 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         "residual_blocks": False,
         "deep_supervision_heads": 0,
         "convolutions_per_stage": 2,
+        "stage_block_profile": "uniform",
+        "residual_profile": "uniform",
         "dilation_profile": "none",
         "skip_fusion": "concat",
         "downsample": "max_pool",

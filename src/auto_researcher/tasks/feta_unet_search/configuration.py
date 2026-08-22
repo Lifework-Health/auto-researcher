@@ -7,8 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v5"
-FIDELITY_LEVELS = (5, 25, 50, 100, 150)
+CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v6"
+V7_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v5"
+FIDELITY_LEVELS = (5, 10, 15, 25, 50, 100, 150)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
 DROPOUT_BOUNDS = (0.0, 0.3)
@@ -20,6 +21,7 @@ MODEL_VARIANT_CONTEXT = {
     "unet_plain": ("UNet", 0),
     "unet_residual": ("UNet", 2),
     "structural_basic_unet": ("BasicUNet", 0),
+    "dynunet": ("DynUNet", 0),
 }
 FEATURE_WIDTH_PROFILES = {
     "narrow": (24, 24, 48, 96, 192, 24),
@@ -86,6 +88,33 @@ V7_KERNEL_PROFILES = (
     "context_deep",
 )
 V7_DEEP_SUPERVISION_HEADS = (0, 1, 2)
+V8_DYNUNET_FEATURE_PROFILES = {
+    "v8_dyn_compact_5": (48, 96, 192, 384, 768),
+    "v8_dyn_balanced_5": (64, 128, 256, 512, 768),
+    "v8_dyn_context_5": (64, 96, 192, 480, 960),
+    "v8_dyn_deep_6": (40, 80, 160, 320, 640, 960),
+}
+ALL_FEATURE_WIDTH_PROFILES.update(V8_DYNUNET_FEATURE_PROFILES)
+V8_DYNUNET_ARCHITECTURE_BUDGET = "dynunet-15m-150m-v1"
+V8_CAMPAIGN_ARCHITECTURE_MODE = "feta-unet-v8-mixed-bounded-v1"
+V8_ARCHITECTURE_FAMILY_ID = "feta-unet-v8-mixed-bounded-family-v1"
+V8_MINIMUM_TRAINABLE_PARAMETERS = 15_000_000
+V8_MAXIMUM_TRAINABLE_PARAMETERS = 150_000_000
+V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES = 44 * 1024**3
+V8_DYNUNET_KERNEL_PROFILES = ("standard", "large_front", "context_deep")
+V8_DYNUNET_DEEP_SUPERVISION_HEADS = (0, 1, 2)
+V8_STAGE_BLOCK_PROFILES = (
+    "uniform",
+    "shallow_to_deep",
+    "deep_to_shallow",
+    "bottleneck_heavy",
+)
+V8_RESIDUAL_PROFILES = (
+    "uniform",
+    "encoder_only",
+    "decoder_only",
+    "deep_only",
+)
 RESIDUAL_CHANNEL_PROFILES = {
     "narrow": (24, 48, 96, 192, 384),
     "baseline": (32, 64, 128, 256, 512),
@@ -114,6 +143,8 @@ CANDIDATE_CONFIGURATION_FIELDS = (
     "residual_blocks",
     "deep_supervision_heads",
     "convolutions_per_stage",
+    "stage_block_profile",
+    "residual_profile",
     "dilation_profile",
     "skip_fusion",
     "downsample",
@@ -141,9 +172,13 @@ class FeTAUNetSearchConfiguration(BaseModel):
     in_channels: Literal[1] = 1
     out_channels: Literal[8] = 8
     model_variant: Literal[
-        "basic_unet", "unet_plain", "unet_residual", "structural_basic_unet"
+        "basic_unet",
+        "unet_plain",
+        "unet_residual",
+        "structural_basic_unet",
+        "dynunet",
     ] = "basic_unet"
-    network_family: Literal["BasicUNet", "UNet"] = "BasicUNet"
+    network_family: Literal["BasicUNet", "UNet", "DynUNet"] = "BasicUNet"
     residual_units: Literal[0, 2] = 0
     feature_width: str = "baseline"
     features: tuple[int, int, int, int, int] | tuple[int, int, int, int, int, int] = (
@@ -158,7 +193,10 @@ class FeTAUNetSearchConfiguration(BaseModel):
     norm_affine: Literal[True] = True
     norm_num_groups: Literal[8] = 8
     architecture_budget: Literal[
-        "legacy", "basicunet-15m-150m-v1", "basicunet-structural-15m-150m-v1"
+        "legacy",
+        "basicunet-15m-150m-v1",
+        "basicunet-structural-15m-150m-v1",
+        "dynunet-15m-150m-v1",
     ] = "legacy"
     upsample: Literal["deconv", "pixelshuffle", "nontrainable"] = "deconv"
     kernel_profile: Literal["basic", "standard", "large_front", "context_deep"] = (
@@ -167,6 +205,12 @@ class FeTAUNetSearchConfiguration(BaseModel):
     residual_blocks: bool = False
     deep_supervision_heads: Literal[0, 1, 2] = 0
     convolutions_per_stage: Literal[1, 2, 3] = 2
+    stage_block_profile: Literal[
+        "uniform", "shallow_to_deep", "deep_to_shallow", "bottleneck_heavy"
+    ] = "uniform"
+    residual_profile: Literal[
+        "uniform", "encoder_only", "decoder_only", "deep_only"
+    ] = "uniform"
     dilation_profile: Literal["none", "deep", "multiscale"] = "none"
     skip_fusion: Literal["concat", "add", "gated_concat"] = "concat"
     downsample: Literal["max_pool", "strided_conv"] = "max_pool"
@@ -174,7 +218,7 @@ class FeTAUNetSearchConfiguration(BaseModel):
     patch_size: tuple[int, int, int] = (128, 128, 128)
     batch_size: Literal[1] = 1
     samples_per_volume: Literal[2] = 2
-    maximum_epochs: Literal[5, 25, 50, 100, 150] = 25
+    maximum_epochs: Literal[5, 10, 15, 25, 50, 100, 150] = 25
     validation_every: Literal[5] = 5
     fold_count: Literal[1] = 1
     learning_rate: float = 1e-4
@@ -225,6 +269,9 @@ class FeTAUNetSearchConfiguration(BaseModel):
         if profile in V7_MECHANISM_FEATURE_PROFILES:
             payload.setdefault("architecture_budget", V7_ARCHITECTURE_BUDGET)
             payload.setdefault("model_variant", "structural_basic_unet")
+        if profile in V8_DYNUNET_FEATURE_PROFILES:
+            payload.setdefault("architecture_budget", V8_DYNUNET_ARCHITECTURE_BUDGET)
+            payload.setdefault("model_variant", "dynunet")
         profile = payload.get("feature_width", "baseline")
         expected = ALL_FEATURE_WIDTH_PROFILES.get(profile)
         if expected is not None and "features" not in payload:
@@ -288,6 +335,8 @@ class FeTAUNetSearchConfiguration(BaseModel):
             or self.residual_blocks
             or self.deep_supervision_heads != 0
             or self.convolutions_per_stage != 2
+            or self.stage_block_profile != "uniform"
+            or self.residual_profile != "uniform"
             or self.dilation_profile != "none"
             or self.skip_fusion != "concat"
             or self.downsample != "max_pool"
@@ -309,6 +358,8 @@ class FeTAUNetSearchConfiguration(BaseModel):
             or self.residual_blocks
             or self.deep_supervision_heads != 0
             or self.convolutions_per_stage != 2
+            or self.stage_block_profile != "uniform"
+            or self.residual_profile != "uniform"
             or self.dilation_profile != "none"
             or self.skip_fusion != "concat"
             or self.downsample != "max_pool"
@@ -335,6 +386,28 @@ class FeTAUNetSearchConfiguration(BaseModel):
             or self.deep_supervision_heads >= len(self.features) - 1
         ):
             raise ValueError("feta_unet_search_v7_architecture_invalid")
+        if self.architecture_budget == V8_DYNUNET_ARCHITECTURE_BUDGET and (
+            self.model_variant != "dynunet"
+            or self.feature_width not in {*V8_DYNUNET_FEATURE_PROFILES, "custom"}
+            or (expected_features is not None and self.features != expected_features)
+            or len(self.features) not in (5, 6)
+            or any(
+                channel % 8 or channel < 32 or channel > 1_024
+                for channel in self.features
+            )
+            or tuple(sorted(self.features)) != self.features
+            or self.upsample != "deconv"
+            or self.kernel_profile not in V8_DYNUNET_KERNEL_PROFILES
+            or self.deep_supervision_heads not in V8_DYNUNET_DEEP_SUPERVISION_HEADS
+            or self.deep_supervision_heads >= len(self.features) - 1
+            or self.convolutions_per_stage != 2
+            or self.stage_block_profile != "uniform"
+            or self.residual_profile != "uniform"
+            or self.dilation_profile != "none"
+            or self.skip_fusion != "concat"
+            or self.downsample != "max_pool"
+        ):
+            raise ValueError("feta_unet_search_v8_dynunet_architecture_invalid")
         expected_channels = RESIDUAL_CHANNEL_PROFILES.get(self.feature_width)
         if (
             (

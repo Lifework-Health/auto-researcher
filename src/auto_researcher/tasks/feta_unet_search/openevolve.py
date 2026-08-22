@@ -48,8 +48,8 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
 from auto_researcher.tasks.models import ExperimentMetadata
 
 COMPONENT_ID = "feta-unet-family-training-policy"
-COMPONENT_VERSION = "5.0"
-POLICY_VERSION: Literal["feta-unet-training-policy-v5"] = "feta-unet-training-policy-v5"
+COMPONENT_VERSION = "6.0"
+POLICY_VERSION: Literal["feta-unet-training-policy-v6"] = "feta-unet-training-policy-v6"
 
 SEED_SOURCE = """def evolve(configuration):
     return configuration["seed_training_policy"]
@@ -57,7 +57,7 @@ SEED_SOURCE = """def evolve(configuration):
 
 LOW_REGULARISATION_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-unet-training-policy-v5",
+        "policy_version": "feta-unet-training-policy-v6",
         "model_variant": "unet_plain",
         "feature_width": "baseline",
         "activation": "ReLU",
@@ -76,7 +76,7 @@ LOW_REGULARISATION_SOURCE = """def evolve(configuration):
 
 REGULARISED_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-unet-training-policy-v5",
+        "policy_version": "feta-unet-training-policy-v6",
         "model_variant": "unet_residual",
         "feature_width": "narrow",
         "activation": "LeakyReLU",
@@ -95,7 +95,7 @@ REGULARISED_SOURCE = """def evolve(configuration):
 
 V6_BALANCED_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-unet-training-policy-v5",
+        "policy_version": "feta-unet-training-policy-v6",
         "model_variant": "basic_unet",
         "feature_width": "v6_balanced_80",
         "features": [80, 80, 160, 320, 640, 80],
@@ -117,7 +117,7 @@ V6_BALANCED_SOURCE = """def evolve(configuration):
 
 V6_DEEP_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-unet-training-policy-v5",
+        "policy_version": "feta-unet-training-policy-v6",
         "model_variant": "basic_unet",
         "feature_width": "v6_deep_64",
         "features": [48, 64, 128, 320, 640, 64],
@@ -139,7 +139,7 @@ V6_DEEP_SOURCE = """def evolve(configuration):
 
 V7_RESIDUAL_CONTEXT_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-unet-training-policy-v5",
+        "policy_version": "feta-unet-training-policy-v6",
         "model_variant": "structural_basic_unet",
         "feature_width": "v7_asymmetric_5",
         "features": [64, 96, 192, 480, 64],
@@ -168,7 +168,7 @@ V7_RESIDUAL_CONTEXT_SOURCE = """def evolve(configuration):
 
 V7_DEEP_SUPERVISION_SOURCE = """def evolve(configuration):
     return {
-        "policy_version": "feta-unet-training-policy-v5",
+        "policy_version": "feta-unet-training-policy-v6",
         "model_variant": "structural_basic_unet",
         "feature_width": "v7_compact_5",
         "features": [48, 96, 192, 384, 48],
@@ -208,6 +208,8 @@ def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPol
             "residual_blocks": configuration.get("residual_blocks", False),
             "deep_supervision_heads": configuration.get("deep_supervision_heads", 0),
             "convolutions_per_stage": configuration.get("convolutions_per_stage", 2),
+            "stage_block_profile": configuration.get("stage_block_profile", "uniform"),
+            "residual_profile": configuration.get("residual_profile", "uniform"),
             "dilation_profile": configuration.get("dilation_profile", "none"),
             "skip_fusion": configuration.get("skip_fusion", "concat"),
             "downsample": configuration.get("downsample", "max_pool"),
@@ -229,7 +231,7 @@ def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPol
 class UNetTrainingPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    policy_version: Literal["feta-unet-training-policy-v5"] = POLICY_VERSION
+    policy_version: Literal["feta-unet-training-policy-v6"] = POLICY_VERSION
     model_variant: Literal[
         "basic_unet", "unet_plain", "unet_residual", "structural_basic_unet"
     ] = "basic_unet"
@@ -245,6 +247,12 @@ class UNetTrainingPolicy(BaseModel):
     residual_blocks: bool = False
     deep_supervision_heads: Literal[0, 1, 2] = 0
     convolutions_per_stage: Literal[1, 2, 3] = 2
+    stage_block_profile: Literal[
+        "uniform", "shallow_to_deep", "deep_to_shallow", "bottleneck_heavy"
+    ] = "uniform"
+    residual_profile: Literal[
+        "uniform", "encoder_only", "decoder_only", "deep_only"
+    ] = "uniform"
     dilation_profile: Literal["none", "deep", "multiscale"] = "none"
     skip_fusion: Literal["concat", "add", "gated_concat"] = "concat"
     downsample: Literal["max_pool", "strided_conv"] = "max_pool"
@@ -314,6 +322,8 @@ class UNetTrainingPolicy(BaseModel):
                 or self.residual_blocks
                 or self.deep_supervision_heads != 0
                 or self.convolutions_per_stage != 2
+                or self.stage_block_profile != "uniform"
+                or self.residual_profile != "uniform"
                 or self.dilation_profile != "none"
                 or self.skip_fusion != "concat"
                 or self.downsample != "max_pool"
@@ -335,6 +345,8 @@ class UNetTrainingPolicy(BaseModel):
             or self.residual_blocks
             or self.deep_supervision_heads != 0
             or self.convolutions_per_stage != 2
+            or self.stage_block_profile != "uniform"
+            or self.residual_profile != "uniform"
             or self.dilation_profile != "none"
             or self.skip_fusion != "concat"
             or self.downsample != "max_pool"
@@ -423,6 +435,18 @@ class FeTAUNetEvolvableComponent:
                 "residual_blocks": [False, True],
                 "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS),
                 "convolutions_per_stage": [1, 2, 3],
+                "stage_block_profile": [
+                    "uniform",
+                    "shallow_to_deep",
+                    "deep_to_shallow",
+                    "bottleneck_heavy",
+                ],
+                "residual_profile": [
+                    "uniform",
+                    "encoder_only",
+                    "decoder_only",
+                    "deep_only",
+                ],
                 "dilation_profile": ["none", "deep", "multiscale"],
                 "skip_fusion": ["concat", "add", "gated_concat"],
                 "downsample": ["max_pool", "strided_conv"],
@@ -539,6 +563,8 @@ class FeTAUNetEvolvableComponent:
                 "residual_blocks",
                 "deep_supervision_heads",
                 "convolutions_per_stage",
+                "stage_block_profile",
+                "residual_profile",
                 "dilation_profile",
                 "skip_fusion",
                 "downsample",
