@@ -92,6 +92,9 @@ runtime:
       - "Verified V6 finalist mean macro Dice was 0.8206412646177336 at best epoch 110 and 0.8183156149629622 at epoch 150."
       - "A second verified V6 finalist reached 0.8194349024061267 at best epoch 105 and 0.818386262202946 at epoch 150."
       - "Both V6 finalists plateaued after epochs 105 to 110, so V7 prioritises structural mechanisms and lineage-local optimisation rather than longer training or uniform width scaling."
+      - "REQ-11 panel c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871 found only +0.001136 mean macro Dice for experiment-643b2c5f65b4bc25 and +0.000035 for experiment-ccc5fcf318cf2eb1 relative to the V5 champion, with mixed tissue-level gains and regressions."
+      - "REQ-11 found shared topology-fragmentation signals and approximately +1.4 mm deep-grey-matter HD95 deltas for both V6 finalists; OpenEvolve should prioritise continuity, receptive-field and skip-fusion mechanisms while macro Dice remains the sole optimisation objective."
+      - "REQ-11 measured complementary tissue advantages between the V6 finalists: 10 left material wins, 17 right material wins and 57 near-ties. Diversity and the separate ensemble lane remain warranted."
       - "A separately trained U-Net reportedly reached approximately 0.84 under a believed-comparable evaluation, but its architecture and training policy remain deliberately withheld."
     campaign_portfolio:
       version: feta-basicunet-structural-tree-4-12-8-2-8-4-2-v2
@@ -103,6 +106,18 @@ runtime:
       wildcard_counts: {"50": 2, "100": 1, "150": 0}
       # Verified V6 evidence is supplied to every structural mutation as parent
       # context. It is never scheduled or retrained inside V7.
+      req11_diagnostic:
+        schema_version: feta-unet-diagnostic-report-v1
+        diagnostic_id: feta-unet-v7-parent-diagnostics-20260822
+        panel_identity: c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871
+        case_count: 12
+        baseline_experiment_id: experiment-fc2d8d2a371ddba0
+        candidates:
+          - {experiment_id: experiment-643b2c5f65b4bc25, mean_macro_dice_delta: 0.001136112933560011}
+          - {experiment_id: experiment-ccc5fcf318cf2eb1, mean_macro_dice_delta: 0.000035058287334012915}
+        complementarity: {left_material_win_count: 10, right_material_win_count: 17, near_tie_count: 57, observed: true}
+        priorities: [topology_continuity, deep_grey_boundary, external_csf_retention, tissue_complementarity]
+        interpretation_boundary: diagnostic_observation_not_objective
       v6_parent_evidence:
         - experiment_id: experiment-643b2c5f65b4bc25
           best_score: 0.8206412646177336

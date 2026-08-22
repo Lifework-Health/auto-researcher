@@ -17,6 +17,10 @@ V7 does not switch to DynUNet.
 - The two verified V6 150-epoch finalists are bound into mutation context with
   their exact configurations and scores. They are evidence parents only and
   are not retrained as V7 screening candidates.
+- The public-safe REQ-11 panel identity, aggregate candidate deltas,
+  complementarity counts and diagnostic priorities are validated as immutable
+  portfolio input and passed to every OpenEvolve mutation. They guide mechanism
+  selection but do not alter the primary macro-Dice objective.
 - The strongest four structurally distinct parents receive two lineage-local
   Optuna trials each. Those trials hold architecture fixed and tune learning
   rate, weight decay, dropout, Dice weight, sampling ratio, loss family,
@@ -46,7 +50,8 @@ V7 does not switch to DynUNet.
    ```
 
    It must report four unique roots, the exact portfolio and contract identities,
-   15M-150M parameters, a 44 GiB ceiling and `model_calls_performed: 0`.
+   the bound REQ-11 panel, 15M-150M parameters, a 44 GiB ceiling and
+   `model_calls_performed: 0`.
 
 4. Confirm the selected A6000 is idle. Expose exactly that one device and run the
    real-CUDA gate before credentials are entered or campaign state is created:

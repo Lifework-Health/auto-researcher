@@ -159,6 +159,10 @@ def build_v7_preflight_plan(
         "v6_parent_experiment_ids": [
             item["experiment_id"] for item in policy.v6_parent_evidence
         ],
+        "req11_diagnostic_bound": True,
+        "req11_panel_identity": policy.req11_diagnostic["panel_identity"],
+        "req11_case_count": policy.req11_diagnostic["case_count"],
+        "req11_priorities": policy.req11_diagnostic["priorities"],
         "roots": roots,
         "static_preflight_passed": True,
         "cuda_preflight_passed": False,

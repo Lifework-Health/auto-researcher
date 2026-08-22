@@ -20,6 +20,8 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
 from auto_researcher.tasks.feta_unet_search.continuation import trajectory_identity
 from auto_researcher.tasks.feta_unet_search.portfolio import (
     V7_MECHANISM_PORTFOLIO_VERSION,
+    V7_REQ11_PANEL_IDENTITY,
+    V7_REQ11_PRIORITIES,
     V7MechanismPortfolioPolicy,
     apply_portfolio_policy,
     apply_v7_deadline_graduation_policy,
@@ -150,6 +152,8 @@ def test_v7_contract_and_frozen_mechanism_roots_are_valid():
     assert policy.mutations_per_root == 3
     assert policy.optuna_trials_per_parent == 2
     assert len(policy.v6_parent_evidence) == 2
+    assert policy.req11_diagnostic["panel_identity"] == V7_REQ11_PANEL_IDENTITY
+    assert tuple(policy.req11_diagnostic["priorities"]) == V7_REQ11_PRIORITIES
     assert policy.promotion_targets == {50: 8, 100: 4, 150: 2}
     assert all(
         FeTAUNetSearchConfiguration.model_validate(item).architecture_budget
@@ -175,6 +179,9 @@ def test_v7_static_preflight_freezes_four_roots_and_memory_ceiling():
     assert plan["required_graduation_reserve_seconds"] == 24_300
     assert plan["configured_graduation_reserve_seconds"] == 24_300
     assert plan["inference_calibration"]["enabled"] is True
+    assert plan["req11_diagnostic_bound"] is True
+    assert plan["req11_panel_identity"] == V7_REQ11_PANEL_IDENTITY
+    assert tuple(plan["req11_priorities"]) == V7_REQ11_PRIORITIES
     assert plan["static_preflight_passed"] is True
     assert plan["cuda_preflight_passed"] is False
 
@@ -243,6 +250,8 @@ def test_v7_starts_with_direct_mechanism_roots_then_structural_evolution():
     assert campaign["required_model_variant"] == "structural_basic_unet"
     assert campaign["required_architecture_budget"] == V7_ARCHITECTURE_BUDGET
     assert "structural" in campaign["mutation_objective"]
+    assert campaign["req11_diagnostic_evidence"] == policy.req11_diagnostic
+    assert "topology continuity" in campaign["mutation_objective"]
     prior = campaign["prior_verified_results"]
     assert (
         sum(item.get("evidence_role") == "v6_parent_not_retrained" for item in prior)
@@ -252,6 +261,26 @@ def test_v7_starts_with_direct_mechanism_roots_then_structural_evolution():
         FeTAUNetSearchTask().estimate_search_duration_seconds(request, context)
         == 3 * 25 * 90.0
     )
+
+
+def test_v7_rejects_unbound_req11_panel_identity():
+    options = _options()
+    options["campaign_portfolio"]["req11_diagnostic"]["panel_identity"] = "0" * 64
+    with pytest.raises(ValueError, match="req11_diagnostic_invalid"):
+        V7MechanismPortfolioPolicy.from_runtime(
+            TaskRuntimeContext(task_options=options)
+        )
+
+
+def test_v7_rejects_changed_req11_candidate_delta():
+    options = _options()
+    options["campaign_portfolio"]["req11_diagnostic"]["candidates"][0][
+        "mean_macro_dice_delta"
+    ] = 0.01
+    with pytest.raises(ValueError, match="req11_diagnostic_invalid"):
+        V7MechanismPortfolioPolicy.from_runtime(
+            TaskRuntimeContext(task_options=options)
+        )
 
 
 def test_v7_openevolve_rejects_training_only_mutation():

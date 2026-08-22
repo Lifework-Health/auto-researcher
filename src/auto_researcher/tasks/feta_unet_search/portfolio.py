@@ -41,6 +41,25 @@ PORTFOLIO_VERSION = "feta-unet-60-18-7-2-portfolio-v1"
 TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-18-6-8-4-2-v3"
 V6_TREE_PORTFOLIO_VERSION = "feta-basicunet-architecture-tree-12-18-6-10-5-3-v1"
 V7_MECHANISM_PORTFOLIO_VERSION = "feta-basicunet-structural-tree-4-12-8-2-8-4-2-v2"
+V7_REQ11_DIAGNOSTIC_SCHEMA_VERSION = "feta-unet-diagnostic-report-v1"
+V7_REQ11_PANEL_IDENTITY = (
+    "c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871"
+)
+V7_REQ11_BASELINE_EXPERIMENT_ID = "experiment-fc2d8d2a371ddba0"
+V7_REQ11_CANDIDATE_EXPERIMENT_IDS = (
+    "experiment-643b2c5f65b4bc25",
+    "experiment-ccc5fcf318cf2eb1",
+)
+V7_REQ11_CANDIDATE_MACRO_DICE_DELTAS = (
+    0.001136112933560011,
+    0.000035058287334012915,
+)
+V7_REQ11_PRIORITIES = (
+    "topology_continuity",
+    "deep_grey_boundary",
+    "external_csf_retention",
+    "tissue_complementarity",
+)
 
 
 @dataclass(frozen=True)
@@ -263,6 +282,7 @@ class V7MechanismPortfolioPolicy:
     promotion_targets: dict[int, int]
     wildcard_counts: dict[int, int]
     v6_parent_evidence: tuple[dict[str, Any], ...]
+    req11_diagnostic: dict[str, Any]
 
     @classmethod
     def from_runtime(cls, context: TaskRuntimeContext) -> "V7MechanismPortfolioPolicy":
@@ -287,6 +307,7 @@ class V7MechanismPortfolioPolicy:
                 for name, value in dict(raw["wildcard_counts"]).items()
             }
             raw_v6_parents = tuple(dict(item) for item in raw["v6_parent_evidence"])
+            req11_diagnostic = dict(raw["req11_diagnostic"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("feta_unet_v7_portfolio_invalid") from exc
         if (
@@ -300,6 +321,46 @@ class V7MechanismPortfolioPolicy:
             or len(raw_v6_parents) != 2
         ):
             raise ValueError("feta_unet_v7_portfolio_invalid")
+        try:
+            req11_candidates = tuple(
+                dict(item) for item in req11_diagnostic["candidates"]
+            )
+            req11_candidate_ids = tuple(
+                str(item["experiment_id"]) for item in req11_candidates
+            )
+            req11_candidate_deltas = tuple(
+                float(item["mean_macro_dice_delta"]) for item in req11_candidates
+            )
+            req11_priorities = tuple(
+                str(item) for item in req11_diagnostic["priorities"]
+            )
+            complementarity = dict(req11_diagnostic["complementarity"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("feta_unet_v7_req11_diagnostic_invalid") from exc
+        if (
+            req11_diagnostic.get("schema_version")
+            != V7_REQ11_DIAGNOSTIC_SCHEMA_VERSION
+            or req11_diagnostic.get("diagnostic_id")
+            != "feta-unet-v7-parent-diagnostics-20260822"
+            or req11_diagnostic.get("panel_identity") != V7_REQ11_PANEL_IDENTITY
+            or req11_diagnostic.get("case_count") != 12
+            or req11_diagnostic.get("baseline_experiment_id")
+            != V7_REQ11_BASELINE_EXPERIMENT_ID
+            or req11_candidate_ids != V7_REQ11_CANDIDATE_EXPERIMENT_IDS
+            or any(not math.isfinite(value) for value in req11_candidate_deltas)
+            or req11_candidate_deltas != V7_REQ11_CANDIDATE_MACRO_DICE_DELTAS
+            or req11_priorities != V7_REQ11_PRIORITIES
+            or complementarity
+            != {
+                "left_material_win_count": 10,
+                "right_material_win_count": 17,
+                "near_tie_count": 57,
+                "observed": True,
+            }
+            or req11_diagnostic.get("interpretation_boundary")
+            != "diagnostic_observation_not_objective"
+        ):
+            raise ValueError("feta_unet_v7_req11_diagnostic_invalid")
         validated: list[dict[str, Any]] = []
         identities: set[str] = set()
         for item in roots:
@@ -360,6 +421,7 @@ class V7MechanismPortfolioPolicy:
             promotion_targets=promotions,
             wildcard_counts=wildcards,
             v6_parent_evidence=tuple(validated_v6_parents),
+            req11_diagnostic=req11_diagnostic,
         )
 
 
@@ -1461,8 +1523,9 @@ def apply_v7_mechanism_portfolio_policy(
             "required_model_variant": "structural_basic_unet",
             "required_architecture_budget": V7_ARCHITECTURE_BUDGET,
             "mutation_objective": (
-                "Change at least one structural mechanism among depth or non-uniform stage widths, convolutions per stage, kernel or dilation profile, residual blocks, skip fusion, down/up operator and deep-supervision heads before local optimisation."
+                "Change at least one structural mechanism among depth or non-uniform stage widths, convolutions per stage, kernel or dilation profile, residual blocks, skip fusion, down/up operator and deep-supervision heads before local optimisation. Use the bound REQ-11 observations to prioritise mechanisms plausibly improving topology continuity, deep-grey boundary quality and external-CSF retention without treating diagnostic metrics as optimisation objectives; preserve diversity because the verified parents showed tissue-level complementarity."
             ),
+            "req11_diagnostic_evidence": policy.req11_diagnostic,
             "prior_verified_results": [
                 {
                     "search_type": parent.action.value,
