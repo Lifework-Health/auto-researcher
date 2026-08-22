@@ -65,7 +65,9 @@ class ModelPricing(AgentModel):
 class ModelCallConfig(AgentModel):
     provider: str = Field(min_length=1)
     model_id: str = Field(min_length=1)
-    temperature: float = Field(ge=0)
+    temperature: float | None = Field(default=None, ge=0)
+    thinking: FrozenJsonDict | None = None
+    effort: Literal["low", "medium", "high", "xhigh"] | None = None
     maximum_output_tokens: int = Field(ge=1)
     timeout_seconds: float = Field(gt=0)
     maximum_attempts: int = Field(ge=1)
@@ -81,6 +83,50 @@ class ModelCallConfig(AgentModel):
                 "live model_id must be an explicit version, not a latest alias"
             )
         return self
+
+
+class ResearchDirectiveProposal(AgentModel):
+    mechanism_hypothesis: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    parent_references: tuple[str, ...] = ()
+    selected_operators: tuple[SearchType, ...] = Field(min_length=1)
+    experiment_allocation: FrozenJsonDict
+    targeted_dimensions: tuple[str, ...] = Field(min_length=1)
+    expected_observation: str = Field(min_length=1)
+    falsification_condition: str = Field(min_length=1)
+    alternative_explanations: tuple[str, ...] = ()
+    evidence_references: tuple[str, ...] = ()
+    confidence: float = Field(ge=0, le=1)
+
+
+class ResearchDirective(AgentModel):
+    directive_id: str = Field(min_length=1)
+    trigger: str = Field(min_length=1)
+    mechanism_hypothesis: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    parent_references: tuple[str, ...] = ()
+    selected_operators: tuple[SearchType, ...] = Field(min_length=1)
+    experiment_allocation: FrozenJsonDict
+    targeted_dimensions: tuple[str, ...] = Field(min_length=1)
+    expected_observation: str = Field(min_length=1)
+    falsification_condition: str = Field(min_length=1)
+    alternative_explanations: tuple[str, ...] = ()
+    evidence_references: tuple[str, ...] = ()
+    confidence: float = Field(ge=0, le=1)
+    agent_call_id: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
+    context_hash: str = Field(min_length=1)
+
+
+class ResearchLandscapeEvidence(AgentModel):
+    evidence_id: str = Field(min_length=1)
+    evidence_type: Literal["V7", "REQ11", "ENSEMBLE", "RUNTIME", "FAILURE"]
+    evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_reference: str = Field(min_length=1)
+    summary: str = Field(min_length=1, max_length=1_000)
+    reference_ids: tuple[str, ...] = ()
+    safe_payload: FrozenJsonDict = Field(default_factory=dict)
+    verification_status: Literal["VERIFIED"] = "VERIFIED"
 
 
 class StructuredModelResponse(AgentModel):
@@ -180,12 +226,16 @@ class PlannerProposal(AgentModel):
 
 
 class AgentBudgetPolicy(AgentModel):
+    maximum_research_director_calls_per_cycle: int = Field(default=1, ge=1)
+    maximum_research_director_calls_total: int = Field(default=8, ge=1)
     maximum_hypothesis_calls_per_cycle: int = Field(default=1, ge=1)
     maximum_planner_calls_per_cycle: int = Field(default=1, ge=1)
     maximum_attempts_per_agent_call: int = Field(default=2, ge=1)
     maximum_input_context_size: int = Field(default=24_000, ge=1)
     maximum_output_tokens: int = Field(default=2_048, ge=1)
     maximum_cost_per_call: float = Field(default=1.0, gt=0)
+    maximum_research_director_output_tokens: int = Field(default=64_000, ge=1)
+    maximum_research_director_cost_per_call: float = Field(default=5.0, gt=0)
     maximum_total_model_calls: int = Field(default=20, ge=1)
 
 
@@ -235,6 +285,26 @@ class PriorResearchSummary(AgentModel):
     aggregate_metrics: FrozenJsonDict = Field(default_factory=dict)
 
 
+class ResearchDirectorContext(AgentModel):
+    run_id: str
+    contract: ContractAgentSummary
+    task: TaskAgentContext
+    cycle: int = Field(ge=1)
+    trigger: str = Field(min_length=1)
+    installed_search_capabilities: tuple[SearchType, ...]
+    remaining_experiment_budget: int = Field(ge=0)
+    remaining_cost_budget: float = Field(ge=0)
+    remaining_time_seconds: float | None = Field(default=None, ge=0)
+    model_calls_used: int = Field(ge=0)
+    prior_verified_findings: tuple[PriorResearchSummary, ...] = ()
+    research_landscape: tuple[ResearchLandscapeEvidence, ...] = ()
+    recent_failure_codes: tuple[str, ...] = ()
+    permitted_evidence_reference_ids: tuple[str, ...] = ()
+    permitted_target_dimensions: tuple[str, ...] = ()
+    finalisation_reserve_seconds: float = Field(default=0, ge=0)
+    context_hash: str = Field(min_length=1)
+
+
 class HypothesisAgentContext(AgentModel):
     run_id: str
     contract: ContractAgentSummary
@@ -250,6 +320,7 @@ class HypothesisAgentContext(AgentModel):
     knowledge_references: tuple[KnowledgeContextReference, ...] = ()
     knowledge_bundle_id: str | None = None
     knowledge_bundle_hash: str | None = None
+    research_directive: ResearchDirective | None = None
     context_hash: str = Field(min_length=1)
 
 
@@ -274,6 +345,7 @@ class PlannerAgentContext(AgentModel):
     permitted_direct_configuration_schema: FrozenJsonDict
     permitted_optuna_maximum_space: FrozenJsonDict
     optuna_narrowing_rules: tuple[str, ...] = ()
+    research_directive: ResearchDirective | None = None
     context_hash: str = Field(min_length=1)
 
 

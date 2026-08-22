@@ -26,6 +26,16 @@ def route_after_prepare(
 
 def route_after_knowledge(
     state: ResearchState,
+) -> Literal["research_director_decide", "record_provenance"]:
+    return (
+        "research_director_decide"
+        if state["status"] == RunStatus.RUNNING
+        else "record_provenance"
+    )
+
+
+def route_after_research_director(
+    state: ResearchState,
 ) -> Literal["generate_hypothesis", "record_provenance"]:
     return (
         "generate_hypothesis"

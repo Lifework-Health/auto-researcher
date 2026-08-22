@@ -53,10 +53,21 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "v7_parent_manifest_pending",
         "runtime_coefficients_pending",
         "v8_portfolio_controller_pending",
+        "research_director_evidence_binding_pending",
+        "research_director_shadow_evaluation_pending",
+        "research_director_live_smoke_pending",
+        "research_director_resume_replay_pending",
         "real_cuda_preflight_pending",
         "launch_gate_not_passed",
     ]
     assert plan["model_calls_performed"] == 0
+    assert plan["research_director"] == {
+        "model_id": "claude-opus-5",
+        "thinking": "adaptive",
+        "effort": "xhigh",
+        "maximum_calls": 8,
+        "finalisation_reserve_suppressed": True,
+    }
 
 
 def test_v8_dynunet_roots_are_unique_and_inside_parameter_envelope():

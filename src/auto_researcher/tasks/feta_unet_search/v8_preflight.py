@@ -10,7 +10,9 @@ from typing import Any
 
 import yaml
 
+from auto_researcher.agents.models import ResearchLandscapeEvidence
 from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.tasks.feta_unet_direct.model import (
     architecture_identity,
     create_unet_model,
@@ -41,6 +43,8 @@ V8_INITIAL_ALLOCATION = {
 }
 V8_DURATION_SECONDS = 32 * 60 * 60
 V8_FINALISATION_RESERVE_SECONDS = 6 * 60 * 60
+V8_RESEARCH_DIRECTOR_MODEL = "claude-opus-5"
+V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS = 8
 
 
 def _mapping(path: Path, reason: str) -> dict[str, Any]:
@@ -72,6 +76,21 @@ def _sha256_value(value: object) -> bool:
     return True
 
 
+def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
+    raw = options.get("research_director_evidence")
+    manifest = options.get("research_director_evidence_manifest_sha256")
+    if not isinstance(raw, list) or not raw or not _sha256_value(manifest):
+        return False
+    try:
+        evidence = [ResearchLandscapeEvidence.model_validate(item) for item in raw]
+    except (TypeError, ValueError):
+        return False
+    required = {"V7", "REQ11", "ENSEMBLE", "RUNTIME", "FAILURE"}
+    if {item.evidence_type for item in evidence} != required:
+        return False
+    return payload_hash([item.model_dump(mode="json") for item in evidence]) == manifest
+
+
 def build_v8_preflight_plan(
     task_config_path: Path,
     contract_path: Path,
@@ -95,6 +114,29 @@ def build_v8_preflight_plan(
         _mapping(contract_path, "feta_unet_v8_preflight_contract_invalid")
     )
     FeTAUNetSearchTask().validate_contract(contract)
+    agents = raw_config.get("agents")
+    if not isinstance(agents, dict):
+        raise ValueError("feta_unet_v8_research_director_invalid")
+    director = agents.get("research_director")
+    agent_budget = agents.get("budget")
+    if (
+        not isinstance(director, dict)
+        or not isinstance(agent_budget, dict)
+        or director.get("provider") != "anthropic"
+        or director.get("model_id") != V8_RESEARCH_DIRECTOR_MODEL
+        or director.get("temperature") is not None
+        or director.get("thinking") != {"type": "adaptive"}
+        or director.get("effort") != "xhigh"
+        or director.get("maximum_output_tokens") != 64_000
+        or director.get("maximum_attempts") != 2
+        or director.get("maximum_cost_per_call") != 5.0
+        or agent_budget.get("maximum_research_director_calls_total")
+        != V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS
+        or agent_budget.get("maximum_research_director_output_tokens") != 64_000
+        or agent_budget.get("maximum_research_director_cost_per_call") != 5.0
+        or contract.maximum_cost != 150.0
+    ):
+        raise ValueError("feta_unet_v8_research_director_invalid")
     if (
         contract.constraints.get("campaign_duration_seconds") != V8_DURATION_SECONDS
         or contract.constraints.get("campaign_finalisation_reserve_seconds")
@@ -224,6 +266,16 @@ def build_v8_preflight_plan(
         blockers.append("runtime_coefficients_pending")
     if options.get("campaign_portfolio_controller_implemented") is not True:
         blockers.append("v8_portfolio_controller_pending")
+    if options.get("research_director_controller_implemented") is not True:
+        blockers.append("research_director_controller_pending")
+    if not _research_director_evidence_bound(options):
+        blockers.append("research_director_evidence_binding_pending")
+    if options.get("research_director_shadow_evaluation_passed") is not True:
+        blockers.append("research_director_shadow_evaluation_pending")
+    if not _sha256_value(options.get("research_director_live_smoke_sha256")):
+        blockers.append("research_director_live_smoke_pending")
+    if options.get("research_director_resume_replay_passed") is not True:
+        blockers.append("research_director_resume_replay_pending")
     if not _sha256_value(options.get("cuda_preflight_sha256")):
         blockers.append("real_cuda_preflight_pending")
     if options.get("launch_gate") != "passed":
@@ -237,6 +289,13 @@ def build_v8_preflight_plan(
         "duration_seconds": V8_DURATION_SECONDS,
         "finalisation_reserve_seconds": V8_FINALISATION_RESERVE_SECONDS,
         "maximum_peak_gpu_memory_bytes": V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+        "research_director": {
+            "model_id": V8_RESEARCH_DIRECTOR_MODEL,
+            "thinking": "adaptive",
+            "effort": "xhigh",
+            "maximum_calls": V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS,
+            "finalisation_reserve_suppressed": True,
+        },
         "dynunet_gate": dynunet_gate,
         "lineage_rules": lineage,
     }

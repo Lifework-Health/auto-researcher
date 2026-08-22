@@ -14,6 +14,8 @@ from auto_researcher.agents.models import (
     HypothesisAgentContext,
     PlannerAgentContext,
     PriorResearchSummary,
+    ResearchDirectorContext,
+    ResearchLandscapeEvidence,
     TaskAgentContext,
 )
 from auto_researcher.contracts.enums import (
@@ -69,10 +71,12 @@ class AgentContextAssembler:
         limits: AgentContextLimits | None = None,
         knowledge_retrieval_store: KnowledgeRetrievalStore | None = None,
         clock: Callable[[], datetime] | None = None,
+        research_landscape: tuple[ResearchLandscapeEvidence, ...] = (),
     ) -> None:
         self._provenance_store = provenance_store
         self._knowledge_store = knowledge_retrieval_store
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._research_landscape = research_landscape
         self.limits = limits or AgentContextLimits()
 
     @staticmethod
@@ -283,6 +287,16 @@ class AgentContextAssembler:
         prior = tuple(results[-self.limits.maximum_prior_results :])
         return tuple(hypotheses), self._bounded_prior(prior)
 
+    def _recent_failure_codes(self, run_id: str) -> tuple[str, ...]:
+        codes: list[str] = []
+        for event in self._provenance_store.list_events(run_id):
+            if event.event_type != EventType.RUN_STOPPED:
+                continue
+            for reference in event.output_references:
+                if reference.startswith("error_code:"):
+                    codes.append(reference.split(":", 1)[1])
+        return tuple(codes[-8:])
+
     def _ensure_size(self, model) -> None:
         if len(model.model_dump_json()) > self.limits.maximum_context_characters:
             raise AgentContextAssemblyError("agent_context_too_large")
@@ -333,6 +347,7 @@ class AgentContextAssembler:
             "knowledge_references": knowledge,
             "knowledge_bundle_id": bundle_id,
             "knowledge_bundle_hash": bundle_hash,
+            "research_directive": state.get("active_research_directive"),
         }
         serialisable = {
             key: (
@@ -435,6 +450,7 @@ class AgentContextAssembler:
                 "Parameters may be fixed or narrowed within the registered space.",
                 "Unknown parameters, widening, and fixed-context changes are forbidden.",
             ),
+            "research_directive": state.get("active_research_directive"),
         }
         serialisable = {
             key: (
@@ -452,6 +468,101 @@ class AgentContextAssembler:
             for key, value in payload.items()
         }
         context = PlannerAgentContext(
+            **payload,
+            context_hash=stable_context_hash(serialisable),
+        )
+        self._ensure_size(context)
+        return context
+
+    def research_director_context(
+        self,
+        state: ResearchState,
+        task_context: TaskAgentContext,
+        capabilities: dict[SearchType, SearchCapability],
+        *,
+        trigger: str,
+        finalisation_reserve_seconds: float,
+    ) -> ResearchDirectorContext:
+        _, prior = self._prior(state["run_id"], state["cycle"])
+        references = tuple(
+            sorted(
+                {state["contract"].contract_id}
+                | {item.hypothesis_reference for item in prior}
+                | {item.experiment_reference for item in prior}
+                | {
+                    reference
+                    for item in prior
+                    for reference in item.safe_artefact_references
+                }
+                | {
+                    item.source_reference for item in self._research_landscape
+                }
+                | {
+                    reference
+                    for item in self._research_landscape
+                    for reference in item.reference_ids
+                }
+            )
+        )
+        installed = tuple(
+            sorted(
+                (
+                    search_type
+                    for search_type, capability in capabilities.items()
+                    if capability.available
+                    and search_type in state["contract"].allowed_search_types
+                    and search_type in task_context.available_search_types
+                ),
+                key=lambda item: item.value,
+            )
+        )
+        dimensions = tuple(
+            sorted(
+                set(task_context.direct_configuration_schema)
+                | set(task_context.optuna_space_summary)
+                | set(task_context.openevolve_space_summary)
+            )
+        )
+        payload = {
+            "run_id": state["run_id"],
+            "contract": self._contract_summary(state),
+            "task": task_context,
+            "cycle": state["cycle"],
+            "trigger": trigger,
+            "installed_search_capabilities": installed,
+            "remaining_experiment_budget": max(
+                0,
+                state["budget"].maximum_experiments - state["budget"].experiments_used,
+            ),
+            "remaining_cost_budget": max(
+                0.0,
+                state["budget"].maximum_cost - state["budget"].cost_used,
+            ),
+            "remaining_time_seconds": state["budget"].remaining_seconds(self._clock()),
+            "model_calls_used": state["budget"].model_calls_used,
+            "prior_verified_findings": prior,
+            "research_landscape": self._research_landscape,
+            "recent_failure_codes": self._recent_failure_codes(state["run_id"]),
+            "permitted_evidence_reference_ids": references,
+            "permitted_target_dimensions": dimensions,
+            "finalisation_reserve_seconds": finalisation_reserve_seconds,
+        }
+        serialisable = {
+            key: (
+                value.model_dump(mode="json")
+                if hasattr(value, "model_dump")
+                else [
+                    item.model_dump(mode="json")
+                    if hasattr(item, "model_dump")
+                    else getattr(item, "value", item)
+                    for item in value
+                ]
+                if isinstance(value, tuple)
+                else value
+            )
+            for key, value in payload.items()
+        }
+        context = ResearchDirectorContext(
             **payload,
             context_hash=stable_context_hash(serialisable),
         )

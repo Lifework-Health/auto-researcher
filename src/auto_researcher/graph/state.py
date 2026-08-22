@@ -29,6 +29,7 @@ from auto_researcher.search.optuna.models import (
     OptunaTrialOutcome,
 )
 from auto_researcher.knowledge.models import KnowledgeBundleReference
+from auto_researcher.agents.models import ResearchDirective
 from auto_researcher.search.openevolve.models import (
     CandidatePreparationResult,
     CandidateValidationResult,
@@ -54,6 +55,11 @@ class ResearchState(TypedDict):
     cycle: int
     budget: BudgetState
     active_hypothesis: NotRequired[Hypothesis | None]
+    active_research_directive: NotRequired[ResearchDirective | None]
+    research_director_trigger: NotRequired[str | None]
+    research_director_trigger_history: NotRequired[tuple[str, ...]]
+    research_director_failure_code: NotRequired[str | None]
+    research_director_failure_stage: NotRequired[str | None]
     search_request: NotRequired[SearchRequest | None]
     search_backend_result: NotRequired[SearchBackendResult | None]
     experiment_spec: NotRequired[ExperimentSpec | None]

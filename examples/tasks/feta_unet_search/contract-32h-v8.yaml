@@ -32,7 +32,7 @@ evaluator_id: feta-basic-unet-search-evaluator
 verifier_id: deterministic-verifier
 maximum_cycles: 256
 maximum_experiments: 128
-maximum_cost: 75.0
+maximum_cost: 150.0
 requires_approval_for: []
 provenance: REAL
 grounding: {mode: DISABLED}

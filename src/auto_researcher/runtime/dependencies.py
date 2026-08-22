@@ -15,17 +15,26 @@ from auto_researcher.agents.mock import (
     ConfiguredPlannerAgent,
     MockHypothesisAgent,
 )
-from auto_researcher.agents.protocols import HypothesisAgent, PlannerAgent
+from auto_researcher.agents.protocols import (
+    HypothesisAgent,
+    PlannerAgent,
+    ResearchDirectorAgent,
+)
 from auto_researcher.agents.call_store import (
     AgentCallStore,
     InMemoryAgentCallStore,
     SQLiteAgentCallStore,
 )
 from auto_researcher.agents.context import AgentContextAssembler, AgentContextLimits
-from auto_researcher.agents.live import LiveHypothesisAgent, LivePlannerAgent
+from auto_researcher.agents.live import (
+    LiveHypothesisAgent,
+    LivePlannerAgent,
+    LiveResearchDirectorAgent,
+)
 from auto_researcher.agents.models import (
     AgentBudgetPolicy,
     ModelCallConfig,
+    ResearchLandscapeEvidence,
     TaskAgentContext,
 )
 from auto_researcher.providers.protocols import StructuredModelClient
@@ -49,6 +58,7 @@ from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.provenance.protocols import ProvenanceStore
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.checkpoints import memory_checkpointer, sqlite_checkpointer
+from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
 from auto_researcher.search.openevolve.live_runtime import (
@@ -134,6 +144,7 @@ class RuntimeDependencies:
     optuna_storage_handle: OptunaStorageHandle | None = None
     openevolve_backend: OpenEvolveBackend | None = None
     native_openevolve_runtime: StandardNativeOpenEvolveRuntime | None = None
+    research_director_agent: ResearchDirectorAgent | None = None
 
 
 def utc_now() -> datetime:
@@ -161,6 +172,46 @@ def _context_for_contract(
     return TaskRuntimeContext.model_validate(payload)
 
 
+def _research_director_landscape(
+    context: TaskRuntimeContext,
+) -> tuple[ResearchLandscapeEvidence, ...]:
+    """Load only explicitly verified, hash-bound external campaign evidence."""
+
+    raw = context.task_options.get("research_director_evidence", [])
+    if not isinstance(raw, list) or len(raw) > 32:
+        raise ValueError("research_director_evidence_invalid")
+    try:
+        evidence = tuple(ResearchLandscapeEvidence.model_validate(item) for item in raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("research_director_evidence_invalid") from exc
+    if len({item.evidence_id for item in evidence}) != len(evidence):
+        raise ValueError("research_director_evidence_duplicate_id")
+    references = [
+        reference
+        for item in evidence
+        for reference in (item.source_reference, *item.reference_ids)
+    ]
+    if len(set(references)) != len(references):
+        raise ValueError("research_director_evidence_duplicate_reference")
+    raw_manifest = context.task_options.get(
+        "research_director_evidence_manifest_sha256"
+    )
+    if not evidence:
+        if raw_manifest is not None:
+            raise ValueError("research_director_evidence_manifest_without_evidence")
+        return ()
+    if (
+        not isinstance(raw_manifest, str)
+        or len(raw_manifest) != 64
+        or any(character not in "0123456789abcdef" for character in raw_manifest)
+    ):
+        raise ValueError("research_director_evidence_manifest_invalid")
+    actual = payload_hash([item.model_dump(mode="json") for item in evidence])
+    if actual != raw_manifest:
+        raise ValueError("research_director_evidence_manifest_mismatch")
+    return evidence
+
+
 def _assemble_task_dependencies(
     *,
     task: ResearchTask,
@@ -176,8 +227,10 @@ def _assemble_task_dependencies(
     agent_call_store: AgentCallStore | None,
     model_client: StructuredModelClient | None,
     planner_model_client: StructuredModelClient | None,
+    research_director_model_client: StructuredModelClient | None,
     hypothesis_call_config: ModelCallConfig | None,
     planner_call_config: ModelCallConfig | None,
+    research_director_call_config: ModelCallConfig | None,
     agent_budget_policy: AgentBudgetPolicy | None,
     knowledge_provider: KnowledgeProvider | None,
     knowledge_configuration: KnowledgeProviderConfiguration | None,
@@ -550,6 +603,7 @@ def _assemble_task_dependencies(
             maximum_prior_results=raw_prior_results,
             maximum_context_characters=budget_policy.maximum_input_context_size,
         ),
+        research_landscape=_research_director_landscape(context),
     )
     knowledge_coordinator = KnowledgeRetrievalCoordinator(
         store=retrieval_store,
@@ -562,8 +616,10 @@ def _assemble_task_dependencies(
         for item in (
             model_client,
             planner_model_client,
+            research_director_model_client,
             hypothesis_call_config,
             planner_call_config,
+            research_director_call_config,
         )
     )
     if live_configured and not all(
@@ -579,6 +635,7 @@ def _assemble_task_dependencies(
         )
     selected_hypothesis_agent = hypothesis_agent
     selected_planner_agent = planner_agent
+    selected_research_director_agent = None
     if live_configured:
         assert model_client and hypothesis_call_config and planner_call_config
         selected_hypothesis_agent = LiveHypothesisAgent(
@@ -597,6 +654,14 @@ def _assemble_task_dependencies(
             task=task,
             contract=contract,
         )
+        if research_director_call_config is not None:
+            selected_research_director_agent = LiveResearchDirectorAgent(
+                client=research_director_model_client or model_client,
+                call_config=research_director_call_config,
+                budget_policy=budget_policy,
+                call_store=call_store,
+                clock=clock,
+            )
     return RuntimeDependencies(
         hypothesis_agent=selected_hypothesis_agent or MockHypothesisAgent(),
         planner_agent=selected_planner_agent
@@ -647,6 +712,7 @@ def _assemble_task_dependencies(
         optuna_storage_handle=optuna_storage_handle,
         openevolve_backend=openevolve_backend,
         native_openevolve_runtime=native_runtime,
+        research_director_agent=selected_research_director_agent,
     )
 
 
@@ -664,8 +730,10 @@ def task_memory_dependencies(
     agent_call_store: AgentCallStore | None = None,
     model_client: StructuredModelClient | None = None,
     planner_model_client: StructuredModelClient | None = None,
+    research_director_model_client: StructuredModelClient | None = None,
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
+    research_director_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
     knowledge_provider: KnowledgeProvider | None = None,
     knowledge_configuration: KnowledgeProviderConfiguration | None = None,
@@ -696,8 +764,10 @@ def task_memory_dependencies(
         agent_call_store=agent_call_store,
         model_client=model_client,
         planner_model_client=planner_model_client,
+        research_director_model_client=research_director_model_client,
         hypothesis_call_config=hypothesis_call_config,
         planner_call_config=planner_call_config,
+        research_director_call_config=research_director_call_config,
         agent_budget_policy=agent_budget_policy,
         knowledge_provider=knowledge_provider,
         knowledge_configuration=knowledge_configuration,
@@ -732,8 +802,10 @@ def task_sqlite_dependencies(
     verifier: Verifier | None = None,
     model_client: StructuredModelClient | None = None,
     planner_model_client: StructuredModelClient | None = None,
+    research_director_model_client: StructuredModelClient | None = None,
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
+    research_director_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
     knowledge_provider: KnowledgeProvider | None = None,
     knowledge_configuration: KnowledgeProviderConfiguration | None = None,
@@ -817,8 +889,10 @@ def task_sqlite_dependencies(
             agent_call_store=call_store,
             model_client=model_client,
             planner_model_client=planner_model_client,
+            research_director_model_client=research_director_model_client,
             hypothesis_call_config=hypothesis_call_config,
             planner_call_config=planner_call_config,
+            research_director_call_config=research_director_call_config,
             agent_budget_policy=agent_budget_policy,
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
@@ -858,8 +932,10 @@ def memory_dependencies(
     agent_call_store: AgentCallStore | None = None,
     model_client: StructuredModelClient | None = None,
     planner_model_client: StructuredModelClient | None = None,
+    research_director_model_client: StructuredModelClient | None = None,
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
+    research_director_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
@@ -900,8 +976,10 @@ def memory_dependencies(
         agent_call_store=agent_call_store,
         model_client=model_client,
         planner_model_client=planner_model_client,
+        research_director_model_client=research_director_model_client,
         hypothesis_call_config=hypothesis_call_config,
         planner_call_config=planner_call_config,
+        research_director_call_config=research_director_call_config,
         agent_budget_policy=agent_budget_policy,
         clock=clock,
         id_generator=id_generator,
