@@ -27,6 +27,17 @@ def architecture_identity(configuration: FeTAUNetDirectConfiguration) -> str:
         "channels": list(getattr(configuration, "channels", (32, 64, 128, 256, 512))),
         "strides": list(getattr(configuration, "strides", (2, 2, 2, 2))),
         "residual_units": int(getattr(configuration, "residual_units", 0)),
+        "kernel_profile": str(getattr(configuration, "kernel_profile", "basic")),
+        "residual_blocks": bool(getattr(configuration, "residual_blocks", False)),
+        "deep_supervision_heads": int(
+            getattr(configuration, "deep_supervision_heads", 0)
+        ),
+        "convolutions_per_stage": int(
+            getattr(configuration, "convolutions_per_stage", 2)
+        ),
+        "dilation_profile": str(getattr(configuration, "dilation_profile", "none")),
+        "skip_fusion": str(getattr(configuration, "skip_fusion", "concat")),
+        "downsample": str(getattr(configuration, "downsample", "max_pool")),
         "activation": configuration.activation,
         "norm": configuration.norm,
         "upsample": configuration.upsample,
@@ -72,11 +83,17 @@ def _normalisation(configuration: FeTAUNetDirectConfiguration):
 
 
 def create_unet_model(configuration: FeTAUNetDirectConfiguration):
+    model_variant = str(getattr(configuration, "model_variant", "basic_unet"))
+    if model_variant == "structural_basic_unet":
+        from auto_researcher.tasks.feta_unet_direct.basic_unet_grammar import (
+            create_structural_basic_unet,
+        )
+
+        return create_structural_basic_unet(configuration)
     try:
         from monai.networks.nets import BasicUNet, UNet
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
-    model_variant = str(getattr(configuration, "model_variant", "basic_unet"))
     common = {
         "spatial_dims": configuration.spatial_dims,
         "in_channels": configuration.in_channels,

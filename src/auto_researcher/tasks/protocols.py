@@ -136,6 +136,22 @@ class CampaignDurationCapableTask(Protocol):
 
 
 @runtime_checkable
+class CampaignDeadlinePortfolioCapableTask(Protocol):
+    """Optional completion request when exploration no longer fits safely."""
+
+    def apply_campaign_deadline_policy(
+        self,
+        request: SearchRequest,
+        *,
+        run_id: str,
+        cycle: int,
+        events: tuple[DecisionEvent, ...],
+        remaining_seconds: float,
+        runtime_context: TaskRuntimeContext,
+    ) -> SearchRequest | None: ...
+
+
+@runtime_checkable
 class CampaignRequestEnrichmentCapableTask(Protocol):
     """Optional deterministic handoff from verified results into a search block."""
 

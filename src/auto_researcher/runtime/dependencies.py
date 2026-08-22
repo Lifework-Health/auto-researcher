@@ -212,11 +212,16 @@ def _assemble_task_dependencies(
         raise ValueError("task experiment metadata does not match contract provenance")
     if metadata.dataset_version != manifest.dataset_version:
         raise ValueError("task experiment metadata does not match dataset manifest")
-    normalised = (
-        task.normalise_configuration(experiment_configuration)
-        if search_type == SearchType.DIRECT
-        else experiment_configuration
-    )
+    if search_type == SearchType.DIRECT:
+        # Runtime controls can accompany a Direct scientific seed so an
+        # adaptive campaign may route to OpenEvolve or a resource broker later.
+        # They must not become part of the task's scientific configuration.
+        direct_configuration = dict(experiment_configuration)
+        direct_configuration.pop("openevolve", None)
+        direct_configuration.pop("resources", None)
+        normalised = task.normalise_configuration(direct_configuration)
+    else:
+        normalised = experiment_configuration
     policy = task.create_verification_policy(contract)
     if policy.policy_id != descriptor.verification_policy_id:
         raise ValueError("task verification policy does not match its descriptor")
@@ -790,9 +795,10 @@ def task_sqlite_dependencies(
     optuna_handle = (
         sqlite_storage(optuna_file)
         if (
-            search_type == SearchType.OPTUNA
-            and optuna_file is not None
+            optuna_file is not None
             and importlib.util.find_spec("optuna") is not None
+            and isinstance(task, OptunaCapableTask)
+            and SearchType.OPTUNA in contract.allowed_search_types
         )
         else None
     )

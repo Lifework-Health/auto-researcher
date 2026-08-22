@@ -22,6 +22,10 @@ from auto_researcher.tasks.feta_seg.splits import (
 from auto_researcher.tasks.feta_unet_diagnostics.attribution import (
     captum_capability,
 )
+from auto_researcher.tasks.feta_unet_diagnostics.calibration import (
+    calibration_variants,
+    postprocess_calibrated_prediction,
+)
 from auto_researcher.tasks.feta_unet_diagnostics.comparison import (
     compare_panel_metrics,
     summarise_learning_curve,
@@ -202,6 +206,47 @@ def test_comparison_reports_improvements_displacement_and_complementarity():
     assert complementarity.metrics["complementary_advantage_observed"] is True
 
 
+def test_comparison_separates_boundary_extent_and_topology_signals():
+    baseline_rows = [dict(row) for row in _baseline_rows()]
+    candidate_rows = [dict(row) for row in _baseline_rows()]
+    for collection, hd95, volume, topology in (
+        (baseline_rows, 4.0, 0.80, 2.0),
+        (candidate_rows, 3.0, 0.86, 1.0),
+    ):
+        for row in collection:
+            row["per_class"] = {
+                label: {
+                    **values,
+                    "hd95_mm": hd95,
+                    "volume_similarity": volume,
+                    "euler_distance": topology,
+                }
+                for label, values in row["per_class"].items()
+            }
+    panel = _panel(baseline_rows)
+    experiment = DiagnosticExperiment(
+        diagnostic_id="mechanism-diagnostic",
+        task_id="feta_unet_search",
+        task_version="1.0",
+        baseline=_checkpoint("baseline"),
+        candidates=(_checkpoint("candidate-a"),),
+        panel=panel.public_reference(),
+        methods=(DiagnosticMethodSpec(method="per_class_error", version="v1"),),
+        target_labels=LABELS,
+    )
+    result = compare_panel_metrics(
+        experiment,
+        panel,
+        baseline_rows=baseline_rows,
+        candidate_rows={"candidate-a": candidate_rows},
+    )
+    observation = result.observations[0]
+    label = observation.metrics["per_class"]["1"]
+    assert label["mean_hd95_mm_delta"] == -1.0
+    assert label["mean_volume_similarity_delta"] == pytest.approx(0.06)
+    assert label["mean_euler_distance_delta"] == -1.0
+
+
 def test_learning_curve_validation_and_optional_captum_capability():
     summary = summarise_learning_curve(
         [
@@ -218,6 +263,29 @@ def test_learning_curve_validation_and_optional_captum_capability():
                 {"epoch": 5, "validation_score": 0.4},
             ]
         )
+
+
+def test_inference_calibration_lane_is_bounded_and_postprocessing_is_classwise():
+    variants = calibration_variants()
+    assert len(variants) == 8
+    assert len({item.model_dump_json() for item in variants}) == 8
+    assert variants[0].model_dump(mode="json") == {
+        "overlap": 0.5,
+        "blending": "gaussian",
+        "flip_tta": False,
+        "class_specific_postprocessing": "none",
+    }
+    np = pytest.importorskip("numpy")
+    prediction = np.zeros((3, 3, 3), dtype=np.uint8)
+    prediction[0, 0, 0] = 1
+    prediction[1:, 1:, 1:] = 1
+    processed = postprocess_calibrated_prediction(
+        prediction,
+        variants[0].model_copy(
+            update={"class_specific_postprocessing": "largest_component"}
+        ),
+    )
+    assert int((processed == 1).sum()) == 8
     capability = captum_capability()
     assert capability["backend_id"] == "captum"
     assert isinstance(capability["available"], bool)

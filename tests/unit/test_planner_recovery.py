@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 
 from auto_researcher.agents.context import AgentContextAssemblyError
 from auto_researcher.agents.live.base import LiveAgentExecutionError
@@ -91,6 +92,50 @@ class _PortfolioRecoveryTask(FeTAUNetSearchTask):
                 },
                 "experiment_budget": 1,
                 "rationale": "Controller-owned portfolio recovery request.",
+            }
+        )
+
+
+class _DeadlineRecoveryTask(_PortfolioRecoveryTask):
+    def estimate_search_duration_seconds(self, request, runtime_context):
+        del runtime_context
+        return (
+            1_000.0
+            if "graduation-mode:protected-deadline"
+            in request.evidence_references
+            else 10_000.0
+        )
+
+    def apply_campaign_deadline_policy(
+        self,
+        request,
+        *,
+        run_id,
+        cycle,
+        events,
+        remaining_seconds,
+        runtime_context,
+    ):
+        del run_id, cycle, events, runtime_context
+        assert remaining_seconds == 4_000.0
+        return request.model_copy(
+            update={
+                "request_id": "search-protected-graduation",
+                "search_type": SearchType.DIRECT,
+                "search_space": {
+                    "maximum_epochs": 150,
+                    "learning_rate": 0.0002,
+                    "weight_decay": 0.00001,
+                    "dropout": 0.05,
+                    "dice_weight": 1.2,
+                    "positive_negative_ratio": "2:1",
+                    "augmentation_policy": "intensity",
+                },
+                "experiment_budget": 1,
+                "evidence_references": (
+                    "graduation-mode:protected-deadline",
+                ),
+                "rationale": "Protect one finalist graduation.",
             }
         )
 
@@ -238,6 +283,77 @@ def test_campaign_portfolio_overrides_direct_fallback_after_planner_exhaustion(
     assert update["search_request"].rationale == (
         "Controller-owned portfolio recovery request."
     )
+    assert update["errors"] == []
+
+
+def test_campaign_deadline_replaces_exploration_with_fitting_graduation(
+    contract_factory,
+    deterministic_dependencies,
+):
+    now = deterministic_dependencies.clock()
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-deadline-graduation",
+        statement="A finalist should graduate before the deadline.",
+        rationale="Exercise completion-aware scheduling.",
+        predicted_subspace={
+            "maximum_epochs": 25,
+            "learning_rate": 0.0003,
+            "weight_decay": 0.000003,
+            "dropout": 0.0,
+            "dice_weight": 1.0,
+            "positive_negative_ratio": "1:1",
+            "augmentation_policy": "reference_light",
+        },
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-deadline-graduation",
+        "thread_id": "thread-deadline-graduation",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+            started_at=now,
+            deadline_at=now + timedelta(seconds=4_000),
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_DeadlineRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={
+                "campaign_finalisation_reserve_seconds": 19_800.0,
+                "campaign_reporting_reserve_seconds": 1_800.0,
+            }
+        ),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["search_request"].request_id == "search-protected-graduation"
+    assert update["search_request"].search_type == SearchType.DIRECT
     assert update["errors"] == []
 
 

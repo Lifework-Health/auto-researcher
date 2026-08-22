@@ -11,6 +11,10 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V6_ARCHITECTURE_BUDGET,
     V6_MAXIMUM_TRAINABLE_PARAMETERS,
     V6_MINIMUM_TRAINABLE_PARAMETERS,
+    V7_ARCHITECTURE_BUDGET,
+    V7_MAXIMUM_TRAINABLE_PARAMETERS,
+    V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+    V7_MINIMUM_TRAINABLE_PARAMETERS,
     FeTAUNetSearchConfiguration,
 )
 from auto_researcher.tasks.feta_unet_search.evaluator import (
@@ -48,10 +52,20 @@ class FeTAUNetSearchVerificationPolicy(FeTAUNetDirectVerificationPolicy):
             and isinstance(parameter_count, int)
             and parameter_count > 0
             and (
-                configuration.architecture_budget != V6_ARCHITECTURE_BUDGET
-                or V6_MINIMUM_TRAINABLE_PARAMETERS
-                <= parameter_count
-                <= V6_MAXIMUM_TRAINABLE_PARAMETERS
+                (
+                    configuration.architecture_budget
+                    != V6_ARCHITECTURE_BUDGET
+                    or V6_MINIMUM_TRAINABLE_PARAMETERS
+                    <= parameter_count
+                    <= V6_MAXIMUM_TRAINABLE_PARAMETERS
+                )
+                and (
+                    configuration.architecture_budget
+                    != V7_ARCHITECTURE_BUDGET
+                    or V7_MINIMUM_TRAINABLE_PARAMETERS
+                    <= parameter_count
+                    <= V7_MAXIMUM_TRAINABLE_PARAMETERS
+                )
             )
             and evaluation.metrics.get("architecture_identity")
             == architecture_identity(configuration)
@@ -72,6 +86,32 @@ class FeTAUNetSearchVerificationPolicy(FeTAUNetDirectVerificationPolicy):
             for name, expected in expected_identities.items()
         ):
             reasons.append("feta_unet_search_training_policy_identity_mismatch")
+        if (
+            contract.constraints.get("architecture_search_mode")
+            == V7_ARCHITECTURE_BUDGET
+        ):
+            summaries = evaluation.metrics.get("fold_summaries")
+            peaks = (
+                [
+                    item.get("peak_gpu_memory_bytes")
+                    for item in summaries
+                    if isinstance(item, dict)
+                ]
+                if isinstance(summaries, list)
+                else []
+            )
+            if (
+                not peaks
+                or len(peaks) != len(summaries)
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value <= 0
+                    or value > V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES
+                    for value in peaks
+                )
+            ):
+                reasons.append("feta_unet_peak_gpu_memory_constraint_failed")
         return PolicyDecision(
             constraint_compliant=not reasons,
             evidence_status=(

@@ -48,6 +48,20 @@ def _class_dice(row: dict[str, Any], label: int) -> float:
     return result
 
 
+def _optional_class_metric(row: dict[str, Any], label: int, field: str) -> float | None:
+    per_class = row["per_class"]
+    item = per_class.get(str(label), per_class.get(label))
+    value = item.get(field) if isinstance(item, dict) else None
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("feta_diagnostic_tissue_metrics_invalid")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("feta_diagnostic_tissue_metrics_invalid")
+    return result
+
+
 def summarise_learning_curve(entries: Sequence[dict[str, Any]]) -> dict[str, Any]:
     if not entries:
         raise ValueError("feta_diagnostic_learning_curve_empty")
@@ -130,11 +144,32 @@ def compare_panel_metrics(
             regressed = sum(delta <= -material_delta for delta in deltas)
             improved_pairs += improved
             regressed_pairs += regressed
+            diagnostic_deltas: dict[str, float] = {}
+            for field in ("hd95_mm", "volume_similarity", "euler_distance"):
+                paired = [
+                    (
+                        _optional_class_metric(rows[subject_id], label, field),
+                        _optional_class_metric(baseline[subject_id], label, field),
+                    )
+                    for subject_id in panel_ids
+                ]
+                present = [
+                    float(candidate) - float(reference)
+                    for candidate, reference in paired
+                    if candidate is not None and reference is not None
+                ]
+                if present:
+                    if len(present) != len(panel_ids):
+                        raise ValueError("feta_diagnostic_tissue_metrics_incomplete")
+                    diagnostic_deltas[f"mean_{field}_delta"] = sum(present) / len(
+                        present
+                    )
             per_label[str(label)] = {
                 "label_name": LABEL_NAMES[label],
                 "mean_dice_delta": sum(deltas) / len(deltas),
                 "material_improvement_count": improved,
                 "material_regression_count": regressed,
+                **diagnostic_deltas,
             }
         for subject_id in panel_ids:
             deltas = [
@@ -173,6 +208,12 @@ def compare_panel_metrics(
             "material_improvement_pairs": improved_pairs,
             "material_regression_pairs": regressed_pairs,
             "error_displacement_case_count": displaced_cases,
+            "diagnostic_signals": {
+                "overlap": "mean_dice_delta",
+                "boundary": "mean_hd95_mm_delta",
+                "extent": "mean_volume_similarity_delta",
+                "topology": "mean_euler_distance_delta",
+            },
             "contains_case_identifiers": False,
         }
         observations.append(
