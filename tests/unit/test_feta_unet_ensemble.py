@@ -21,6 +21,12 @@ from auto_researcher.tasks.feta_unet_ensemble.models import (
     EnsembleMember,
     EnsembleSpecification,
 )
+from auto_researcher.tasks.feta_unet_ensemble.evaluation import (
+    _dice_row,
+    _normalise_configuration,
+    _public_summary,
+    candidate_subsets,
+)
 
 
 def _member(index: int, **changes) -> EnsembleMember:
@@ -129,3 +135,53 @@ def test_probability_cache_refuses_overwrite(tmp_path):
             subject_id="sub-001",
             member_identity=member_identity(member),
         )
+
+
+def test_candidate_subsets_cover_every_equal_weight_combination():
+    assert candidate_subsets(("v4", "v5", "v6a", "v6b")) == (
+        ("v4", "v5"),
+        ("v4", "v6a"),
+        ("v4", "v6b"),
+        ("v5", "v6a"),
+        ("v5", "v6b"),
+        ("v6a", "v6b"),
+        ("v4", "v5", "v6a"),
+        ("v4", "v5", "v6b"),
+        ("v4", "v6a", "v6b"),
+        ("v5", "v6a", "v6b"),
+        ("v4", "v5", "v6a", "v6b"),
+    )
+
+
+def test_historical_v4_configuration_normalises_for_inference():
+    configuration = _normalise_configuration(
+        {
+            "profile": "development_baseline",
+            "maximum_epochs": 150,
+            "augmentation_strength": "light",
+            "learning_rate": 0.00025,
+            "weight_decay": 0.00001,
+            "dropout": 0.02,
+            "dice_weight": 1.2,
+        }
+    )
+    assert configuration.model_variant == "basic_unet"
+    assert configuration.features == (32, 32, 64, 128, 256, 32)
+    assert configuration.augmentation_policy == "reference_light"
+
+
+def test_dice_only_rows_produce_public_aggregate_without_subject_ids():
+    class Subject:
+        subject_id = "sub-001"
+        reconstruction_method = "mial"
+
+    actual = np.zeros((2, 2, 2), dtype=np.uint8)
+    predicted = np.zeros_like(actual)
+    for label in range(1, 8):
+        actual.reshape(-1)[label] = label
+        predicted.reshape(-1)[label] = label
+    row = _dice_row(Subject(), actual, predicted)
+    summary = _public_summary((row,))
+    assert summary["mean_subject_macro_dice"] == 1.0
+    assert summary["per_tissue_dice"]
+    assert "subject_metrics" not in summary

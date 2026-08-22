@@ -11,6 +11,11 @@ from auto_researcher.tasks.feta_unet_ensemble.models import (
     EnsembleSpecification,
     ProbabilityCacheRecord,
 )
+from auto_researcher.tasks.feta_unet_ensemble.evaluation import (
+    candidate_subsets,
+    evaluate_manifest,
+    load_member_source,
+)
 
 __all__ = [
     "EnsembleMember",
@@ -20,4 +25,7 @@ __all__ = [
     "equal_weight_specification",
     "predicted_labels",
     "validate_compatible_members",
+    "candidate_subsets",
+    "evaluate_manifest",
+    "load_member_source",
 ]

@@ -13,7 +13,7 @@ evaluation does not require their combined GPU memory. Majority voting,
 checkpoint-weight averaging, unconstrained class-specific weights and a learned
 stacking model are outside the primary method.
 
-## First implementation slice
+## Implemented evaluation
 
 The first slice provides fail-closed contracts for:
 
@@ -27,11 +27,21 @@ The first slice provides fail-closed contracts for:
 - rejection of invalid shapes, non-finite probabilities, incompatible members,
   invalid weights, overwrite attempts and corrupted caches.
 
-The next slice will load the V4-V7 verified checkpoints, perform sequential
-native-geometry inference on the locked fold-0 development subjects, calculate
-individual and ensemble subject/class metrics, and emit a public-safe aggregate
-report. Subject identifiers and probability tensors remain in protected runtime
-storage and never enter model context.
+The evaluator loads two to four verified checkpoints, performs sequential
+inference on the locked fold-0 development subjects, caches aligned softmax
+probabilities in protected storage, verifies that every single-model score is
+reproduced, evaluates the pre-specified all-member equal-weight ensemble and
+labels every smaller equal-weight subset as exploratory. It emits a public-safe
+aggregate report plus a separate protected subject-level report. Subject
+identifiers and probability tensors remain in protected runtime storage and
+never enter model context.
+
+The manifest schema is `feta-unet-ensemble-run-manifest-v1`. Each member names
+its experiment id and absolute checkpoint, experiment-spec and evaluation-result
+paths. Evaluation fails closed on incompatible dataset, split, fold,
+preprocessing, inference or label identities; altered checkpoints; holdout
+access; incomplete fold-0 evidence; and failure to reproduce the recorded
+single-model score within `1e-6`.
 
 ## Reporting boundary
 
