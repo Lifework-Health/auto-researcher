@@ -212,11 +212,16 @@ def _assemble_task_dependencies(
         raise ValueError("task experiment metadata does not match contract provenance")
     if metadata.dataset_version != manifest.dataset_version:
         raise ValueError("task experiment metadata does not match dataset manifest")
-    normalised = (
-        task.normalise_configuration(experiment_configuration)
-        if search_type == SearchType.DIRECT
-        else experiment_configuration
-    )
+    if search_type == SearchType.DIRECT:
+        # Runtime controls can accompany a Direct scientific seed so an
+        # adaptive campaign may route to OpenEvolve or a resource broker later.
+        # They must not become part of the task's scientific configuration.
+        direct_configuration = dict(experiment_configuration)
+        direct_configuration.pop("openevolve", None)
+        direct_configuration.pop("resources", None)
+        normalised = task.normalise_configuration(direct_configuration)
+    else:
+        normalised = experiment_configuration
     policy = task.create_verification_policy(contract)
     if policy.policy_id != descriptor.verification_policy_id:
         raise ValueError("task verification policy does not match its descriptor")

@@ -31,11 +31,33 @@ openevolve_development_mutation:
     structured_output_strategy: pydantic
     pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
 
-search:
-  type: DIRECT
-  trial_budget: 2
-  seed: 20260822
-  fixed: {maximum_epochs: 25}
+experiment:
+  # The adaptive portfolio owns the four Direct roots below. This initial
+  # candidate is a valid scientific seed for the CLI's Direct launch path;
+  # it is replaced by the first portfolio root before execution.
+  maximum_epochs: 25
+  model_variant: structural_basic_unet
+  feature_width: v7_deep_6
+  architecture_budget: basicunet-structural-15m-150m-v1
+  upsample: deconv
+  kernel_profile: standard
+  residual_blocks: false
+  deep_supervision_heads: 0
+  convolutions_per_stage: 2
+  dilation_profile: none
+  skip_fusion: concat
+  downsample: max_pool
+  activation: ReLU
+  norm: instance
+  optimizer: Adam
+  lr_schedule: polynomial
+  loss_variant: dice_focal
+  learning_rate: 0.00014676947772184417
+  weight_decay: 0.000009170939006065463
+  dropout: 0.08363354043325907
+  dice_weight: 1.2833957004567855
+  positive_negative_ratio: "2:1"
+  augmentation_policy: intensity
   openevolve:
     population_size: 1
     maximum_generations: 3

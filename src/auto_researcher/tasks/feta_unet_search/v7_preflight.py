@@ -60,6 +60,22 @@ def build_v7_preflight_plan(
     raw_config = _mapping(
         task_config_path, "feta_unet_v7_preflight_configuration_invalid"
     )
+    raw_experiment = raw_config.get("experiment")
+    if not isinstance(raw_experiment, dict) or raw_config.get("search") is not None:
+        raise ValueError("feta_unet_v7_preflight_direct_launch_shape_invalid")
+    scientific_seed = dict(raw_experiment)
+    raw_openevolve = scientific_seed.pop("openevolve", None)
+    if (
+        not isinstance(raw_openevolve, dict)
+        or isinstance(raw_openevolve.get("maximum_candidate_evaluations"), bool)
+        or not isinstance(raw_openevolve.get("maximum_candidate_evaluations"), int)
+        or raw_openevolve["maximum_candidate_evaluations"] <= 0
+        or isinstance(raw_openevolve.get("maximum_wall_time_seconds"), bool)
+        or not isinstance(raw_openevolve.get("maximum_wall_time_seconds"), int)
+        or raw_openevolve["maximum_wall_time_seconds"] <= 0
+    ):
+        raise ValueError("feta_unet_v7_preflight_openevolve_controls_invalid")
+    initial_configuration = FeTAUNetSearchConfiguration.model_validate(scientific_seed)
     raw_runtime = raw_config.get("runtime")
     if not isinstance(raw_runtime, dict):
         raise ValueError("feta_unet_v7_preflight_configuration_invalid")
@@ -116,6 +132,9 @@ def build_v7_preflight_plan(
     policy = V7MechanismPortfolioPolicy.from_runtime(
         TaskRuntimeContext(task_options=raw_options)
     )
+    first_root = FeTAUNetSearchConfiguration.model_validate(policy.structural_roots[0])
+    if initial_configuration != first_root:
+        raise ValueError("feta_unet_v7_preflight_direct_seed_invalid")
     roots: list[dict[str, Any]] = []
     identities: set[str] = set()
     for index, raw_root in enumerate(policy.structural_roots):
@@ -154,6 +173,10 @@ def build_v7_preflight_plan(
         "graduating_finalist_count": GRADUATING_FINALIST_COUNT,
         "inference_calibration": calibration,
         "visible_gpu": str(environment["CUDA_VISIBLE_DEVICES"]),
+        "initial_search_type": "DIRECT",
+        "openevolve_candidate_evaluation_limit": raw_openevolve[
+            "maximum_candidate_evaluations"
+        ],
         "root_count": len(roots),
         "v6_parent_evidence_count": len(policy.v6_parent_evidence),
         "v6_parent_experiment_ids": [

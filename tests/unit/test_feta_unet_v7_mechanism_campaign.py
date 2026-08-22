@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from auto_researcher.cli import _configured_search_type, _load_task_configuration
 from auto_researcher.contracts.enums import EventType, ProvenanceKind, SearchType
 from auto_researcher.contracts.models import (
     DecisionEvent,
@@ -162,12 +163,33 @@ def test_v7_contract_and_frozen_mechanism_roots_are_valid():
     )
 
 
+def test_v7_template_uses_supported_direct_launch_shape():
+    path = ROOT / "examples/tasks/feta_unet_search/campaign-22h-v7-template.yaml"
+    experiment, runtime = _load_task_configuration(
+        path,
+        "feta_unet_search",
+        "1.0",
+    )
+
+    assert _configured_search_type(path) == SearchType.DIRECT
+    assert "search" not in yaml.safe_load(path.read_text())
+    assert experiment["model_variant"] == "structural_basic_unet"
+    assert experiment["feature_width"] == "v7_deep_6"
+    assert experiment["maximum_epochs"] == 25
+    assert experiment["openevolve"]["maximum_candidate_evaluations"] == 4
+    assert runtime["options"]["campaign_portfolio"]["structural_roots"][0] == {
+        key: value for key, value in experiment.items() if key != "openevolve"
+    }
+
+
 def test_v7_static_preflight_freezes_four_roots_and_memory_ceiling():
     plan = build_v7_preflight_plan(
         ROOT / "examples/tasks/feta_unet_search/campaign-22h-v7-template.yaml",
         ROOT / "examples/tasks/feta_unet_search/contract-22h-v7.yaml",
     )
     assert plan["root_count"] == 4
+    assert plan["initial_search_type"] == "DIRECT"
+    assert plan["openevolve_candidate_evaluation_limit"] == 4
     assert plan["maximum_peak_gpu_memory_bytes"] == 44 * 1024**3
     assert len({item["architecture_identity"] for item in plan["roots"]}) == 4
     assert all(
@@ -184,6 +206,26 @@ def test_v7_static_preflight_freezes_four_roots_and_memory_ceiling():
     assert tuple(plan["req11_priorities"]) == V7_REQ11_PRIORITIES
     assert plan["static_preflight_passed"] is True
     assert plan["cuda_preflight_passed"] is False
+
+
+def test_v7_static_preflight_rejects_direct_under_search_section(tmp_path: Path):
+    configuration = yaml.safe_load(
+        (
+            ROOT / "examples/tasks/feta_unet_search/campaign-22h-v7-template.yaml"
+        ).read_text()
+    )
+    configuration["search"] = {
+        "type": "DIRECT",
+        **configuration.pop("experiment"),
+    }
+    path = tmp_path / "campaign.yaml"
+    path.write_text(yaml.safe_dump(configuration, sort_keys=False))
+
+    with pytest.raises(ValueError, match="direct_launch_shape_invalid"):
+        build_v7_preflight_plan(
+            path,
+            ROOT / "examples/tasks/feta_unet_search/contract-22h-v7.yaml",
+        )
 
 
 def test_v7_static_preflight_rejects_reserve_that_cannot_finish_two_finalists(

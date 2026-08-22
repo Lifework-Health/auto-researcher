@@ -38,7 +38,10 @@ V7 does not switch to DynUNet.
    its locked environment.
 2. Copy `campaign-22h-v7-template.yaml` and `contract-22h-v7.yaml` into a fresh
    protected runtime directory. Replace every absolute-path placeholder. Do not
-   create control databases or call a model yet.
+   create control databases or call a model yet. The campaign template must use
+   an `experiment:` section containing the first structural root and finite
+   OpenEvolve controls. A `search: {type: DIRECT}` section is invalid and the
+   static gate rejects it.
 3. Run the static preflight:
 
    ```bash
@@ -49,9 +52,9 @@ V7 does not switch to DynUNet.
      --contract "$V7_CONTRACT"
    ```
 
-   It must report four unique roots, the exact portfolio and contract identities,
-   the bound REQ-11 panel, 15M-150M parameters, a 44 GiB ceiling and
-   `model_calls_performed: 0`.
+   It must report `initial_search_type: DIRECT`, four unique roots, the exact
+   portfolio and contract identities, the bound REQ-11 panel, 15M-150M
+   parameters, a 44 GiB ceiling and `model_calls_performed: 0`.
 
 4. Confirm the selected A6000 is idle. Expose exactly that one device and run the
    real-CUDA gate before credentials are entered or campaign state is created:

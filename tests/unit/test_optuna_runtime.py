@@ -96,3 +96,29 @@ def test_sqlite_optuna_backend_is_available_to_adaptive_direct_campaign(tmp_path
         capability = dependencies.search_capabilities[SearchType.OPTUNA]
         assert capability.available is True
         assert dependencies.optuna_backend is not None
+
+
+def test_direct_scientific_configuration_excludes_adaptive_runtime_controls():
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.DIRECT}),
+        maximum_experiments=1,
+    )
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        contract,
+        {
+            "model_family": "tree",
+            "complexity": 4,
+            "learning_rate": 0.05,
+            "openevolve": {"maximum_candidate_evaluations": 1},
+            "resources": {"resource_type": "gpu"},
+        },
+        search_type=SearchType.DIRECT,
+    )
+
+    assert dependencies.planner_agent.configuration == {
+        "model_family": "tree",
+        "complexity": 4,
+        "learning_rate": 0.05,
+    }
