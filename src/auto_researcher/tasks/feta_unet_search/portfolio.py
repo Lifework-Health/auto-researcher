@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,7 +40,7 @@ from auto_researcher.tasks.models import TaskRuntimeContext
 PORTFOLIO_VERSION = "feta-unet-60-18-7-2-portfolio-v1"
 TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-18-6-8-4-2-v3"
 V6_TREE_PORTFOLIO_VERSION = "feta-basicunet-architecture-tree-12-18-6-10-5-3-v1"
-V7_MECHANISM_PORTFOLIO_VERSION = "feta-mechanism-unet-tree-4-12-8-2-8-4-2-v1"
+V7_MECHANISM_PORTFOLIO_VERSION = "feta-basicunet-structural-tree-4-12-8-2-8-4-2-v2"
 
 
 @dataclass(frozen=True)
@@ -261,11 +262,15 @@ class V7MechanismPortfolioPolicy:
     wildcard_count: int
     promotion_targets: dict[int, int]
     wildcard_counts: dict[int, int]
+    v6_parent_evidence: tuple[dict[str, Any], ...]
 
     @classmethod
     def from_runtime(cls, context: TaskRuntimeContext) -> "V7MechanismPortfolioPolicy":
         raw = context.task_options.get("campaign_portfolio")
-        if not isinstance(raw, dict) or raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION:
+        if (
+            not isinstance(raw, dict)
+            or raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION
+        ):
             raise ValueError("feta_unet_v7_portfolio_invalid")
         try:
             roots = tuple(dict(item) for item in raw["structural_roots"])
@@ -281,6 +286,7 @@ class V7MechanismPortfolioPolicy:
                 int(name): int(value)
                 for name, value in dict(raw["wildcard_counts"]).items()
             }
+            raw_v6_parents = tuple(dict(item) for item in raw["v6_parent_evidence"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("feta_unet_v7_portfolio_invalid") from exc
         if (
@@ -291,6 +297,7 @@ class V7MechanismPortfolioPolicy:
             or wildcard_count != 2
             or promotions != {50: 8, 100: 4, 150: 2}
             or wildcards != {50: 2, 100: 1, 150: 0}
+            or len(raw_v6_parents) != 2
         ):
             raise ValueError("feta_unet_v7_portfolio_invalid")
         validated: list[dict[str, Any]] = []
@@ -300,7 +307,7 @@ class V7MechanismPortfolioPolicy:
             if (
                 candidate.maximum_epochs != 25
                 or candidate.architecture_budget != V7_ARCHITECTURE_BUDGET
-                or candidate.model_variant != "mechanism_unet"
+                or candidate.model_variant != "structural_basic_unet"
             ):
                 raise ValueError("feta_unet_v7_structural_root_invalid")
             identity = trajectory_identity(candidate)
@@ -313,6 +320,37 @@ class V7MechanismPortfolioPolicy:
                     for name in CANDIDATE_CONFIGURATION_FIELDS
                 }
             )
+        validated_v6_parents: list[dict[str, Any]] = []
+        parent_trajectories: set[str] = set()
+        for item in raw_v6_parents:
+            try:
+                experiment_id = str(item["experiment_id"])
+                score = float(item["best_score"])
+                candidate = FeTAUNetSearchConfiguration.model_validate(
+                    item["configuration"]
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("feta_unet_v7_parent_evidence_invalid") from exc
+            identity = trajectory_identity(candidate)
+            if (
+                not experiment_id.startswith("experiment-")
+                or not math.isfinite(score)
+                or not 0.0 <= score <= 1.0
+                or candidate.maximum_epochs != 150
+                or candidate.architecture_budget != V6_ARCHITECTURE_BUDGET
+                or candidate.model_variant != "basic_unet"
+                or identity in parent_trajectories
+            ):
+                raise ValueError("feta_unet_v7_parent_evidence_invalid")
+            parent_trajectories.add(identity)
+            validated_v6_parents.append(
+                {
+                    "experiment_id": experiment_id,
+                    "best_score": score,
+                    "trajectory_identity": identity,
+                    "configuration": candidate.model_dump(mode="json"),
+                }
+            )
         return cls(
             structural_roots=tuple(validated),
             mutations_per_root=mutations_per_root,
@@ -321,6 +359,7 @@ class V7MechanismPortfolioPolicy:
             wildcard_count=wildcard_count,
             promotion_targets=promotions,
             wildcard_counts=wildcards,
+            v6_parent_evidence=tuple(validated_v6_parents),
         )
 
 
@@ -589,10 +628,8 @@ def _tree_request_metadata(
             )
             canonical_openevolve_reuse = (
                 experiment_id in openevolve_prepared_experiments
-                and request_metadata.get("tree-action")
-                != SearchType.OPENEVOLVE.value
-                and embedded_metadata.get("tree-action")
-                == SearchType.OPENEVOLVE.value
+                and request_metadata.get("tree-action") != SearchType.OPENEVOLVE.value
+                and embedded_metadata.get("tree-action") == SearchType.OPENEVOLVE.value
                 and len(matching_reuse_requests) == 1
             )
             if not canonical_openevolve_reuse:
@@ -768,13 +805,16 @@ def _local_optuna_space(
                     "features",
                     "architecture_budget",
                     "upsample",
+                    "kernel_profile",
+                    "residual_blocks",
+                    "deep_supervision_heads",
+                    "convolutions_per_stage",
+                    "dilation_profile",
+                    "skip_fusion",
+                    "downsample",
                     "activation",
                     "norm",
                     "optimizer",
-                    "lr_schedule",
-                    "loss_variant",
-                    "positive_negative_ratio",
-                    "augmentation_policy",
                 )
             },
         },
@@ -794,6 +834,17 @@ def _local_optuna_space(
             "dice_weight": {
                 "low": max(DICE_WEIGHT_BOUNDS[0], dice_weight - 0.2),
                 "high": min(DICE_WEIGHT_BOUNDS[1], dice_weight + 0.2),
+            },
+            "positive_negative_ratio": {"choices": ["1:1", "2:1", "3:1"]},
+            "lr_schedule": {"choices": ["constant", "cosine", "polynomial"]},
+            "loss_variant": {"choices": ["dice_ce", "dice_focal", "dice_tversky"]},
+            "augmentation_policy": {
+                "choices": [
+                    "reference_light",
+                    "geometric",
+                    "intensity",
+                    "combined",
+                ]
             },
         },
     }
@@ -888,9 +939,7 @@ def apply_tree_portfolio_policy(
         if v6_architecture:
             fixed["architecture_budget"] = V6_ARCHITECTURE_BUDGET
             fixed["upsample"] = "deconv"
-            parameters["feature_width"] = {
-                "choices": list(V6_OPTUNA_FEATURE_PROFILES)
-            }
+            parameters["feature_width"] = {"choices": list(V6_OPTUNA_FEATURE_PROFILES)}
         return _request(
             original,
             run_id=run_id,
@@ -1368,7 +1417,7 @@ def apply_v7_mechanism_portfolio_policy(
             search_space=configuration,
             experiment_budget=1,
             rationale=(
-                f"{V7_MECHANISM_PORTFOLIO_VERSION}: execute one frozen mechanism root with distinct depth, receptive-field, residual and deep-supervision structure."
+                f"{V7_MECHANISM_PORTFOLIO_VERSION}: execute one frozen structural BasicUNet root with distinct depth, receptive-field, residual, skip and deep-supervision mechanisms."
             ),
             evidence_references=_tree_references(
                 stage="root", action=SearchType.DIRECT
@@ -1379,8 +1428,7 @@ def apply_v7_mechanism_portfolio_policy(
     structural_candidates = tuple(
         item
         for item in candidates
-        if item.stage == "structural-child"
-        and item.action == SearchType.OPENEVOLVE
+        if item.stage == "structural-child" and item.action == SearchType.OPENEVOLVE
     )
     for parent in root_items:
         parent_id = parent.evidence.trajectory_identity
@@ -1410,17 +1458,28 @@ def apply_v7_mechanism_portfolio_policy(
             "incumbent_primary_score": parent.evidence.best_score,
             "incumbent_search_type": parent.action.value,
             "incumbent_experiment_id": parent.evidence.experiment_id,
-            "required_model_variant": "mechanism_unet",
+            "required_model_variant": "structural_basic_unet",
             "required_architecture_budget": V7_ARCHITECTURE_BUDGET,
             "mutation_objective": (
-                "Change at least one structural mechanism among depth or stage widths, kernel profile, residual blocks and deep-supervision heads before tuning continuous optimisation parameters."
+                "Change at least one structural mechanism among depth or non-uniform stage widths, convolutions per stage, kernel or dilation profile, residual blocks, skip fusion, down/up operator and deep-supervision heads before local optimisation."
             ),
             "prior_verified_results": [
                 {
                     "search_type": parent.action.value,
                     "primary_score": parent.evidence.best_score,
                     "configuration": parent.evidence.configuration,
-                }
+                },
+                *(
+                    {
+                        "search_type": "DIRECT",
+                        "primary_score": item["best_score"],
+                        "configuration": item["configuration"],
+                        "source_experiment_id": item["experiment_id"],
+                        "trajectory_identity": item["trajectory_identity"],
+                        "evidence_role": "v6_parent_not_retrained",
+                    }
+                    for item in policy.v6_parent_evidence
+                ),
             ],
         }
         return _request(
@@ -1482,7 +1541,7 @@ def apply_v7_mechanism_portfolio_policy(
             ),
             experiment_budget=remaining,
             rationale=(
-                f"{V7_MECHANISM_PORTFOLIO_VERSION}: tune {remaining} local optimisation policies around structural lineage {parent_id[:12]} without changing its architecture."
+                f"{V7_MECHANISM_PORTFOLIO_VERSION}: tune {remaining} local learning-rate, regularisation, loss-weight, sampling and schedule policies around structural lineage {parent_id[:12]} without changing its architecture."
             ),
             evidence_references=_tree_references(
                 stage="local-optuna",
@@ -1606,13 +1665,15 @@ def apply_v7_deadline_graduation_policy(
     remaining_slots = policy.promotion_targets[150] - len(completed)
     if remaining_slots <= 0:
         return None
-    pool = tuple(
-        item for item in highest.values() if item.evidence.fidelity < 150
-    )
+    pool = tuple(item for item in highest.values() if item.evidence.fidelity < 150)
     if not pool:
         return None
+    represented_roots = {item.root_trajectory for item in completed}
+    diverse_pool = tuple(
+        item for item in pool if item.root_trajectory not in represented_roots
+    )
     finalists = _tree_cohort(
-        pool,
+        diverse_pool if diverse_pool else pool,
         target=min(remaining_slots, len(pool)),
         wildcard_count=0,
     )
@@ -1667,11 +1728,10 @@ def apply_portfolio_policy(
             events=events,
             runtime_context=runtime_context,
         )
-    if (
-        isinstance(raw_policy, dict)
-        and raw_policy.get("version")
-        in {TREE_PORTFOLIO_VERSION, V6_TREE_PORTFOLIO_VERSION}
-    ):
+    if isinstance(raw_policy, dict) and raw_policy.get("version") in {
+        TREE_PORTFOLIO_VERSION,
+        V6_TREE_PORTFOLIO_VERSION,
+    }:
         return apply_tree_portfolio_policy(
             original,
             run_id=run_id,

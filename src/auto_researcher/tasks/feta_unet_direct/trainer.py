@@ -86,7 +86,7 @@ def deep_supervision_training_loss(
     loss_function,
     configuration: FeTAUNetDirectConfiguration,
 ):
-    """Apply geometrically decaying auxiliary-head weights for V7 DynUNet."""
+    """Apply geometrically decaying auxiliary-head weights for structural V7."""
 
     heads = int(getattr(configuration, "deep_supervision_heads", 0))
     if heads == 0:
@@ -96,10 +96,13 @@ def deep_supervision_training_loss(
     logits = prediction.unbind(dim=1)
     weights = tuple(0.5**index for index in range(len(logits)))
     normaliser = sum(weights)
-    return sum(
-        weight * loss_function(head, target)
-        for weight, head in zip(weights, logits, strict=True)
-    ) / normaliser
+    return (
+        sum(
+            weight * loss_function(head, target)
+            for weight, head in zip(weights, logits, strict=True)
+        )
+        / normaliser
+    )
 
 
 def sliding_window_predict(inputs, model, configuration: FeTAUNetDirectConfiguration):

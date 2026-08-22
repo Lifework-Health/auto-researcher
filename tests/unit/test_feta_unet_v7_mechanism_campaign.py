@@ -8,7 +8,11 @@ import pytest
 import yaml
 
 from auto_researcher.contracts.enums import EventType, ProvenanceKind, SearchType
-from auto_researcher.contracts.models import DecisionEvent, ResearchContract, SearchRequest
+from auto_researcher.contracts.models import (
+    DecisionEvent,
+    ResearchContract,
+    SearchRequest,
+)
 from auto_researcher.tasks.feta_unet_search.configuration import (
     V7_ARCHITECTURE_BUDGET,
     FeTAUNetSearchConfiguration,
@@ -37,8 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def _options() -> dict:
     return yaml.safe_load(
         (
-            ROOT
-            / "examples/tasks/feta_unet_search/campaign-22h-v7-template.yaml"
+            ROOT / "examples/tasks/feta_unet_search/campaign-22h-v7-template.yaml"
         ).read_text()
     )["runtime"]["options"]
 
@@ -46,9 +49,7 @@ def _options() -> dict:
 def _contract() -> ResearchContract:
     return ResearchContract.model_validate(
         yaml.safe_load(
-            (
-                ROOT / "examples/tasks/feta_unet_search/contract-22h-v7.yaml"
-            ).read_text()
+            (ROOT / "examples/tasks/feta_unet_search/contract-22h-v7.yaml").read_text()
         )
     )
 
@@ -88,9 +89,7 @@ def _planned(index: int, request: SearchRequest) -> DecisionEvent:
     )
 
 
-def _prepared(
-    index: int, request: SearchRequest, experiment_id: str
-) -> DecisionEvent:
+def _prepared(index: int, request: SearchRequest, experiment_id: str) -> DecisionEvent:
     return DecisionEvent(
         event_id=f"prepared-{index}-{experiment_id}",
         run_id="v7-run",
@@ -136,9 +135,7 @@ def _verified(
             "configuration": configuration,
             "aggregate_metrics": {
                 "primary_score": score,
-                "validation_history": [
-                    {"epoch": fidelity, "validation_score": score}
-                ],
+                "validation_history": [{"epoch": fidelity, "validation_score": score}],
             },
         },
     )
@@ -152,6 +149,7 @@ def test_v7_contract_and_frozen_mechanism_roots_are_valid():
     assert len(policy.structural_roots) == 4
     assert policy.mutations_per_root == 3
     assert policy.optuna_trials_per_parent == 2
+    assert len(policy.v6_parent_evidence) == 2
     assert policy.promotion_targets == {50: 8, 100: 4, 150: 2}
     assert all(
         FeTAUNetSearchConfiguration.model_validate(item).architecture_budget
@@ -173,8 +171,32 @@ def test_v7_static_preflight_freezes_four_roots_and_memory_ceiling():
         for item in plan["roots"]
     )
     assert plan["model_calls_performed"] == 0
+    assert plan["graduating_finalist_count"] == 2
+    assert plan["required_graduation_reserve_seconds"] == 24_300
+    assert plan["configured_graduation_reserve_seconds"] == 24_300
+    assert plan["inference_calibration"]["enabled"] is True
     assert plan["static_preflight_passed"] is True
     assert plan["cuda_preflight_passed"] is False
+
+
+def test_v7_static_preflight_rejects_reserve_that_cannot_finish_two_finalists(
+    tmp_path: Path,
+):
+    configuration = yaml.safe_load(
+        (
+            ROOT / "examples/tasks/feta_unet_search/campaign-22h-v7-template.yaml"
+        ).read_text()
+    )
+    configuration["runtime"]["options"]["campaign_finalisation_reserve_seconds"] = (
+        24_299
+    )
+    path = tmp_path / "campaign.yaml"
+    path.write_text(yaml.safe_dump(configuration, sort_keys=False))
+    with pytest.raises(ValueError, match="graduation_budget_invalid"):
+        build_v7_preflight_plan(
+            path,
+            ROOT / "examples/tasks/feta_unet_search/contract-22h-v7.yaml",
+        )
 
 
 def test_v7_starts_with_direct_mechanism_roots_then_structural_evolution():
@@ -218,12 +240,18 @@ def test_v7_starts_with_direct_mechanism_roots_then_structural_evolution():
     assert request.search_type == SearchType.OPENEVOLVE
     assert request.experiment_budget == 4
     campaign = request.search_space["campaign_context"]
-    assert campaign["required_model_variant"] == "mechanism_unet"
+    assert campaign["required_model_variant"] == "structural_basic_unet"
     assert campaign["required_architecture_budget"] == V7_ARCHITECTURE_BUDGET
     assert "structural" in campaign["mutation_objective"]
-    assert FeTAUNetSearchTask().estimate_search_duration_seconds(
-        request, context
-    ) == 3 * 25 * 90.0
+    prior = campaign["prior_verified_results"]
+    assert (
+        sum(item.get("evidence_role") == "v6_parent_not_retrained" for item in prior)
+        == 2
+    )
+    assert (
+        FeTAUNetSearchTask().estimate_search_duration_seconds(request, context)
+        == 3 * 25 * 90.0
+    )
 
 
 def test_v7_openevolve_rejects_training_only_mutation():
@@ -237,7 +265,7 @@ def test_v7_openevolve_rejects_training_only_mutation():
     )
     assert component.component_spec().task_mutation_context[
         "bounded_model_variants"
-    ] == ["mechanism_unet"]
+    ] == ["structural_basic_unet"]
     request = SearchRequest(
         request_id="structural-evolution",
         hypothesis_id="hypothesis",
@@ -246,7 +274,7 @@ def test_v7_openevolve_rejects_training_only_mutation():
         search_space={
             "campaign_context": {
                 "incumbent_training_policy": policy.model_dump(mode="json"),
-                "required_model_variant": "mechanism_unet",
+                "required_model_variant": "structural_basic_unet",
                 "required_architecture_budget": V7_ARCHITECTURE_BUDGET,
             }
         },
@@ -323,7 +351,16 @@ def test_v7_local_optuna_preserves_structural_configuration():
     root = V7MechanismPortfolioPolicy.from_runtime(
         TaskRuntimeContext(task_options=_options())
     ).structural_roots[1]
-    tuned = {"learning_rate", "weight_decay", "dropout", "dice_weight"}
+    tuned = {
+        "learning_rate",
+        "weight_decay",
+        "dropout",
+        "dice_weight",
+        "positive_negative_ratio",
+        "lr_schedule",
+        "loss_variant",
+        "augmentation_policy",
+    }
     request = SearchRequest(
         request_id="local-optuna",
         hypothesis_id="hypothesis",
@@ -336,6 +373,17 @@ def test_v7_local_optuna_preserves_structural_configuration():
                 "weight_decay": {"low": 0.000003, "high": 0.00003},
                 "dropout": {"low": 0.02, "high": 0.14},
                 "dice_weight": {"low": 1.1, "high": 1.4},
+                "positive_negative_ratio": {"choices": ["1:1", "2:1", "3:1"]},
+                "lr_schedule": {"choices": ["constant", "cosine", "polynomial"]},
+                "loss_variant": {"choices": ["dice_ce", "dice_focal", "dice_tversky"]},
+                "augmentation_policy": {
+                    "choices": [
+                        "reference_light",
+                        "geometric",
+                        "intensity",
+                        "combined",
+                    ]
+                },
             },
         },
         experiment_budget=2,
@@ -352,6 +400,10 @@ def test_v7_local_optuna_preserves_structural_configuration():
         "weight_decay",
         "dropout",
         "dice_weight",
+        "positive_negative_ratio",
+        "lr_schedule",
+        "loss_variant",
+        "augmentation_policy",
     }
 
 
@@ -368,6 +420,22 @@ def test_v7_configuration_identity_includes_mechanism_axes():
     assert V7_MECHANISM_PORTFOLIO_VERSION in _options()["campaign_portfolio"]["version"]
 
 
+def test_v7_structural_basicunet_roots_have_finite_forward_contracts():
+    torch = pytest.importorskip("torch")
+    from auto_researcher.tasks.feta_unet_direct.model import create_unet_model
+
+    policy = V7MechanismPortfolioPolicy.from_runtime(
+        TaskRuntimeContext(task_options=_options())
+    )
+    for raw in policy.structural_roots:
+        configuration = FeTAUNetSearchConfiguration.model_validate(raw)
+        model = create_unet_model(configuration).eval()
+        with torch.inference_mode():
+            output = model(torch.zeros(1, 1, 32, 32, 32))
+        assert output.shape == (1, 8, 32, 32, 32)
+        assert bool(torch.isfinite(output).all())
+
+
 def test_deep_supervision_loss_weights_all_heads():
     torch = pytest.importorskip("torch")
     from auto_researcher.tasks.feta_unet_direct.trainer import (
@@ -376,7 +444,7 @@ def test_deep_supervision_loss_weights_all_heads():
 
     configuration = FeTAUNetSearchConfiguration(
         maximum_epochs=25,
-        model_variant="mechanism_unet",
+        model_variant="structural_basic_unet",
         feature_width="v7_compact_5",
         architecture_budget=V7_ARCHITECTURE_BUDGET,
         kernel_profile="standard",

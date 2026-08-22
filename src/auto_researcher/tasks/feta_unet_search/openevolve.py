@@ -140,14 +140,18 @@ V6_DEEP_SOURCE = """def evolve(configuration):
 V7_RESIDUAL_CONTEXT_SOURCE = """def evolve(configuration):
     return {
         "policy_version": "feta-unet-training-policy-v5",
-        "model_variant": "mechanism_unet",
+        "model_variant": "structural_basic_unet",
         "feature_width": "v7_asymmetric_5",
-        "features": [64, 96, 192, 480, 960],
-        "architecture_budget": "mechanism-unet-15m-150m-v1",
+        "features": [64, 96, 192, 480, 64],
+        "architecture_budget": "basicunet-structural-15m-150m-v1",
         "upsample": "deconv",
         "kernel_profile": "large_front",
         "residual_blocks": True,
         "deep_supervision_heads": 2,
+        "convolutions_per_stage": 2,
+        "dilation_profile": "none",
+        "skip_fusion": "concat",
+        "downsample": "strided_conv",
         "activation": "ReLU",
         "norm": "instance",
         "optimizer": "Adam",
@@ -165,14 +169,18 @@ V7_RESIDUAL_CONTEXT_SOURCE = """def evolve(configuration):
 V7_DEEP_SUPERVISION_SOURCE = """def evolve(configuration):
     return {
         "policy_version": "feta-unet-training-policy-v5",
-        "model_variant": "mechanism_unet",
+        "model_variant": "structural_basic_unet",
         "feature_width": "v7_compact_5",
-        "features": [48, 96, 192, 384, 768],
-        "architecture_budget": "mechanism-unet-15m-150m-v1",
-        "upsample": "deconv",
+        "features": [48, 96, 192, 384, 48],
+        "architecture_budget": "basicunet-structural-15m-150m-v1",
+        "upsample": "pixelshuffle",
         "kernel_profile": "context_deep",
         "residual_blocks": True,
         "deep_supervision_heads": 2,
+        "convolutions_per_stage": 3,
+        "dilation_profile": "deep",
+        "skip_fusion": "gated_concat",
+        "downsample": "max_pool",
         "activation": "PReLU",
         "norm": "group",
         "optimizer": "AdamW",
@@ -199,6 +207,10 @@ def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPol
             "kernel_profile": configuration.get("kernel_profile", "basic"),
             "residual_blocks": configuration.get("residual_blocks", False),
             "deep_supervision_heads": configuration.get("deep_supervision_heads", 0),
+            "convolutions_per_stage": configuration.get("convolutions_per_stage", 2),
+            "dilation_profile": configuration.get("dilation_profile", "none"),
+            "skip_fusion": configuration.get("skip_fusion", "concat"),
+            "downsample": configuration.get("downsample", "max_pool"),
             "activation": configuration["activation"],
             "norm": configuration["norm"],
             "optimizer": configuration["optimizer"],
@@ -219,19 +231,23 @@ class UNetTrainingPolicy(BaseModel):
 
     policy_version: Literal["feta-unet-training-policy-v5"] = POLICY_VERSION
     model_variant: Literal[
-        "basic_unet", "unet_plain", "unet_residual", "mechanism_unet"
+        "basic_unet", "unet_plain", "unet_residual", "structural_basic_unet"
     ] = "basic_unet"
     feature_width: str = "baseline"
     features: tuple[int, ...] = FEATURE_WIDTH_PROFILES["baseline"]
     architecture_budget: Literal[
-        "legacy", "basicunet-15m-150m-v1", "mechanism-unet-15m-150m-v1"
+        "legacy", "basicunet-15m-150m-v1", "basicunet-structural-15m-150m-v1"
     ] = "legacy"
     upsample: Literal["deconv", "pixelshuffle", "nontrainable"] = "deconv"
-    kernel_profile: Literal[
-        "basic", "standard", "large_front", "context_deep"
-    ] = "basic"
+    kernel_profile: Literal["basic", "standard", "large_front", "context_deep"] = (
+        "basic"
+    )
     residual_blocks: bool = False
     deep_supervision_heads: Literal[0, 1, 2] = 0
+    convolutions_per_stage: Literal[1, 2, 3] = 2
+    dilation_profile: Literal["none", "deep", "multiscale"] = "none"
+    skip_fusion: Literal["concat", "add", "gated_concat"] = "concat"
+    downsample: Literal["max_pool", "strided_conv"] = "max_pool"
     activation: Literal["LeakyReLU", "ReLU", "PReLU"] = "LeakyReLU"
     norm: Literal["instance", "group"] = "instance"
     optimizer: Literal["AdamW", "Adam"] = "AdamW"
@@ -297,6 +313,10 @@ class UNetTrainingPolicy(BaseModel):
                 or self.kernel_profile != "basic"
                 or self.residual_blocks
                 or self.deep_supervision_heads != 0
+                or self.convolutions_per_stage != 2
+                or self.dilation_profile != "none"
+                or self.skip_fusion != "concat"
+                or self.downsample != "max_pool"
             ):
                 raise ValueError("feta_unet_policy_legacy_architecture_invalid")
             return self
@@ -304,13 +324,20 @@ class UNetTrainingPolicy(BaseModel):
             self.model_variant != "basic_unet"
             or self.feature_width not in {*V6_BASIC_UNET_FEATURE_PROFILES, "custom"}
             or (expected is not None and self.features != expected)
-            or any(channel % 8 or channel < 32 or channel > 1_280 for channel in self.features)
+            or any(
+                channel % 8 or channel < 32 or channel > 1_280
+                for channel in self.features
+            )
             or tuple(sorted(self.features[:5])) != self.features[:5]
             or not 32 <= self.features[5] <= 256
             or self.upsample not in V6_UPSAMPLE_MODES
             or self.kernel_profile != "basic"
             or self.residual_blocks
             or self.deep_supervision_heads != 0
+            or self.convolutions_per_stage != 2
+            or self.dilation_profile != "none"
+            or self.skip_fusion != "concat"
+            or self.downsample != "max_pool"
             or (
                 self.upsample == "pixelshuffle"
                 and self.feature_width != "custom"
@@ -319,16 +346,21 @@ class UNetTrainingPolicy(BaseModel):
         ):
             raise ValueError("feta_unet_policy_v6_architecture_invalid")
         if self.architecture_budget == V7_ARCHITECTURE_BUDGET and (
-            self.model_variant != "mechanism_unet"
+            self.model_variant != "structural_basic_unet"
             or self.feature_width not in {*V7_MECHANISM_FEATURE_PROFILES, "custom"}
             or (expected is not None and self.features != expected)
             or len(self.features) not in (5, 6)
-            or any(channel % 8 or channel < 32 or channel > 1_024 for channel in self.features)
-            or tuple(sorted(self.features)) != self.features
-            or self.upsample != "deconv"
+            or any(
+                channel % 8 or channel < 32 or channel > 1_024
+                for channel in self.features
+            )
+            or tuple(sorted(self.features[:-1])) != self.features[:-1]
+            or not 32 <= self.features[-1] <= 256
+            or self.upsample not in V6_UPSAMPLE_MODES
             or self.kernel_profile not in V7_KERNEL_PROFILES
             or self.deep_supervision_heads not in V7_DEEP_SUPERVISION_HEADS
             or self.deep_supervision_heads >= len(self.features) - 1
+            or (self.skip_fusion == "add" and self.features[-1] != self.features[0])
         ):
             raise ValueError("feta_unet_policy_v7_architecture_invalid")
         return self
@@ -358,7 +390,7 @@ class FeTAUNetEvolvableComponent:
         else:
             deterministic_sources = (LOW_REGULARISATION_SOURCE, REGULARISED_SOURCE)
         bounded_model_variants = (
-            ("mechanism_unet",)
+            ("structural_basic_unet",)
             if self.seed_policy.architecture_budget == V7_ARCHITECTURE_BUDGET
             else MODEL_VARIANTS
         )
@@ -379,7 +411,7 @@ class FeTAUNetEvolvableComponent:
                     V6_PIXELSHUFFLE_FEATURE_PROFILES
                 ),
             },
-            "v7_mechanism_unet_architecture": {
+            "v7_structural_basicunet_architecture": {
                 "architecture_budget": V7_ARCHITECTURE_BUDGET,
                 "trainable_parameter_minimum": V7_MINIMUM_TRAINABLE_PARAMETERS,
                 "trainable_parameter_maximum": V7_MAXIMUM_TRAINABLE_PARAMETERS,
@@ -390,7 +422,11 @@ class FeTAUNetEvolvableComponent:
                 "kernel_profile": list(V7_KERNEL_PROFILES),
                 "residual_blocks": [False, True],
                 "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS),
-                "upsample": ["deconv"],
+                "convolutions_per_stage": [1, 2, 3],
+                "dilation_profile": ["none", "deep", "multiscale"],
+                "skip_fusion": ["concat", "add", "gated_concat"],
+                "downsample": ["max_pool", "strided_conv"],
+                "upsample": list(V6_UPSAMPLE_MODES),
             },
             "bounded_activations": list(ACTIVATIONS),
             "bounded_normalisations": list(NORMALISATIONS),
@@ -408,7 +444,7 @@ class FeTAUNetEvolvableComponent:
                 "When campaign_context includes required_model_variant, preserve "
                 "that exact model_variant while mutating other bounded fields.",
                 "When campaign_context requires the V6 architecture budget, emit only BasicUNet policies inside the 15M-150M trainable-parameter envelope. Prefer meaningful non-uniform feature allocations over uniform scaling alone.",
-                "When campaign_context requires the V7 architecture budget, emit only mechanism_unet policies inside the 15M-150M envelope. Mutate depth or stage widths, kernel profile, residual blocks and deep-supervision heads; do not reduce the search to uniform width scaling.",
+                "When campaign_context requires the V7 architecture budget, emit only structural_basic_unet policies inside the 15M-150M and 44 GiB envelopes. Mutate at least one genuine structural field: depth or non-uniform stage widths, convolutions per stage, kernel or dilation profile, residual blocks, skip fusion, down/up operator, or deep-supervision heads. Do not reduce the search to uniform width scaling.",
             ],
             "metric_names": [
                 "mean_subject_macro_dice",
@@ -483,7 +519,10 @@ class FeTAUNetEvolvableComponent:
         if required_variant is not None and policy.model_variant != required_variant:
             raise ValueError("feta_unet_required_model_variant_not_preserved")
         required_budget = campaign_context.get("required_architecture_budget")
-        if required_budget is not None and policy.architecture_budget != required_budget:
+        if (
+            required_budget is not None
+            and policy.architecture_budget != required_budget
+        ):
             raise ValueError("feta_unet_required_architecture_budget_not_preserved")
         incumbent = campaign_context.get("incumbent_training_policy")
         if (
@@ -495,9 +534,14 @@ class FeTAUNetEvolvableComponent:
             structural_fields = (
                 "feature_width",
                 "features",
+                "upsample",
                 "kernel_profile",
                 "residual_blocks",
                 "deep_supervision_heads",
+                "convolutions_per_stage",
+                "dilation_profile",
+                "skip_fusion",
+                "downsample",
             )
             if all(
                 getattr(policy, name) == getattr(parent, name)
@@ -517,7 +561,9 @@ class FeTAUNetEvolvableComponent:
                 trainable_parameter_count,
             )
 
-            parameter_count = trainable_parameter_count(create_unet_model(configuration))
+            parameter_count = trainable_parameter_count(
+                create_unet_model(configuration)
+            )
             bounds = (
                 (
                     V7_MINIMUM_TRAINABLE_PARAMETERS,
@@ -530,7 +576,9 @@ class FeTAUNetEvolvableComponent:
                 )
             )
             if not bounds[0] <= parameter_count <= bounds[1]:
-                raise ValueError("feta_unet_architecture_parameter_budget_out_of_bounds")
+                raise ValueError(
+                    "feta_unet_architecture_parameter_budget_out_of_bounds"
+                )
         incumbent_experiment_id = campaign_context.get("incumbent_experiment_id")
         if candidate.generation == 0 and isinstance(incumbent_experiment_id, str):
             experiment_id = incumbent_experiment_id

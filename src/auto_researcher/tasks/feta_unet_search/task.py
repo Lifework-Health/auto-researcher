@@ -199,7 +199,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 else LEGACY_ARCHITECTURE_FAMILY_ID
             ),
             "architecture_model_variants": (
-                ["mechanism_unet"]
+                ["structural_basic_unet"]
                 if v7_mode
                 else (["basic_unet"] if v6_mode else list(MODEL_VARIANTS))
             ),
@@ -278,12 +278,8 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         if isinstance(fidelity, bool) or not isinstance(fidelity, int):
             raise ValueError("feta_unet_search_fidelity_invalid")
         fixed = baseline_search_configuration(fidelity)
-        v6_architecture = (
-            raw_fixed.get("architecture_budget") == V6_ARCHITECTURE_BUDGET
-        )
-        v7_architecture = (
-            raw_fixed.get("architecture_budget") == V7_ARCHITECTURE_BUDGET
-        )
+        v6_architecture = raw_fixed.get("architecture_budget") == V6_ARCHITECTURE_BUDGET
+        v7_architecture = raw_fixed.get("architecture_budget") == V7_ARCHITECTURE_BUDGET
         registered_fixed_configuration = {
             key: value
             for key, value in fixed.items()
@@ -311,12 +307,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 upsample=v6_upsample,
             )
         if v7_architecture:
-            if raw_fixed.get("upsample", "deconv") != "deconv":
-                raise ValueError("feta_unet_v7_upsample_invalid")
             registered_fixed_configuration.update(
                 architecture_budget=V7_ARCHITECTURE_BUDGET,
-                upsample="deconv",
-                model_variant="mechanism_unet",
+                model_variant="structural_basic_unet",
             )
         fixed_feature_vector = "features" in raw_fixed
         if fixed_feature_vector:
@@ -370,13 +363,26 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 CategoricalParameterSpec(
                     name="kernel_profile", choices=V7_KERNEL_PROFILES
                 ),
-                CategoricalParameterSpec(
-                    name="residual_blocks", choices=(False, True)
-                ),
+                CategoricalParameterSpec(name="residual_blocks", choices=(False, True)),
                 CategoricalParameterSpec(
                     name="deep_supervision_heads",
                     choices=V7_DEEP_SUPERVISION_HEADS,
                 ),
+                CategoricalParameterSpec(
+                    name="convolutions_per_stage", choices=(1, 2, 3)
+                ),
+                CategoricalParameterSpec(
+                    name="dilation_profile",
+                    choices=("none", "deep", "multiscale"),
+                ),
+                CategoricalParameterSpec(
+                    name="skip_fusion",
+                    choices=("concat", "add", "gated_concat"),
+                ),
+                CategoricalParameterSpec(
+                    name="downsample", choices=("max_pool", "strided_conv")
+                ),
+                CategoricalParameterSpec(name="upsample", choices=V6_UPSAMPLE_MODES),
             )
             if v7_architecture
             else ()
@@ -587,7 +593,10 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
     ) -> SearchRequest | None:
         del remaining_seconds
         raw = runtime_context.task_options.get("campaign_portfolio")
-        if not isinstance(raw, dict) or raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION:
+        if (
+            not isinstance(raw, dict)
+            or raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION
+        ):
             return None
         return apply_v7_deadline_graduation_policy(
             request,
@@ -647,7 +656,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             "campaign_seconds_per_epoch_by_model_variant"
         )
         if raw_family_rates is not None:
-            valid_variants = {*MODEL_VARIANTS, "mechanism_unet"}
+            valid_variants = {*MODEL_VARIANTS, "structural_basic_unet"}
             if (
                 not isinstance(raw_family_rates, dict)
                 or not set(MODEL_VARIANTS).issubset(raw_family_rates)
@@ -690,11 +699,8 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             fidelity = runtime_context.task_options.get("openevolve_fidelity", 25)
             candidates = request.experiment_budget
             campaign_context = request.search_space.get("campaign_context")
-            if (
-                isinstance(campaign_context, dict)
-                and isinstance(
-                    campaign_context.get("incumbent_experiment_id"), str
-                )
+            if isinstance(campaign_context, dict) and isinstance(
+                campaign_context.get("incumbent_experiment_id"), str
             ):
                 # Generation zero is canonical verified parent evidence.  It is
                 # reused rather than trained, so only novel generations consume
@@ -763,7 +769,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             == V7_ARCHITECTURE_BUDGET
         )
         if v7_mode:
-            agent_model_variants = ("mechanism_unet",)
+            agent_model_variants = ("structural_basic_unet",)
             direct_feature_profiles = V7_OPTUNA_FEATURE_PROFILES
             all_agent_feature_profiles = tuple(V7_MECHANISM_FEATURE_PROFILES)
             architecture_budget = V7_ARCHITECTURE_BUDGET
@@ -833,9 +839,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     {
                         "kernel_profile": list(V7_KERNEL_PROFILES),
                         "residual_blocks": [False, True],
-                        "deep_supervision_heads": list(
-                            V7_DEEP_SUPERVISION_HEADS
-                        ),
+                        "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS),
                     }
                     if v7_mode
                     else {}

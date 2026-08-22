@@ -70,31 +70,48 @@ runtime:
     shared_preprocessing_cache: true
     openevolve_fidelity: 25
     campaign_seconds_per_epoch: 90.0
-    campaign_seconds_per_epoch_by_model_variant: {basic_unet: 70.0, unet_plain: 70.0, unet_residual: 70.0, mechanism_unet: 90.0}
-    # New exploration stops with 5.5 hours left. Only protected finalist
-    # graduation can consume the last five hours; 30 minutes remain for reports.
-    campaign_finalisation_reserve_seconds: 19800.0
+    campaign_seconds_per_epoch_by_model_variant: {basic_unet: 70.0, unet_plain: 70.0, unet_residual: 70.0, structural_basic_unet: 90.0}
+    # New exploration stops with 6.75 hours left. This is sufficient for two
+    # worst-case 25-to-150 continuations at 90 seconds/epoch plus reporting.
+    campaign_finalisation_reserve_seconds: 24300.0
     campaign_reporting_reserve_seconds: 1800.0
+    inference_calibration:
+      enabled: true
+      finalist_count: 2
+      maximum_variants: 8
+      overlaps: [0.25, 0.5, 0.75]
+      blending_modes: [gaussian, constant]
+      flip_tta: [false, true]
+      class_specific_postprocessing: diagnostic_gated
     campaign_prior_results: 30
     continue_after_failed_candidate: true
     maximum_peak_gpu_memory_bytes: 47244640256
     initial_incumbent_configuration:
-      {maximum_epochs: 25, model_variant: mechanism_unet, feature_width: v7_compact_5, architecture_budget: mechanism-unet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+      {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_deep_6, architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, convolutions_per_stage: 2, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
     initial_campaign_observations:
       - "Verified V6 finalist mean macro Dice was 0.8206412646177336 at best epoch 110 and 0.8183156149629622 at epoch 150."
       - "A second verified V6 finalist reached 0.8194349024061267 at best epoch 105 and 0.818386262202946 at epoch 150."
       - "Both V6 finalists plateaued after epochs 105 to 110, so V7 prioritises structural mechanisms and lineage-local optimisation rather than longer training or uniform width scaling."
       - "A separately trained U-Net reportedly reached approximately 0.84 under a believed-comparable evaluation, but its architecture and training policy remain deliberately withheld."
     campaign_portfolio:
-      version: feta-mechanism-unet-tree-4-12-8-2-8-4-2-v1
+      version: feta-basicunet-structural-tree-4-12-8-2-8-4-2-v2
       mutations_per_root: 3
       local_parent_count: 4
       optuna_trials_per_parent: 2
       controlled_wildcard_count: 2
       promotion_targets: {"50": 8, "100": 4, "150": 2}
       wildcard_counts: {"50": 2, "100": 1, "150": 0}
+      # Verified V6 evidence is supplied to every structural mutation as parent
+      # context. It is never scheduled or retrained inside V7.
+      v6_parent_evidence:
+        - experiment_id: experiment-643b2c5f65b4bc25
+          best_score: 0.8206412646177336
+          configuration: {maximum_epochs: 150, model_variant: basic_unet, feature_width: v6_deep_80, architecture_budget: basicunet-15m-150m-v1, upsample: pixelshuffle, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - experiment_id: experiment-ccc5fcf318cf2eb1
+          best_score: 0.8194349024061267
+          configuration: {maximum_epochs: 150, model_variant: basic_unet, feature_width: v6_balanced_96, architecture_budget: basicunet-15m-150m-v1, upsample: pixelshuffle, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: constant, loss_variant: dice_focal, learning_rate: 0.00009338464902664518, weight_decay: 0.0000032557989778462594, dropout: 0.12244504239178453, dice_weight: 1.278374357967457, positive_negative_ratio: "2:1", augmentation_policy: intensity}
       structural_roots:
-        - {maximum_epochs: 25, model_variant: mechanism_unet, feature_width: v7_compact_5, architecture_budget: mechanism-unet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
-        - {maximum_epochs: 25, model_variant: mechanism_unet, feature_width: v7_balanced_5, architecture_budget: mechanism-unet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 2, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
-        - {maximum_epochs: 25, model_variant: mechanism_unet, feature_width: v7_asymmetric_5, architecture_budget: mechanism-unet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
-        - {maximum_epochs: 25, model_variant: mechanism_unet, feature_width: v7_compact_5, architecture_budget: mechanism-unet-15m-150m-v1, upsample: deconv, kernel_profile: context_deep, residual_blocks: true, deep_supervision_heads: 2, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_deep_6, architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, convolutions_per_stage: 2, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_balanced_5, architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 2, convolutions_per_stage: 3, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: PReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_asymmetric_5, architecture_budget: basicunet-structural-15m-150m-v1, upsample: nontrainable, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, convolutions_per_stage: 2, dilation_profile: multiscale, skip_fusion: gated_concat, downsample: strided_conv, activation: ReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_tversky, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: combined}
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_compact_5, architecture_budget: basicunet-structural-15m-150m-v1, upsample: pixelshuffle, kernel_profile: context_deep, residual_blocks: true, deep_supervision_heads: 2, convolutions_per_stage: 3, dilation_profile: deep, skip_fusion: gated_concat, downsample: max_pool, activation: PReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_tversky, learning_rate: 0.00012, weight_decay: 0.00002, dropout: 0.05, dice_weight: 1.2, positive_negative_ratio: "3:1", augmentation_policy: geometric}

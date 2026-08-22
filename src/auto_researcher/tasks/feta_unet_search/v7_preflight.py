@@ -37,6 +37,8 @@ from auto_researcher.tasks.models import TaskRuntimeContext
 
 V7_PREFLIGHT_SCHEMA_VERSION = "feta-unet-v7-real-cuda-preflight-v1"
 MAXIMUM_EXISTING_GPU_ALLOCATION_BYTES = 1024**3
+WORST_CASE_GRADUATION_SOURCE_EPOCH = 25
+GRADUATING_FINALIST_COUNT = 2
 
 
 def _mapping(path: Path, reason: str) -> dict[str, Any]:
@@ -69,6 +71,37 @@ def build_v7_preflight_plan(
         != V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES
     ):
         raise ValueError("feta_unet_v7_preflight_memory_ceiling_invalid")
+    raw_rates = raw_options.get("campaign_seconds_per_epoch_by_model_variant")
+    reporting_reserve = raw_options.get("campaign_reporting_reserve_seconds")
+    finalisation_reserve = raw_options.get("campaign_finalisation_reserve_seconds")
+    if (
+        not isinstance(raw_rates, dict)
+        or isinstance(raw_rates.get("structural_basic_unet"), bool)
+        or not isinstance(raw_rates.get("structural_basic_unet"), (int, float))
+        or float(raw_rates["structural_basic_unet"]) <= 0
+        or isinstance(reporting_reserve, bool)
+        or not isinstance(reporting_reserve, (int, float))
+        or float(reporting_reserve) < 0
+        or isinstance(finalisation_reserve, bool)
+        or not isinstance(finalisation_reserve, (int, float))
+    ):
+        raise ValueError("feta_unet_v7_preflight_graduation_budget_invalid")
+    required_graduation_reserve = GRADUATING_FINALIST_COUNT * (
+        150 - WORST_CASE_GRADUATION_SOURCE_EPOCH
+    ) * float(raw_rates["structural_basic_unet"]) + float(reporting_reserve)
+    if float(finalisation_reserve) < required_graduation_reserve:
+        raise ValueError("feta_unet_v7_preflight_graduation_budget_invalid")
+    calibration = raw_options.get("inference_calibration")
+    if calibration != {
+        "enabled": True,
+        "finalist_count": 2,
+        "maximum_variants": 8,
+        "overlaps": [0.25, 0.5, 0.75],
+        "blending_modes": ["gaussian", "constant"],
+        "flip_tta": [False, True],
+        "class_specific_postprocessing": "diagnostic_gated",
+    }:
+        raise ValueError("feta_unet_v7_preflight_calibration_plan_invalid")
     environment = raw_runtime.get("environment")
     if (
         not isinstance(environment, dict)
@@ -116,8 +149,16 @@ def build_v7_preflight_plan(
         "portfolio_version": V7_MECHANISM_PORTFOLIO_VERSION,
         "contract_id": contract.contract_id,
         "maximum_peak_gpu_memory_bytes": V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+        "required_graduation_reserve_seconds": required_graduation_reserve,
+        "configured_graduation_reserve_seconds": float(finalisation_reserve),
+        "graduating_finalist_count": GRADUATING_FINALIST_COUNT,
+        "inference_calibration": calibration,
         "visible_gpu": str(environment["CUDA_VISIBLE_DEVICES"]),
         "root_count": len(roots),
+        "v6_parent_evidence_count": len(policy.v6_parent_evidence),
+        "v6_parent_experiment_ids": [
+            item["experiment_id"] for item in policy.v6_parent_evidence
+        ],
         "roots": roots,
         "static_preflight_passed": True,
         "cuda_preflight_passed": False,
@@ -168,7 +209,11 @@ def run_v7_cuda_preflight(
             optimizer = create_optimizer(model, configuration)
             loss_function = create_loss(configuration)
             inputs = torch.randn(
-                (configuration.batch_size, configuration.in_channels, *configuration.patch_size),
+                (
+                    configuration.batch_size,
+                    configuration.in_channels,
+                    *configuration.patch_size,
+                ),
                 device="cuda",
                 dtype=torch.float32,
             )

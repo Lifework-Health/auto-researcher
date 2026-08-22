@@ -606,14 +606,10 @@ def test_v6_direct_replay_preserves_registered_feature_vector():
         default_feta_unet_search_contract(),
         run_id="v6-direct-replay",
     )
-    reconstructed = FeTAUNetSearchConfiguration.model_validate(
-        experiment.configuration
-    )
+    reconstructed = FeTAUNetSearchConfiguration.model_validate(experiment.configuration)
 
     assert reconstructed.feature_width == "v6_balanced_96"
-    assert reconstructed.features == V6_BASIC_UNET_FEATURE_PROFILES[
-        "v6_balanced_96"
-    ]
+    assert reconstructed.features == V6_BASIC_UNET_FEATURE_PROFILES["v6_balanced_96"]
 
 
 def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path):
@@ -655,9 +651,11 @@ def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path
         experiment_payload_hash=payload_hash(published),
     )
     store = SimpleNamespace(
-        get_evaluation_reuse=lambda run_id, experiment_id: record
-        if (run_id, experiment_id) == ("run", "experiment-incumbent")
-        else None
+        get_evaluation_reuse=lambda run_id, experiment_id: (
+            record
+            if (run_id, experiment_id) == ("run", "experiment-incumbent")
+            else None
+        )
     )
     dependencies = SimpleNamespace(
         provenance_store=store,
@@ -679,9 +677,7 @@ def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path
             }
         }
     )
-    with pytest.raises(
-        ValueError, match="openevolve_incumbent_configuration_conflict"
-    ):
+    with pytest.raises(ValueError, match="openevolve_incumbent_configuration_conflict"):
         _canonical_generation_zero_experiment(
             {"run_id": "run"}, dependencies, candidate, conflicting
         )
@@ -758,6 +754,10 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         "kernel_profile": "basic",
         "residual_blocks": False,
         "deep_supervision_heads": 0,
+        "convolutions_per_stage": 2,
+        "dilation_profile": "none",
+        "skip_fusion": "concat",
+        "downsample": "max_pool",
         "activation": "LeakyReLU",
         "norm": "instance",
         "optimizer": "AdamW",

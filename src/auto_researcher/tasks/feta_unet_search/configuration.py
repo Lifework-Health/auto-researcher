@@ -19,7 +19,7 @@ MODEL_VARIANT_CONTEXT = {
     "basic_unet": ("BasicUNet", 0),
     "unet_plain": ("UNet", 0),
     "unet_residual": ("UNet", 2),
-    "mechanism_unet": ("DynUNet", 0),
+    "structural_basic_unet": ("BasicUNet", 0),
 }
 FEATURE_WIDTH_PROFILES = {
     "narrow": (24, 24, 48, 96, 192, 24),
@@ -64,14 +64,18 @@ V6_OPTUNA_FEATURE_PROFILES = (
     "v6_decoder_96",
 )
 V7_MECHANISM_FEATURE_PROFILES = {
-    "v7_compact_5": (48, 96, 192, 384, 768),
-    "v7_balanced_5": (64, 128, 256, 512, 768),
-    "v7_asymmetric_5": (64, 96, 192, 480, 960),
-    "v7_deep_6": (40, 80, 160, 320, 640, 960),
-    "v7_wide_5": (80, 160, 320, 640, 960),
+    # BasicUNet semantics: encoder widths followed by the terminal decoder width.
+    # Five-value profiles have four resolution stages; six-value profiles have
+    # the reference five stages.  This keeps every V7 candidate in one explicit
+    # BasicUNet lineage while allowing depth and width asymmetry to evolve.
+    "v7_compact_5": (48, 96, 192, 384, 48),
+    "v7_balanced_5": (64, 128, 256, 512, 64),
+    "v7_asymmetric_5": (64, 96, 192, 480, 64),
+    "v7_deep_6": (40, 80, 160, 320, 640, 40),
+    "v7_wide_6": (80, 160, 320, 640, 960, 80),
 }
 ALL_FEATURE_WIDTH_PROFILES.update(V7_MECHANISM_FEATURE_PROFILES)
-V7_ARCHITECTURE_BUDGET = "mechanism-unet-15m-150m-v1"
+V7_ARCHITECTURE_BUDGET = "basicunet-structural-15m-150m-v1"
 V7_MINIMUM_TRAINABLE_PARAMETERS = 15_000_000
 V7_MAXIMUM_TRAINABLE_PARAMETERS = 150_000_000
 V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES = 44 * 1024**3
@@ -98,7 +102,7 @@ AUGMENTATION_POLICIES = (
     "intensity",
     "combined",
 )
-SEARCH_ARCHITECTURE_FAMILY_ID = "monai-unet-3d-bounded-family-v5"
+SEARCH_ARCHITECTURE_FAMILY_ID = "basicunet-3d-structural-bounded-family-v1"
 CANDIDATE_CONFIGURATION_FIELDS = (
     "maximum_epochs",
     "model_variant",
@@ -109,6 +113,10 @@ CANDIDATE_CONFIGURATION_FIELDS = (
     "kernel_profile",
     "residual_blocks",
     "deep_supervision_heads",
+    "convolutions_per_stage",
+    "dilation_profile",
+    "skip_fusion",
+    "downsample",
     "activation",
     "norm",
     "optimizer",
@@ -133,15 +141,14 @@ class FeTAUNetSearchConfiguration(BaseModel):
     in_channels: Literal[1] = 1
     out_channels: Literal[8] = 8
     model_variant: Literal[
-        "basic_unet", "unet_plain", "unet_residual", "mechanism_unet"
+        "basic_unet", "unet_plain", "unet_residual", "structural_basic_unet"
     ] = "basic_unet"
-    network_family: Literal["BasicUNet", "UNet", "DynUNet"] = "BasicUNet"
+    network_family: Literal["BasicUNet", "UNet"] = "BasicUNet"
     residual_units: Literal[0, 2] = 0
     feature_width: str = "baseline"
-    features: (
-        tuple[int, int, int, int, int]
-        | tuple[int, int, int, int, int, int]
-    ) = FEATURE_WIDTH_PROFILES["baseline"]
+    features: tuple[int, int, int, int, int] | tuple[int, int, int, int, int, int] = (
+        FEATURE_WIDTH_PROFILES["baseline"]
+    )
     channels: tuple[int, int, int, int, int] = RESIDUAL_CHANNEL_PROFILES["baseline"]
     strides: tuple[int, int, int, int] = (2, 2, 2, 2)
     activation: Literal["LeakyReLU", "ReLU", "PReLU"] = "LeakyReLU"
@@ -151,14 +158,18 @@ class FeTAUNetSearchConfiguration(BaseModel):
     norm_affine: Literal[True] = True
     norm_num_groups: Literal[8] = 8
     architecture_budget: Literal[
-        "legacy", "basicunet-15m-150m-v1", "mechanism-unet-15m-150m-v1"
+        "legacy", "basicunet-15m-150m-v1", "basicunet-structural-15m-150m-v1"
     ] = "legacy"
     upsample: Literal["deconv", "pixelshuffle", "nontrainable"] = "deconv"
-    kernel_profile: Literal[
-        "basic", "standard", "large_front", "context_deep"
-    ] = "basic"
+    kernel_profile: Literal["basic", "standard", "large_front", "context_deep"] = (
+        "basic"
+    )
     residual_blocks: bool = False
     deep_supervision_heads: Literal[0, 1, 2] = 0
+    convolutions_per_stage: Literal[1, 2, 3] = 2
+    dilation_profile: Literal["none", "deep", "multiscale"] = "none"
+    skip_fusion: Literal["concat", "add", "gated_concat"] = "concat"
+    downsample: Literal["max_pool", "strided_conv"] = "max_pool"
     spacing_mm: tuple[float, float, float] = (0.5, 0.5, 0.5)
     patch_size: tuple[int, int, int] = (128, 128, 128)
     batch_size: Literal[1] = 1
@@ -213,7 +224,7 @@ class FeTAUNetSearchConfiguration(BaseModel):
             payload.setdefault("model_variant", "basic_unet")
         if profile in V7_MECHANISM_FEATURE_PROFILES:
             payload.setdefault("architecture_budget", V7_ARCHITECTURE_BUDGET)
-            payload.setdefault("model_variant", "mechanism_unet")
+            payload.setdefault("model_variant", "structural_basic_unet")
         profile = payload.get("feature_width", "baseline")
         expected = ALL_FEATURE_WIDTH_PROFILES.get(profile)
         if expected is not None and "features" not in payload:
@@ -276,6 +287,10 @@ class FeTAUNetSearchConfiguration(BaseModel):
             or self.kernel_profile != "basic"
             or self.residual_blocks
             or self.deep_supervision_heads != 0
+            or self.convolutions_per_stage != 2
+            or self.dilation_profile != "none"
+            or self.skip_fusion != "concat"
+            or self.downsample != "max_pool"
         ):
             raise ValueError("feta_unet_search_fixed_context_modified")
         if self.architecture_budget == V6_ARCHITECTURE_BUDGET and (
@@ -283,13 +298,20 @@ class FeTAUNetSearchConfiguration(BaseModel):
             or self.feature_width not in {*V6_BASIC_UNET_FEATURE_PROFILES, "custom"}
             or (expected_features is not None and self.features != expected_features)
             or len(self.features) != 6
-            or any(channel % 8 or channel < 32 or channel > 1_280 for channel in self.features)
+            or any(
+                channel % 8 or channel < 32 or channel > 1_280
+                for channel in self.features
+            )
             or tuple(sorted(self.features[:5])) != self.features[:5]
             or not 32 <= self.features[5] <= 256
             or self.upsample not in V6_UPSAMPLE_MODES
             or self.kernel_profile != "basic"
             or self.residual_blocks
             or self.deep_supervision_heads != 0
+            or self.convolutions_per_stage != 2
+            or self.dilation_profile != "none"
+            or self.skip_fusion != "concat"
+            or self.downsample != "max_pool"
             or (
                 self.upsample == "pixelshuffle"
                 and self.feature_width != "custom"
@@ -298,13 +320,17 @@ class FeTAUNetSearchConfiguration(BaseModel):
         ):
             raise ValueError("feta_unet_search_v6_architecture_invalid")
         if self.architecture_budget == V7_ARCHITECTURE_BUDGET and (
-            self.model_variant != "mechanism_unet"
+            self.model_variant != "structural_basic_unet"
             or self.feature_width not in {*V7_MECHANISM_FEATURE_PROFILES, "custom"}
             or (expected_features is not None and self.features != expected_features)
             or len(self.features) not in (5, 6)
-            or any(channel % 8 or channel < 32 or channel > 1_024 for channel in self.features)
-            or tuple(sorted(self.features)) != self.features
-            or self.upsample != "deconv"
+            or any(
+                channel % 8 or channel < 32 or channel > 1_024
+                for channel in self.features
+            )
+            or tuple(sorted(self.features[:-1])) != self.features[:-1]
+            or not 32 <= self.features[-1] <= 256
+            or self.upsample not in V6_UPSAMPLE_MODES
             or self.kernel_profile not in V7_KERNEL_PROFILES
             or self.deep_supervision_heads >= len(self.features) - 1
         ):

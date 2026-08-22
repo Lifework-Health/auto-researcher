@@ -13,6 +13,8 @@ tested while a GPU campaign is running. It provides:
 - a deterministic hard-case panel balanced across MIAL and IRTK;
 - checkpoint, dataset, split, fold, and configuration identity checks;
 - per-class and reconstruction-subgroup Dice deltas;
+- per-class HD95, volume-similarity and topology deltas, when present in the
+  completed fold evidence, separating boundary, extent and topology signals;
 - counts of material improvements, regressions, and displaced errors;
 - pairwise candidate complementarity summaries;
 - learning-curve summaries;

@@ -2,23 +2,31 @@
 
 V7 is a separately identified fold-0 development campaign. It does not inspect
 the sealed holdout and does not seed from the external approximately 0.84 U-Net.
-It searches MONAI DynUNet mechanisms inside a 15M-150M trainable-parameter
-envelope and a 44 GiB measured peak-allocation ceiling.
+It searches a constrained structural BasicUNet grammar inside a 15M-150M
+trainable-parameter envelope and a 44 GiB measured peak-allocation ceiling.
+Every candidate retains a recognisable BasicUNet encoder-skip-decoder lineage;
+V7 does not switch to DynUNet.
 
 ## Frozen campaign shape
 
-- Four deterministic 25-epoch roots vary depth/stage allocation, receptive
-  field, residual blocks and deep supervision.
+- Four deterministic 25-epoch roots vary depth/stage allocation, convolutions
+  per stage, receptive field and dilation, residual blocks, skip fusion,
+  down/up operators and deep supervision.
 - Each root can produce three novel OpenEvolve structural mutations. Generation
   zero reuses the verified root and is not retrained.
+- The two verified V6 150-epoch finalists are bound into mutation context with
+  their exact configurations and scores. They are evidence parents only and
+  are not retrained as V7 screening candidates.
 - The strongest four structurally distinct parents receive two lineage-local
   Optuna trials each. Those trials hold architecture fixed and tune learning
-  rate, weight decay, dropout and Dice weight.
+  rate, weight decay, dropout, Dice weight, sampling ratio, loss family,
+  augmentation policy and schedule. These eight trials are the reserved
+  data/objective lane (8 of the 22 post-root exploration candidates, over 25%).
 - Two controlled DIRECT wildcards provide bounded mechanism/objective escapes.
 - The maximum promotion ladder is 8 to epoch 50, 4 to epoch 100 and 2 to epoch
-  150. It is a ceiling, not a promise: completion-aware scheduling stops new
-  exploration with 5.5 hours remaining and protects finalist graduation before
-  the 22-hour hard deadline.
+  150. Completion-aware scheduling stops new exploration with 6.75 hours
+  remaining. That reserve is mechanically checked against two worst-case
+  25-to-150 continuations at 90 seconds/epoch plus 30 minutes of reporting.
 
 ## Fail-closed launch order
 
@@ -64,15 +72,21 @@ envelope and a 44 GiB measured peak-allocation ceiling.
 
 ## Runtime interpretation
 
-The 22-hour deadline consists of a 20-hour nominal campaign and up to two hours
-of graduation-only grace. A block is admitted only when its conservative
+The 22-hour deadline consists of an exploration phase and a protected
+graduation/reporting phase. A block is admitted only when its conservative
 duration plus the appropriate reserve fits. When exploration no longer fits,
 the controller converts the request into a DIRECT continuation of the strongest
-diverse unfinished finalist to epoch 150. The final 30 minutes remain reserved
-for durable results and reporting.
+diverse unfinished finalist to epoch 150. The second graduation preferentially
+uses a different root lineage. The final 30 minutes remain reserved for durable
+results and reporting.
+
+After the two finalists complete, a separate inference-calibration lane may
+compare bounded overlap, Gaussian/constant blending and flip-TTA variants.
+Class-specific postprocessing is diagnostic-gated. Calibration results are kept
+separate from training gains and do not alter the training-search identity.
 
 OpenEvolve candidates must change at least one structural mechanism relative to
 their parent; training-only mutations are rejected. Local Optuna branches do the
-opposite: they preserve the exact evolved architecture and vary only the four
-registered continuous optimisation parameters. Candidate parameter count and
-observed GPU peak are verified again during execution.
+opposite: they preserve the exact evolved architecture and vary learning rate,
+weight decay, dropout, Dice weight, sampling ratio and schedule. Candidate
+parameter count and observed GPU peak are verified again during execution.

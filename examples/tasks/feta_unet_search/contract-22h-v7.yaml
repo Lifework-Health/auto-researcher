@@ -1,4 +1,4 @@
-contract_id: feta-mechanism-unet-fold0-v7-contract
+contract_id: feta-structural-basicunet-fold0-v7-contract
 schema_version: "1.0"
 task_id: feta_unet_search
 task_version: "1.0"
@@ -16,17 +16,17 @@ constraints:
   fold_hash: 45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e
   holdout_policy: sealed-no-evaluation
   search_scope: development-fold-0-only
-  architecture_identity: monai-unet-3d-bounded-family-v5
-  architecture_search_mode: mechanism-unet-15m-150m-v1
-  architecture_model_variants: [mechanism_unet]
-  architecture_feature_width_profiles: [v7_compact_5, v7_balanced_5, v7_asymmetric_5, v7_deep_6, v7_wide_5]
+  architecture_identity: basicunet-3d-structural-bounded-family-v1
+  architecture_search_mode: basicunet-structural-15m-150m-v1
+  architecture_model_variants: [structural_basic_unet]
+  architecture_feature_width_profiles: [v7_compact_5, v7_balanced_5, v7_asymmetric_5, v7_deep_6, v7_wide_6]
   architecture_trainable_parameter_minimum: 15000000
   architecture_trainable_parameter_maximum: 150000000
   maximum_peak_gpu_memory_bytes: 47244640256
   score_minimum: 0.0
   score_maximum: 1.0
   campaign_duration_seconds: 79200
-  campaign_finalisation_reserve_seconds: 19800
+  campaign_finalisation_reserve_seconds: 24300
 allowed_search_types: [DIRECT, OPTUNA, OPENEVOLVE]
 evaluator_id: feta-basic-unet-search-evaluator
 verifier_id: deterministic-verifier
