@@ -549,7 +549,7 @@ def test_v6_optuna_accepts_valid_fixed_custom_feature_vector():
             [96, 96, 192, 384, 768, 96],
             "feta_unet_search_v6_architecture_invalid",
         ),
-        ("custom", [96, 96, 160], "features.3"),
+        ("custom", [96, 96, 160], "features.*3"),
         ("custom", [24, 32, 64, 128, 256, 32], "v6_architecture_invalid"),
     ],
 )
@@ -749,12 +749,15 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         ),
     )
     assert component.seed_configuration()["seed_training_policy"] == {
-        "policy_version": "feta-unet-training-policy-v4",
+        "policy_version": "feta-unet-training-policy-v5",
         "model_variant": "unet_residual",
         "feature_width": "baseline",
         "features": [32, 32, 64, 128, 256, 32],
         "architecture_budget": "legacy",
         "upsample": "deconv",
+        "kernel_profile": "basic",
+        "residual_blocks": False,
+        "deep_supervision_heads": 0,
         "activation": "LeakyReLU",
         "norm": "instance",
         "optimizer": "AdamW",

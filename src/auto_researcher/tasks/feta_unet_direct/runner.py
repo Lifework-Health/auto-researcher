@@ -47,6 +47,7 @@ from auto_researcher.tasks.feta_unet_direct.trainer import (
     create_loss,
     create_optimizer,
     create_scheduler,
+    deep_supervision_training_loss,
     require_full_baseline_environment,
     seed_everything,
     sliding_window_predict,
@@ -84,7 +85,7 @@ FoldExecutor = Callable[
 ]
 
 MAX_CONSECUTIVE_AMP_SKIPS = 16
-SEARCH_RUNNER_ID = "feta-unet-family-fold0-development-runner-v4"
+SEARCH_RUNNER_ID = "feta-unet-family-fold0-development-runner-v5"
 SEARCH_DATA_LOADER_ID = "monai-unet-family-explicit-augmentation-loader-v4"
 
 
@@ -231,13 +232,25 @@ def _run_cuda_fold(
             V6_ARCHITECTURE_BUDGET,
             V6_MAXIMUM_TRAINABLE_PARAMETERS,
             V6_MINIMUM_TRAINABLE_PARAMETERS,
+            V7_ARCHITECTURE_BUDGET,
+            V7_MAXIMUM_TRAINABLE_PARAMETERS,
+            V7_MINIMUM_TRAINABLE_PARAMETERS,
         )
 
-        if (
-            configuration.architecture_budget != V6_ARCHITECTURE_BUDGET
-            or not V6_MINIMUM_TRAINABLE_PARAMETERS
+        parameter_bounds = {
+            V6_ARCHITECTURE_BUDGET: (
+                V6_MINIMUM_TRAINABLE_PARAMETERS,
+                V6_MAXIMUM_TRAINABLE_PARAMETERS,
+            ),
+            V7_ARCHITECTURE_BUDGET: (
+                V7_MINIMUM_TRAINABLE_PARAMETERS,
+                V7_MAXIMUM_TRAINABLE_PARAMETERS,
+            ),
+        }.get(configuration.architecture_budget)
+        if parameter_bounds is None or not (
+            parameter_bounds[0]
             <= candidate_trainable_parameters
-            <= V6_MAXIMUM_TRAINABLE_PARAMETERS
+            <= parameter_bounds[1]
         ):
             raise ValueError("feta_unet_architecture_parameter_budget_out_of_bounds")
     model = model.to("cuda")
@@ -364,7 +377,12 @@ def _run_cuda_fold(
                 output = model(inputs)
                 if not bool(torch.isfinite(output).all()):
                     raise ValueError("feta_unet_prediction_non_finite")
-                loss = loss_function(output, labels)
+                loss = deep_supervision_training_loss(
+                    output,
+                    labels,
+                    loss_function,
+                    configuration,
+                )
             if not bool(torch.isfinite(loss)):
                 raise ValueError("feta_unet_training_loss_non_finite")
             scale_before = float(scaler.get_scale())

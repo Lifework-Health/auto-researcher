@@ -25,6 +25,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V6_ARCHITECTURE_BUDGET,
     V6_BASIC_UNET_FEATURE_PROFILES,
     V6_OPTUNA_FEATURE_PROFILES,
+    V7_ARCHITECTURE_BUDGET,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
 )
@@ -38,6 +39,7 @@ from auto_researcher.tasks.models import TaskRuntimeContext
 PORTFOLIO_VERSION = "feta-unet-60-18-7-2-portfolio-v1"
 TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-18-6-8-4-2-v3"
 V6_TREE_PORTFOLIO_VERSION = "feta-basicunet-architecture-tree-12-18-6-10-5-3-v1"
+V7_MECHANISM_PORTFOLIO_VERSION = "feta-mechanism-unet-tree-4-12-8-2-8-4-2-v1"
 
 
 @dataclass(frozen=True)
@@ -247,6 +249,78 @@ class TreePortfolioPolicy:
             promotion_targets=promotions,
             wildcard_counts=wildcards,
             direct_root_configurations=tuple(validated),
+        )
+
+
+@dataclass(frozen=True)
+class V7MechanismPortfolioPolicy:
+    structural_roots: tuple[dict[str, Any], ...]
+    mutations_per_root: int
+    local_parent_count: int
+    optuna_trials_per_parent: int
+    wildcard_count: int
+    promotion_targets: dict[int, int]
+    wildcard_counts: dict[int, int]
+
+    @classmethod
+    def from_runtime(cls, context: TaskRuntimeContext) -> "V7MechanismPortfolioPolicy":
+        raw = context.task_options.get("campaign_portfolio")
+        if not isinstance(raw, dict) or raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION:
+            raise ValueError("feta_unet_v7_portfolio_invalid")
+        try:
+            roots = tuple(dict(item) for item in raw["structural_roots"])
+            mutations_per_root = int(raw["mutations_per_root"])
+            local_parent_count = int(raw["local_parent_count"])
+            optuna_trials_per_parent = int(raw["optuna_trials_per_parent"])
+            wildcard_count = int(raw["controlled_wildcard_count"])
+            promotions = {
+                int(name): int(value)
+                for name, value in dict(raw["promotion_targets"]).items()
+            }
+            wildcards = {
+                int(name): int(value)
+                for name, value in dict(raw["wildcard_counts"]).items()
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("feta_unet_v7_portfolio_invalid") from exc
+        if (
+            len(roots) != 4
+            or mutations_per_root != 3
+            or local_parent_count != 4
+            or optuna_trials_per_parent != 2
+            or wildcard_count != 2
+            or promotions != {50: 8, 100: 4, 150: 2}
+            or wildcards != {50: 2, 100: 1, 150: 0}
+        ):
+            raise ValueError("feta_unet_v7_portfolio_invalid")
+        validated: list[dict[str, Any]] = []
+        identities: set[str] = set()
+        for item in roots:
+            candidate = FeTAUNetSearchConfiguration.model_validate(item)
+            if (
+                candidate.maximum_epochs != 25
+                or candidate.architecture_budget != V7_ARCHITECTURE_BUDGET
+                or candidate.model_variant != "mechanism_unet"
+            ):
+                raise ValueError("feta_unet_v7_structural_root_invalid")
+            identity = trajectory_identity(candidate)
+            if identity in identities:
+                raise ValueError("feta_unet_v7_structural_root_duplicate")
+            identities.add(identity)
+            validated.append(
+                {
+                    name: candidate.model_dump(mode="json")[name]
+                    for name in CANDIDATE_CONFIGURATION_FIELDS
+                }
+            )
+        return cls(
+            structural_roots=tuple(validated),
+            mutations_per_root=mutations_per_root,
+            local_parent_count=local_parent_count,
+            optuna_trials_per_parent=optuna_trials_per_parent,
+            wildcard_count=wildcard_count,
+            promotion_targets=promotions,
+            wildcard_counts=wildcards,
         )
 
 
@@ -1229,6 +1303,350 @@ def apply_tree_portfolio_policy(
     return None
 
 
+def _v7_controlled_wildcard(
+    parent: CandidateEvidence,
+    existing: set[str],
+) -> dict[str, Any]:
+    base = {name: parent.configuration[name] for name in CANDIDATE_CONFIGURATION_FIELDS}
+    axes: tuple[tuple[str, tuple[Any, ...]], ...] = (
+        ("kernel_profile", ("standard", "large_front", "context_deep")),
+        ("residual_blocks", (False, True)),
+        ("deep_supervision_heads", (0, 1, 2)),
+        ("loss_variant", LOSS_VARIANTS),
+        ("positive_negative_ratio", ("1:1", "2:1", "3:1")),
+        ("augmentation_policy", AUGMENTATION_POLICIES),
+    )
+    for name, values in axes:
+        for value in values:
+            if value == base[name]:
+                continue
+            candidate = {**base, name: value, "maximum_epochs": 25}
+            try:
+                validated = FeTAUNetSearchConfiguration.model_validate(candidate)
+            except ValueError:
+                continue
+            if trajectory_identity(validated) not in existing:
+                return {
+                    key: validated.model_dump(mode="json")[key]
+                    for key in CANDIDATE_CONFIGURATION_FIELDS
+                }
+    raise ValueError("feta_unet_v7_controlled_wildcard_exhausted")
+
+
+def apply_v7_mechanism_portfolio_policy(
+    original: SearchRequest,
+    *,
+    run_id: str,
+    cycle: int,
+    events: tuple[DecisionEvent, ...],
+    runtime_context: TaskRuntimeContext,
+) -> SearchRequest | None:
+    """Run mechanism roots, structural evolution, local HPO and graduation."""
+
+    policy = V7MechanismPortfolioPolicy.from_runtime(runtime_context)
+    rows = _evidence(events)
+    candidates = _tree_candidates(events, rows)
+    roots = _unique_tree_stage(
+        tuple(
+            item
+            for item in candidates
+            if item.stage == "root" and item.action == SearchType.DIRECT
+        ),
+        "root",
+    )
+    for configuration in policy.structural_roots:
+        candidate = FeTAUNetSearchConfiguration.model_validate(configuration)
+        identity = trajectory_identity(candidate)
+        if identity in roots:
+            continue
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v7-mechanism-root",
+            search_type=SearchType.DIRECT,
+            search_space=configuration,
+            experiment_budget=1,
+            rationale=(
+                f"{V7_MECHANISM_PORTFOLIO_VERSION}: execute one frozen mechanism root with distinct depth, receptive-field, residual and deep-supervision structure."
+            ),
+            evidence_references=_tree_references(
+                stage="root", action=SearchType.DIRECT
+            ),
+        )
+
+    root_items = tuple(roots.values())
+    structural_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "structural-child"
+        and item.action == SearchType.OPENEVOLVE
+    )
+    for parent in root_items:
+        parent_id = parent.evidence.trajectory_identity
+        completed = {
+            item.evidence.trajectory_identity
+            for item in structural_candidates
+            if item.parent_trajectory == parent_id
+            and item.evidence.trajectory_identity != parent_id
+        }
+        if len(completed) >= policy.mutations_per_root:
+            continue
+        remaining = policy.mutations_per_root - len(completed)
+        evaluations = remaining + 1
+        search_space = default_openevolve_configuration(
+            candidate_evaluations=evaluations
+        )
+        search_space["openevolve"].update(
+            {
+                "maximum_failed_candidates": evaluations,
+                "maximum_consecutive_failures": evaluations,
+            }
+        )
+        search_space["campaign_context"] = {
+            "incumbent_training_policy": policy_from_configuration(
+                parent.evidence.configuration
+            ).model_dump(mode="json"),
+            "incumbent_primary_score": parent.evidence.best_score,
+            "incumbent_search_type": parent.action.value,
+            "incumbent_experiment_id": parent.evidence.experiment_id,
+            "required_model_variant": "mechanism_unet",
+            "required_architecture_budget": V7_ARCHITECTURE_BUDGET,
+            "mutation_objective": (
+                "Change at least one structural mechanism among depth or stage widths, kernel profile, residual blocks and deep-supervision heads before tuning continuous optimisation parameters."
+            ),
+            "prior_verified_results": [
+                {
+                    "search_type": parent.action.value,
+                    "primary_score": parent.evidence.best_score,
+                    "configuration": parent.evidence.configuration,
+                }
+            ],
+        }
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v7-structural-openevolve",
+            search_type=SearchType.OPENEVOLVE,
+            search_space=search_space,
+            experiment_budget=evaluations,
+            rationale=(
+                f"{V7_MECHANISM_PORTFOLIO_VERSION}: generate {remaining} novel structural mutations from root {parent_id[:12]}."
+            ),
+            evidence_references=_tree_references(
+                stage="structural-child",
+                action=SearchType.OPENEVOLVE,
+                parent=parent_id,
+                root=parent.root_trajectory,
+            ),
+        )
+
+    structural = tuple(
+        item
+        for item in _unique_tree_stage(
+            structural_candidates, "structural-child"
+        ).values()
+        if item.parent_trajectory != item.evidence.trajectory_identity
+    )
+    local_parents = _tree_cohort(
+        structural,
+        target=policy.local_parent_count,
+        wildcard_count=1,
+    )
+    local_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "local-optuna" and item.action == SearchType.OPTUNA
+    )
+    for parent in local_parents:
+        parent_id = parent.evidence.trajectory_identity
+        completed = {
+            item.evidence.trajectory_identity
+            for item in local_candidates
+            if item.parent_trajectory == parent_id
+        }
+        if len(completed) >= policy.optuna_trials_per_parent:
+            continue
+        remaining = policy.optuna_trials_per_parent - len(completed)
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v7-lineage-local-optuna",
+            search_type=SearchType.OPTUNA,
+            search_space=_local_optuna_space(
+                parent.evidence,
+                seed=_tree_seed(parent_id, SearchType.OPTUNA, len(completed)),
+                trial_budget=remaining,
+            ),
+            experiment_budget=remaining,
+            rationale=(
+                f"{V7_MECHANISM_PORTFOLIO_VERSION}: tune {remaining} local optimisation policies around structural lineage {parent_id[:12]} without changing its architecture."
+            ),
+            evidence_references=_tree_references(
+                stage="local-optuna",
+                action=SearchType.OPTUNA,
+                parent=parent_id,
+                root=parent.root_trajectory,
+            ),
+        )
+
+    local = tuple(_unique_tree_stage(local_candidates, "local-optuna").values())
+    wildcard_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "wildcard" and item.action == SearchType.DIRECT
+    )
+    wildcard_identities = {
+        item.evidence.trajectory_identity for item in wildcard_candidates
+    }
+    existing_25 = {
+        item.evidence.trajectory_identity
+        for item in (*root_items, *structural, *local, *wildcard_candidates)
+    }
+    if len(wildcard_identities) < policy.wildcard_count:
+        wildcard_parents = _tree_cohort(
+            (*structural, *local),
+            target=policy.wildcard_count,
+            wildcard_count=1,
+        )
+        parent = wildcard_parents[len(wildcard_identities)]
+        configuration = _v7_controlled_wildcard(parent.evidence, existing_25)
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v7-controlled-wildcard",
+            search_type=SearchType.DIRECT,
+            search_space=configuration,
+            experiment_budget=1,
+            rationale=(
+                f"{V7_MECHANISM_PORTFOLIO_VERSION}: execute one controlled mechanism or objective escape from lineage {parent.evidence.trajectory_identity[:12]}."
+            ),
+            evidence_references=_tree_references(
+                stage="wildcard",
+                action=SearchType.DIRECT,
+                parent=parent.evidence.trajectory_identity,
+                root=parent.root_trajectory,
+            ),
+        )
+
+    source = tuple((*root_items, *structural, *local, *wildcard_candidates))
+    source_fidelity = 25
+    for target_fidelity in (50, 100, 150):
+        cohort = _tree_cohort(
+            source,
+            target=policy.promotion_targets[target_fidelity],
+            wildcard_count=policy.wildcard_counts[target_fidelity],
+        )
+        completed = _unique_tree_stage(candidates, f"promote-{target_fidelity}")
+        pending = next(
+            (
+                item
+                for item in cohort
+                if item.evidence.trajectory_identity not in completed
+            ),
+            None,
+        )
+        if pending is not None:
+            configuration = dict(pending.evidence.configuration)
+            configuration["maximum_epochs"] = target_fidelity
+            return _request(
+                original,
+                run_id=run_id,
+                cycle=cycle,
+                stage=f"v7-promote-{source_fidelity}-{target_fidelity}",
+                search_type=SearchType.DIRECT,
+                search_space=configuration,
+                experiment_budget=1,
+                rationale=(
+                    f"{V7_MECHANISM_PORTFOLIO_VERSION}: continue diverse lineage {pending.evidence.trajectory_identity[:12]} from {source_fidelity} to {target_fidelity} epochs."
+                ),
+                evidence_references=_tree_references(
+                    stage=f"promote-{target_fidelity}",
+                    action=pending.action,
+                    parent=pending.evidence.trajectory_identity,
+                    root=pending.root_trajectory,
+                    extra=(
+                        pending.evidence.experiment_id,
+                        f"promotion-from-epoch:{source_fidelity}",
+                        f"origin-search-type:{pending.action.value}",
+                    ),
+                ),
+            )
+        source = tuple(completed.values())
+        source_fidelity = target_fidelity
+    return None
+
+
+def apply_v7_deadline_graduation_policy(
+    original: SearchRequest,
+    *,
+    run_id: str,
+    cycle: int,
+    events: tuple[DecisionEvent, ...],
+    runtime_context: TaskRuntimeContext,
+) -> SearchRequest | None:
+    """Stop exploration and graduate the strongest diverse pair to epoch 150."""
+
+    policy = V7MechanismPortfolioPolicy.from_runtime(runtime_context)
+    candidates = _tree_candidates(events, _evidence(events))
+    highest: dict[str, TreeCandidate] = {}
+    for item in candidates:
+        identity = item.evidence.trajectory_identity
+        current = highest.get(identity)
+        if current is None or item.evidence.fidelity > current.evidence.fidelity:
+            highest[identity] = item
+    if not highest:
+        return None
+    completed = tuple(
+        item for item in highest.values() if item.evidence.fidelity == 150
+    )
+    remaining_slots = policy.promotion_targets[150] - len(completed)
+    if remaining_slots <= 0:
+        return None
+    pool = tuple(
+        item for item in highest.values() if item.evidence.fidelity < 150
+    )
+    if not pool:
+        return None
+    finalists = _tree_cohort(
+        pool,
+        target=min(remaining_slots, len(pool)),
+        wildcard_count=0,
+    )
+    pending = finalists[0] if finalists else None
+    if pending is None:
+        return None
+    configuration = dict(pending.evidence.configuration)
+    configuration["maximum_epochs"] = 150
+    return _request(
+        original,
+        run_id=run_id,
+        cycle=cycle,
+        stage="v7-deadline-graduation",
+        search_type=SearchType.DIRECT,
+        search_space=configuration,
+        experiment_budget=1,
+        rationale=(
+            f"{V7_MECHANISM_PORTFOLIO_VERSION}: protected deadline mode; stop new exploration and continue diverse finalist {pending.evidence.trajectory_identity[:12]} from {pending.evidence.fidelity} directly to 150 epochs."
+        ),
+        evidence_references=_tree_references(
+            stage="promote-150",
+            action=pending.action,
+            parent=pending.evidence.trajectory_identity,
+            root=pending.root_trajectory,
+            extra=(
+                pending.evidence.experiment_id,
+                f"promotion-from-epoch:{pending.evidence.fidelity}",
+                f"origin-search-type:{pending.action.value}",
+                "graduation-mode:protected-deadline",
+            ),
+        ),
+    )
+
+
 def apply_portfolio_policy(
     original: SearchRequest,
     *,
@@ -1238,6 +1656,17 @@ def apply_portfolio_policy(
     runtime_context: TaskRuntimeContext,
 ) -> SearchRequest | None:
     raw_policy = runtime_context.task_options.get("campaign_portfolio")
+    if (
+        isinstance(raw_policy, dict)
+        and raw_policy.get("version") == V7_MECHANISM_PORTFOLIO_VERSION
+    ):
+        return apply_v7_mechanism_portfolio_policy(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            events=events,
+            runtime_context=runtime_context,
+        )
     if (
         isinstance(raw_policy, dict)
         and raw_policy.get("version")

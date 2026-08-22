@@ -80,6 +80,28 @@ def create_scheduler(optimizer, configuration: FeTAUNetDirectConfiguration):
     raise ValueError("feta_unet_lr_schedule_invalid")
 
 
+def deep_supervision_training_loss(
+    prediction,
+    target,
+    loss_function,
+    configuration: FeTAUNetDirectConfiguration,
+):
+    """Apply geometrically decaying auxiliary-head weights for V7 DynUNet."""
+
+    heads = int(getattr(configuration, "deep_supervision_heads", 0))
+    if heads == 0:
+        return loss_function(prediction, target)
+    if prediction.ndim != target.ndim + 1 or prediction.shape[1] != heads + 1:
+        raise ValueError("feta_unet_deep_supervision_output_invalid")
+    logits = prediction.unbind(dim=1)
+    weights = tuple(0.5**index for index in range(len(logits)))
+    normaliser = sum(weights)
+    return sum(
+        weight * loss_function(head, target)
+        for weight, head in zip(weights, logits, strict=True)
+    ) / normaliser
+
+
 def sliding_window_predict(inputs, model, configuration: FeTAUNetDirectConfiguration):
     try:
         from monai.inferers import sliding_window_inference
@@ -100,6 +122,7 @@ __all__ = [
     "create_loss",
     "create_optimizer",
     "create_scheduler",
+    "deep_supervision_training_loss",
     "require_full_baseline_environment",
     "seed_everything",
     "sliding_window_predict",

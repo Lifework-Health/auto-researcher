@@ -19,6 +19,7 @@ from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
 from auto_researcher.tasks.protocols import (
     CampaignDurationCapableTask,
+    CampaignDeadlinePortfolioCapableTask,
     CampaignPortfolioCapableTask,
     CampaignRequestEnrichmentCapableTask,
 )
@@ -277,6 +278,37 @@ def plan_search(
             reserve = float(raw_reserve)
             if estimated + reserve > remaining_time:
                 deadline_stop_reason = "campaign_insufficient_time_for_proposed_block"
+                if isinstance(
+                    dependencies.task, CampaignDeadlinePortfolioCapableTask
+                ):
+                    completion = dependencies.task.apply_campaign_deadline_policy(
+                        request,
+                        run_id=state["run_id"],
+                        cycle=state["cycle"],
+                        events=tuple(
+                            dependencies.provenance_store.list_events(state["run_id"])
+                        ),
+                        remaining_seconds=remaining_time,
+                        runtime_context=dependencies.runtime_context,
+                    )
+                    if completion is not None:
+                        completion_estimate = (
+                            dependencies.task.estimate_search_duration_seconds(
+                                completion, dependencies.runtime_context
+                            )
+                        )
+                        reporting_reserve = dependencies.runtime_context.task_options.get(
+                            "campaign_reporting_reserve_seconds", reserve
+                        )
+                        if (
+                            isinstance(reporting_reserve, bool)
+                            or not isinstance(reporting_reserve, (int, float))
+                            or reporting_reserve < 0
+                        ):
+                            raise ValueError("campaign_reporting_reserve_invalid")
+                        if completion_estimate + float(reporting_reserve) <= remaining_time:
+                            request = completion
+                            deadline_stop_reason = None
         except (TypeError, ValueError) as exc:
             errors.append(str(exc))
     update = {

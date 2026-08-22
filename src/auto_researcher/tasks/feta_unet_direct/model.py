@@ -27,6 +27,11 @@ def architecture_identity(configuration: FeTAUNetDirectConfiguration) -> str:
         "channels": list(getattr(configuration, "channels", (32, 64, 128, 256, 512))),
         "strides": list(getattr(configuration, "strides", (2, 2, 2, 2))),
         "residual_units": int(getattr(configuration, "residual_units", 0)),
+        "kernel_profile": str(getattr(configuration, "kernel_profile", "basic")),
+        "residual_blocks": bool(getattr(configuration, "residual_blocks", False)),
+        "deep_supervision_heads": int(
+            getattr(configuration, "deep_supervision_heads", 0)
+        ),
         "activation": configuration.activation,
         "norm": configuration.norm,
         "upsample": configuration.upsample,
@@ -73,7 +78,7 @@ def _normalisation(configuration: FeTAUNetDirectConfiguration):
 
 def create_unet_model(configuration: FeTAUNetDirectConfiguration):
     try:
-        from monai.networks.nets import BasicUNet, UNet
+        from monai.networks.nets import BasicUNet, DynUNet, UNet
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
     model_variant = str(getattr(configuration, "model_variant", "basic_unet"))
@@ -97,6 +102,37 @@ def create_unet_model(configuration: FeTAUNetDirectConfiguration):
             channels=tuple(getattr(configuration, "channels")),
             strides=tuple(getattr(configuration, "strides")),
             num_res_units=int(getattr(configuration, "residual_units")),
+        )
+    if model_variant == "mechanism_unet":
+        filters = tuple(int(value) for value in configuration.features)
+        depth = len(filters)
+        kernel_profile = str(getattr(configuration, "kernel_profile", "standard"))
+        if kernel_profile == "standard":
+            kernels = (3,) * depth
+        elif kernel_profile == "large_front":
+            kernels = (5, *((3,) * (depth - 1)))
+        elif kernel_profile == "context_deep":
+            kernels = (3, 3, *((5,) * (depth - 3)), 3)
+        else:
+            raise ValueError("feta_unet_kernel_profile_invalid")
+        deep_supervision_heads = int(
+            getattr(configuration, "deep_supervision_heads", 0)
+        )
+        return DynUNet(
+            spatial_dims=configuration.spatial_dims,
+            in_channels=configuration.in_channels,
+            out_channels=configuration.out_channels,
+            kernel_size=kernels,
+            strides=(1, *((2,) * (depth - 1))),
+            upsample_kernel_size=(2,) * (depth - 1),
+            filters=filters,
+            dropout=configuration.dropout,
+            norm_name=_normalisation(configuration),
+            act_name=_activation(configuration),
+            deep_supervision=deep_supervision_heads > 0,
+            deep_supr_num=max(1, deep_supervision_heads),
+            res_block=bool(getattr(configuration, "residual_blocks", False)),
+            trans_bias=False,
         )
     raise ValueError("feta_unet_model_variant_invalid")
 
