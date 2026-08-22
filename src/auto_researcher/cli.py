@@ -727,7 +727,11 @@ def run(
             experiment,
             checkpoint_db,
             provenance_db,
-            optuna_db if search_type == SearchType.OPTUNA else None,
+            (
+                optuna_db
+                if SearchType.OPTUNA in contract.allowed_search_types
+                else None
+            ),
             agent_calls_db,
             knowledge_retrievals_db,
             model_client=model_client,
@@ -1040,7 +1044,11 @@ def resume_cli(
             experiment,
             checkpoint_db,
             provenance_db,
-            optuna_db if search_type == SearchType.OPTUNA else None,
+            (
+                optuna_db
+                if SearchType.OPTUNA in contract.allowed_search_types
+                else None
+            ),
             agent_calls_db,
             knowledge_retrievals_db,
             model_client=model_client,

@@ -790,9 +790,10 @@ def task_sqlite_dependencies(
     optuna_handle = (
         sqlite_storage(optuna_file)
         if (
-            search_type == SearchType.OPTUNA
-            and optuna_file is not None
+            optuna_file is not None
             and importlib.util.find_spec("optuna") is not None
+            and isinstance(task, OptunaCapableTask)
+            and SearchType.OPTUNA in contract.allowed_search_types
         )
         else None
     )

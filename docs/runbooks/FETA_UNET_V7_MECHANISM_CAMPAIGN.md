@@ -70,7 +70,13 @@ V7 does not switch to DynUNet.
    GPU, OOM, non-finite output/loss, identity mismatch or ceiling breach is a
    hard `PRE-RUN BLOCKED` condition.
 
-5. Only after both gates pass, make a fresh control directory, resolve the live
+5. Run the adaptive-backend capability gate with disposable SQLite stores. V7
+   begins with DIRECT roots but later routes lineage-local Optuna studies, so
+   the locked runtime must expose the Optuna backend before durable campaign
+   state is created. The production launch passes the dedicated Optuna store
+   even though the configured initial search type is DIRECT.
+
+6. Only after all gates pass, make a fresh control directory, resolve the live
    model credential in the launch shell, and start the campaign under `nohup`.
    Keep the PID, launcher log, configuration, contract, static report and CUDA
    report in the protected runtime root.

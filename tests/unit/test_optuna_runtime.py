@@ -71,3 +71,28 @@ def test_agent_call_store_must_be_separate_from_checkpoint_and_provenance(tmp_pa
             agent_calls_path=provenance,
         ):
             pass
+
+
+def test_sqlite_optuna_backend_is_available_to_adaptive_direct_campaign(tmp_path):
+    pytest.importorskip("optuna")
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=2,
+    )
+    with task_sqlite_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        contract,
+        {
+            "model_family": "tree",
+            "complexity": 4,
+            "learning_rate": 0.05,
+        },
+        tmp_path / "checkpoint.sqlite",
+        tmp_path / "provenance.sqlite",
+        tmp_path / "optuna.sqlite",
+        search_type=SearchType.DIRECT,
+    ) as dependencies:
+        capability = dependencies.search_capabilities[SearchType.OPTUNA]
+        assert capability.available is True
+        assert dependencies.optuna_backend is not None
