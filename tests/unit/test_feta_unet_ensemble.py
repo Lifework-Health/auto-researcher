@@ -26,6 +26,7 @@ from auto_researcher.tasks.feta_unet_ensemble.evaluation import (
     _normalise_configuration,
     _public_summary,
     candidate_subsets,
+    select_best_exploratory_ensemble,
 )
 
 
@@ -151,6 +152,20 @@ def test_candidate_subsets_cover_every_equal_weight_combination():
         ("v5", "v6a", "v6b"),
         ("v4", "v5", "v6a", "v6b"),
     )
+
+
+def test_best_exploratory_ensemble_excludes_primary_candidate():
+    primary = {
+        "primary_pre_specified": True,
+        "metrics": {"mean_subject_macro_dice": 0.83},
+    }
+    exploratory = {
+        "primary_pre_specified": False,
+        "metrics": {"mean_subject_macro_dice": 0.82},
+    }
+    assert select_best_exploratory_ensemble((primary, exploratory)) is exploratory
+    with pytest.raises(ValueError, match="exploratory_candidate_missing"):
+        select_best_exploratory_ensemble((primary,))
 
 
 def test_historical_v4_configuration_normalises_for_inference():

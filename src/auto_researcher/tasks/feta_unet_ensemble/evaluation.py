@@ -201,6 +201,22 @@ def candidate_subsets(member_ids: Sequence[str]) -> tuple[tuple[str, ...], ...]:
     )
 
 
+def select_best_exploratory_ensemble(
+    candidates: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """Select only a non-primary candidate for exploratory reporting."""
+
+    exploratory = tuple(
+        item for item in candidates if item.get("primary_pre_specified") is False
+    )
+    if not exploratory:
+        raise ValueError("feta_unet_ensemble_exploratory_candidate_missing")
+    return max(
+        exploratory,
+        key=lambda item: float(item["metrics"]["mean_subject_macro_dice"]),
+    )
+
+
 def _native_label(subject: FeTASubject):
     try:
         import nibabel as nib
@@ -485,10 +501,7 @@ def evaluate_manifest(
     primary = next(
         item for item in ensemble_results if item["primary_pre_specified"]
     )
-    best_exploratory = max(
-        ensemble_results,
-        key=lambda item: float(item["metrics"]["mean_subject_macro_dice"]),
-    )
+    best_exploratory = select_best_exploratory_ensemble(ensemble_results)
     report = {
         "schema_version": ENSEMBLE_EVALUATION_SCHEMA_VERSION,
         "ensemble_id": primary_specification.ensemble_id,
@@ -564,4 +577,5 @@ __all__ = [
     "candidate_subsets",
     "evaluate_manifest",
     "load_member_source",
+    "select_best_exploratory_ensemble",
 ]
