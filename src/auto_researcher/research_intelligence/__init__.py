@@ -1,6 +1,21 @@
 """Offline-first, task-agnostic Research Intelligence contracts."""
 
 from auto_researcher.research_intelligence.brief import DeterministicBriefBuilder
+
+from auto_researcher.research_intelligence.director_scout import (
+    LiteratureEvidenceCandidate,
+    LiteratureEvidenceItem,
+    LiteratureScoutBrief,
+    LiteratureScoutMode,
+    LiteratureScoutPolicy,
+    LiteratureScoutProvider,
+    LiteratureScoutRequest,
+    LiteratureScoutShadowReport,
+    LiteratureSourceType,
+    build_literature_scout_brief,
+    evaluate_literature_scout_shadow,
+    literature_brief_as_landscape_evidence,
+)
 from auto_researcher.research_intelligence.models import (
     ApplicabilityAssessment,
     ApplicabilityLevel,
@@ -50,6 +65,15 @@ __all__ = [
     "EvidenceStore",
     "FindingCandidate",
     "FindingStance",
+    "LiteratureEvidenceCandidate",
+    "LiteratureEvidenceItem",
+    "LiteratureScoutBrief",
+    "LiteratureScoutMode",
+    "LiteratureScoutPolicy",
+    "LiteratureScoutProvider",
+    "LiteratureScoutRequest",
+    "LiteratureScoutShadowReport",
+    "LiteratureSourceType",
     "OfflineResearchScout",
     "QuantitativeResult",
     "ResearchIntelligenceBrief",
@@ -65,4 +89,7 @@ __all__ = [
     "SourceType",
     "SynthesisResult",
     "TrustClassification",
+    "build_literature_scout_brief",
+    "evaluate_literature_scout_shadow",
+    "literature_brief_as_landscape_evidence",
 ]

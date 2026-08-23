@@ -120,7 +120,14 @@ class ResearchDirective(AgentModel):
 
 class ResearchLandscapeEvidence(AgentModel):
     evidence_id: str = Field(min_length=1)
-    evidence_type: Literal["V7", "REQ11", "ENSEMBLE", "RUNTIME", "FAILURE"]
+    evidence_type: Literal[
+        "V7",
+        "REQ11",
+        "ENSEMBLE",
+        "RUNTIME",
+        "FAILURE",
+        "LITERATURE",
+    ]
     evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_reference: str = Field(min_length=1)
     summary: str = Field(min_length=1, max_length=1_000)
