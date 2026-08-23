@@ -20,6 +20,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     FeTAUNetSearchConfiguration,
 )
 from auto_researcher.tasks.feta_unet_search.v8_preflight import (
+    V8_A6000_EPOCH_WORK,
     V8_FIDELITY_TARGETS,
     V8_PORTFOLIO_VERSION,
     build_v8_preflight_plan,
@@ -272,6 +273,11 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "launch_gate_not_passed",
     ]
     assert plan["model_calls_performed"] == 0
+    assert plan["a6000_epoch_work"] == {
+        "structural_basic_unet": 1075,
+        "dynunet": 245,
+    }
+    assert plan["runtime_envelope_valid"] is False
     assert plan["selected_v7_parent_count"] == 2
     assert plan["research_director"] == {
         "model_id": "claude-opus-5",
@@ -432,7 +438,7 @@ def test_v8_agent_context_exposes_both_families_but_only_evolves_basicunet():
     ] == ["uniform", "shallow_to_deep", "deep_to_shallow", "bottleneck_heavy"]
 
 
-def test_v8_controller_replays_exact_44_to_3_envelope_and_confirmation():
+def test_v8_controller_replays_exact_44_to_3_envelope():
     events, requests = _replay_v8_portfolio()
     candidates = _tree_candidates(tuple(events), _evidence(tuple(events)))
 
@@ -455,7 +461,6 @@ def test_v8_controller_replays_exact_44_to_3_envelope_and_confirmation():
             "v8-promote-50",
             "v8-promote-100",
             "v8-promote-150",
-            "v8-confirmation-150",
         }
     }
     assert stage_counts == {
@@ -469,7 +474,6 @@ def test_v8_controller_replays_exact_44_to_3_envelope_and_confirmation():
         "v8-promote-50": 8,
         "v8-promote-100": 4,
         "v8-promote-150": 3,
-        "v8-confirmation-150": 1,
     }
     rung10 = {
         item.evidence.trajectory_identity
@@ -477,8 +481,40 @@ def test_v8_controller_replays_exact_44_to_3_envelope_and_confirmation():
         if item.evidence.fidelity == 10
     }
     assert len(rung10) == 44
-    assert requests[-1].evidence_references[-1] == "confirmation-seed:20260824"
-    assert requests[-1].search_space["seed"] == 20260824
+    for fidelity, maximum_dynunet in ((15, 4), (25, 2), (50, 1), (100, 1), (150, 1)):
+        assert (
+            sum(
+                item.evidence.configuration["model_variant"] == "dynunet"
+                for item in candidates
+                if item.evidence.fidelity == fidelity
+            )
+            <= maximum_dynunet
+        )
+    increments = {10: 10, 15: 5, 25: 10, 50: 25, 100: 50, 150: 50}
+    measured_work = {"structural_basic_unet": 0, "dynunet": 0}
+    for item in candidates:
+        measured_work[item.evidence.configuration["model_variant"]] += increments[
+            item.evidence.fidelity
+        ]
+    assert sum(measured_work.values()) == sum(V8_A6000_EPOCH_WORK.values())
+    assert measured_work["dynunet"] <= V8_A6000_EPOCH_WORK["dynunet"]
+    local = [item for item in candidates if item.stage == "v8-local-optuna"]
+    assert (
+        sum(item.evidence.configuration["model_variant"] == "dynunet" for item in local)
+        == 4
+    )
+    assert (
+        sum(
+            item.evidence.configuration["model_variant"] == "structural_basic_unet"
+            for item in local
+        )
+        == 22
+    )
+    assert _stage(requests[-1]) == "v8-promote-150"
+    assert (
+        _options()["campaign_portfolio"]["independent_confirmation_execution"]
+        == "l4_sidecar_after_champion_freeze"
+    )
 
 
 def test_v8_local_optuna_replay_fixes_every_architectural_field():

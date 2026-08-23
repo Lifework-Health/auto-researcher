@@ -45,6 +45,7 @@ V8_DURATION_SECONDS = 32 * 60 * 60
 V8_FINALISATION_RESERVE_SECONDS = 6 * 60 * 60
 V8_RESEARCH_DIRECTOR_MODEL = "claude-opus-5"
 V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS = 8
+V8_A6000_EPOCH_WORK = {"structural_basic_unet": 1_075, "dynunet": 245}
 
 
 def _mapping(path: Path, reason: str) -> dict[str, Any]:
@@ -188,6 +189,10 @@ def build_v8_preflight_plan(
         or sum(V8_INITIAL_ALLOCATION.values()) != V8_FIDELITY_TARGETS[10]
         or portfolio.get("architecture_change_target") != 14
         or portfolio.get("independent_confirmation_count") != 1
+        or portfolio.get("independent_confirmation_execution")
+        != "l4_sidecar_after_champion_freeze"
+        or portfolio.get("local_optuna_allocation")
+        != {"structural_basic_unet": 22, "dynunet": 4}
     ):
         raise ValueError("feta_unet_v8_portfolio_invalid")
 
@@ -210,7 +215,7 @@ def build_v8_preflight_plan(
             "ensemble_complementarity",
         ],
         "minimum_alternative_evidence_count": 2,
-        "maximum_promotions_to_50": 2,
+        "maximum_promotions_to_50": 1,
         "cross_family_mutation": False,
     }:
         raise ValueError("feta_unet_v8_dynunet_gate_invalid")
@@ -308,7 +313,44 @@ def build_v8_preflight_plan(
         blockers.append("v7_parent_selection_pending")
     if options.get("v7_parent_manifest_sha256") != payload_hash(selected):
         blockers.append("v7_parent_manifest_pending")
-    if options.get("campaign_runtime_rates_finalised") is not True:
+    raw_rates = options.get("campaign_seconds_per_epoch_by_model_variant")
+    if not isinstance(raw_rates, dict):
+        raise ValueError("feta_unet_v8_runtime_rates_invalid")
+    raw_structural_rate = raw_rates.get("structural_basic_unet")
+    raw_dynunet_rate = raw_rates.get("dynunet")
+    raw_reporting_reserve = options.get("campaign_reporting_reserve_seconds")
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in (
+            raw_structural_rate,
+            raw_dynunet_rate,
+            raw_reporting_reserve,
+        )
+    ):
+        raise ValueError("feta_unet_v8_runtime_rates_invalid")
+    try:
+        structural_rate = float(raw_structural_rate)
+        dynunet_rate = float(raw_dynunet_rate)
+        reporting_reserve = float(raw_reporting_reserve)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("feta_unet_v8_runtime_rates_invalid") from exc
+    planned_training_seconds = (
+        V8_A6000_EPOCH_WORK["structural_basic_unet"] * structural_rate
+        + V8_A6000_EPOCH_WORK["dynunet"] * dynunet_rate
+    )
+    graduation_seconds = 100 * structural_rate + 50 * dynunet_rate
+    runtime_envelope_valid = (
+        structural_rate > 0
+        and dynunet_rate > 0
+        and dynunet_rate >= structural_rate
+        and reporting_reserve >= 0
+        and planned_training_seconds + reporting_reserve <= V8_DURATION_SECONDS
+        and graduation_seconds <= V8_FINALISATION_RESERVE_SECONDS
+    )
+    if (
+        options.get("campaign_runtime_rates_finalised") is not True
+        or not runtime_envelope_valid
+    ):
         blockers.append("runtime_coefficients_pending")
     if options.get("campaign_portfolio_controller_implemented") is not True:
         blockers.append("v8_portfolio_controller_pending")
@@ -339,6 +381,12 @@ def build_v8_preflight_plan(
         "duration_seconds": V8_DURATION_SECONDS,
         "finalisation_reserve_seconds": V8_FINALISATION_RESERVE_SECONDS,
         "maximum_peak_gpu_memory_bytes": V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+        "a6000_epoch_work": V8_A6000_EPOCH_WORK,
+        "planned_training_seconds": planned_training_seconds,
+        "planned_training_hours": planned_training_seconds / 3_600,
+        "graduation_seconds": graduation_seconds,
+        "graduation_hours": graduation_seconds / 3_600,
+        "runtime_envelope_valid": runtime_envelope_valid,
         "research_director": {
             "model_id": V8_RESEARCH_DIRECTOR_MODEL,
             "thinking": "adaptive",

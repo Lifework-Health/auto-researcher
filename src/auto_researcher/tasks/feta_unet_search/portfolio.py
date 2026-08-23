@@ -450,6 +450,7 @@ class V8PortfolioPolicy:
     direct_designs: tuple[str, ...]
     fidelity_targets: dict[int, int]
     operator_limits: dict[SearchType, int]
+    local_optuna_allocation: dict[str, int]
 
     @classmethod
     def from_runtime(cls, context: TaskRuntimeContext) -> "V8PortfolioPolicy":
@@ -477,6 +478,10 @@ class V8PortfolioPolicy:
             direct_designs = tuple(
                 str(item) for item in raw["controlled_direct_designs"]
             )
+            local_optuna_allocation = {
+                str(name): int(value)
+                for name, value in dict(raw["local_optuna_allocation"]).items()
+            }
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("feta_unet_v8_portfolio_invalid") from exc
         if (
@@ -486,6 +491,22 @@ class V8PortfolioPolicy:
             or len(parents) != 2
             or len(dynunet_roots) != 4
             or len(direct_designs) != 4
+            or local_optuna_allocation != {"structural_basic_unet": 22, "dynunet": 4}
+            or raw.get("independent_confirmation_execution")
+            != "l4_sidecar_after_champion_freeze"
+            or raw.get("dynunet_gate")
+            != {
+                "comparison_fidelity": 25,
+                "absolute_score_gap_maximum": 0.015,
+                "alternative_evidence": [
+                    "superior_trajectory_slope",
+                    "req11_priority_gain",
+                    "ensemble_complementarity",
+                ],
+                "minimum_alternative_evidence_count": 2,
+                "maximum_promotions_to_50": 1,
+                "cross_family_mutation": False,
+            }
         ):
             raise ValueError("feta_unet_v8_portfolio_invalid")
 
@@ -548,6 +569,7 @@ class V8PortfolioPolicy:
             direct_designs=direct_designs,
             fidelity_targets=targets,
             operator_limits=limits,
+            local_optuna_allocation=local_optuna_allocation,
         )
 
 
@@ -2017,7 +2039,7 @@ def _v8_promotion_cohort(
 ) -> tuple[TreeCandidate, ...]:
     eligible = source
     if target_fidelity in {15, 25}:
-        dynunet_cap = {15: 10, 25: 6}[target_fidelity]
+        dynunet_cap = {15: 4, 25: 2}[target_fidelity]
         ranked = sorted(
             source,
             key=lambda item: (
@@ -2063,7 +2085,7 @@ def _v8_promotion_cohort(
                     reverse=True,
                 )
                 if best_structural - item.evidence.rung_score <= 0.015
-            )[:2]
+            )[:1]
             eligible = (*structural, *admitted_dynunet)
     return _tree_cohort(eligible, target=target, wildcard_count=min(2, target // 4))
 
@@ -2191,10 +2213,24 @@ def apply_v8_portfolio_policy(
         for item in candidates
         if item.stage == "v8-local-optuna" and item.action == SearchType.OPTUNA
     )
+    structural_parents = tuple(
+        item
+        for item in branch_parents
+        if item.evidence.configuration["model_variant"] != "dynunet"
+    )
     local_targets = {
-        item.evidence.trajectory_identity: (3 if index < 2 else 2)
-        for index, item in enumerate(branch_parents)
+        item.evidence.trajectory_identity: (3 if index < 6 else 2)
+        for index, item in enumerate(structural_parents)
     }
+    local_targets.update(
+        {
+            item.evidence.trajectory_identity: 1
+            for item in branch_parents
+            if item.evidence.configuration["model_variant"] == "dynunet"
+        }
+    )
+    if sum(local_targets.values()) != policy.operator_limits[SearchType.OPTUNA]:
+        raise ValueError("feta_unet_v8_local_optuna_allocation_invalid")
     for parent in branch_parents:
         parent_id = parent.evidence.trajectory_identity
         completed = {
@@ -2370,38 +2406,6 @@ def apply_v8_portfolio_policy(
         source = tuple(completed.values())
         source_fidelity = target_fidelity
 
-    confirmations = _unique_tree_stage(candidates, "v8-confirmation-150")
-    if not confirmations:
-        finalists = _unique_tree_stage(candidates, "v8-promote-150")
-        champion = max(
-            finalists.values(),
-            key=lambda item: (
-                item.evidence.best_score,
-                item.evidence.rung_score,
-                item.evidence.trajectory_identity,
-            ),
-        )
-        configuration = dict(champion.evidence.configuration)
-        configuration.update({"maximum_epochs": 150, "seed": 20260824})
-        return _request(
-            original,
-            run_id=run_id,
-            cycle=cycle,
-            stage="v8-independent-confirmation",
-            search_type=SearchType.DIRECT,
-            search_space=configuration,
-            experiment_budget=1,
-            rationale=(
-                f"{V8_PORTFOLIO_VERSION}: independently confirm the selected development-fold champion with a predeclared alternate training seed."
-            ),
-            evidence_references=_tree_references(
-                stage="v8-confirmation-150",
-                action=SearchType.DIRECT,
-                parent=champion.evidence.trajectory_identity,
-                root=champion.root_trajectory,
-                extra=(champion.evidence.experiment_id, "confirmation-seed:20260824"),
-            ),
-        )
     return None
 
 

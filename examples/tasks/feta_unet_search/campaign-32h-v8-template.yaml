@@ -225,6 +225,7 @@ runtime:
         structural_wildcards: 2
       architecture_change_target: 14
       independent_confirmation_count: 1
+      independent_confirmation_execution: l4_sidecar_after_champion_freeze
       minimum_v7_structural_parents: 2
       optional_v7_structural_parent_count: 1
       lineage_rules:
@@ -233,6 +234,9 @@ runtime:
         optuna_fixed_architecture: true
         openevolve_generation_zero_reuse: true
         duplicate_scientific_identity_policy: reuse_verified_result
+      local_optuna_allocation:
+        structural_basic_unet: 22
+        dynunet: 4
       parent_selection:
         required_parent_count: 2
         optional_parent_count: 1
@@ -265,7 +269,7 @@ runtime:
         absolute_score_gap_maximum: 0.015
         alternative_evidence: [superior_trajectory_slope, req11_priority_gain, ensemble_complementarity]
         minimum_alternative_evidence_count: 2
-        maximum_promotions_to_50: 2
+        maximum_promotions_to_50: 1
         cross_family_mutation: false
       controlled_direct_designs:
         - remove_deep_supervision_from_selected_parent
