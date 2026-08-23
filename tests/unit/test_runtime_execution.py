@@ -193,6 +193,37 @@ def test_research_directive_projection_failure_is_narrowly_recoverable():
     )
 
 
+def test_v8_duplicate_portfolio_failure_is_narrowly_recoverable():
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "planner_agent_failed",
+        "errors": [
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        ],
+        "planner_failure_stage": "portfolio_policy",
+        "active_research_directive": object(),
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "errors": [*values["errors"], "unexpected_error"]}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "planner_failure_stage": "model_call"}
+        )
+        is False
+    )
+
+
 @pytest.mark.parametrize(
     ("changed", "code"),
     [
