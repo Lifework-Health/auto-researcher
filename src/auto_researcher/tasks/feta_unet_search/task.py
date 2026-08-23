@@ -768,16 +768,20 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 family_rates[name] = float(value)
 
             model_variant = None
+            feature_width = None
             if request.search_type == SearchType.DIRECT:
                 model_variant = request.search_space.get("model_variant")
+                feature_width = request.search_space.get("feature_width")
             elif request.search_type == SearchType.OPTUNA:
                 fixed = request.search_space.get("fixed", {})
                 if isinstance(fixed, dict):
                     model_variant = fixed.get("model_variant")
+                    feature_width = fixed.get("feature_width")
             else:
                 campaign_context = request.search_space.get("campaign_context", {})
                 if isinstance(campaign_context, dict):
                     model_variant = campaign_context.get("required_model_variant")
+                    feature_width = campaign_context.get("required_feature_width")
             if model_variant is None:
                 # A mutable or mixed-family block must reserve for the slowest
                 # registered family so the wall-time deadline remains real.
@@ -788,6 +792,24 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 raise ValueError("feta_unet_campaign_model_variant_invalid")
             else:
                 seconds_per_epoch = family_rates[model_variant]
+            raw_width_rates = runtime_context.task_options.get(
+                "campaign_seconds_per_epoch_by_feature_width"
+            )
+            if raw_width_rates is not None:
+                if not isinstance(raw_width_rates, dict) or any(
+                    not isinstance(name, str)
+                    or isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or value <= 0
+                    for name, value in raw_width_rates.items()
+                ):
+                    raise ValueError(
+                        "feta_unet_campaign_feature_width_durations_invalid"
+                    )
+                if feature_width is not None and not isinstance(feature_width, str):
+                    raise ValueError("feta_unet_campaign_feature_width_invalid")
+                if feature_width in raw_width_rates:
+                    seconds_per_epoch = float(raw_width_rates[feature_width])
         if request.search_type == SearchType.OPENEVOLVE:
             fidelity = runtime_context.task_options.get("openevolve_fidelity", 25)
             candidates = request.experiment_budget

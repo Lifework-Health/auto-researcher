@@ -491,7 +491,7 @@ class V8PortfolioPolicy:
             or len(parents) != 2
             or len(dynunet_roots) != 4
             or len(direct_designs) != 4
-            or local_optuna_allocation != {"structural_basic_unet": 22, "dynunet": 4}
+            or local_optuna_allocation != {"structural_basic_unet": 23, "dynunet": 3}
             or raw.get("independent_confirmation_execution")
             != "l4_sidecar_after_champion_freeze"
             or raw.get("dynunet_gate")
@@ -505,6 +505,7 @@ class V8PortfolioPolicy:
                 ],
                 "minimum_alternative_evidence_count": 2,
                 "maximum_promotions_to_50": 1,
+                "non_promotable_feature_widths": ["v8_dyn_context_5"],
                 "cross_family_mutation": False,
             }
         ):
@@ -2037,11 +2038,15 @@ def _v8_promotion_cohort(
     target: int,
     target_fidelity: int,
 ) -> tuple[TreeCandidate, ...]:
-    eligible = source
+    eligible = tuple(
+        item
+        for item in source
+        if item.evidence.configuration.get("feature_width") != "v8_dyn_context_5"
+    )
     if target_fidelity in {15, 25}:
         dynunet_cap = {15: 4, 25: 2}[target_fidelity]
         ranked = sorted(
-            source,
+            eligible,
             key=lambda item: (
                 item.evidence.best_score,
                 item.evidence.rung_score,
@@ -2064,12 +2069,12 @@ def _v8_promotion_cohort(
     if target_fidelity == 50:
         structural = tuple(
             item
-            for item in source
+            for item in eligible
             if item.evidence.configuration["model_variant"] != "dynunet"
         )
         dynunet = tuple(
             item
-            for item in source
+            for item in eligible
             if item.evidence.configuration["model_variant"] == "dynunet"
         )
         if structural:
@@ -2219,7 +2224,7 @@ def apply_v8_portfolio_policy(
         if item.evidence.configuration["model_variant"] != "dynunet"
     )
     local_targets = {
-        item.evidence.trajectory_identity: (3 if index < 6 else 2)
+        item.evidence.trajectory_identity: (3 if index < 7 else 2)
         for index, item in enumerate(structural_parents)
     }
     local_targets.update(
@@ -2227,18 +2232,21 @@ def apply_v8_portfolio_policy(
             item.evidence.trajectory_identity: 1
             for item in branch_parents
             if item.evidence.configuration["model_variant"] == "dynunet"
+            and item.evidence.configuration["feature_width"] != "v8_dyn_context_5"
         }
     )
     if sum(local_targets.values()) != policy.operator_limits[SearchType.OPTUNA]:
         raise ValueError("feta_unet_v8_local_optuna_allocation_invalid")
     for parent in branch_parents:
         parent_id = parent.evidence.trajectory_identity
+        target = local_targets.get(parent_id, 0)
+        if target == 0:
+            continue
         completed = {
             item.evidence.trajectory_identity
             for item in local_candidates
             if item.parent_trajectory == parent_id
         }
-        target = local_targets[parent_id]
         if len(completed) >= target:
             continue
         remaining = target - len(completed)

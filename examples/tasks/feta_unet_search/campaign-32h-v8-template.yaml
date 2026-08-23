@@ -105,9 +105,30 @@ runtime:
     workspace_namespace: feta_unet_campaign_v8
     shared_preprocessing_cache: true
     openevolve_fidelity: 10
-    campaign_seconds_per_epoch: 120.0
-    campaign_seconds_per_epoch_by_model_variant: {basic_unet: 70.0, unet_plain: 70.0, unet_residual: 70.0, structural_basic_unet: 90.0, dynunet: 120.0}
-    campaign_runtime_rates_finalised: false
+    campaign_seconds_per_epoch: 145.0
+    campaign_seconds_per_epoch_by_model_variant: {basic_unet: 70.0, unet_plain: 70.0, unet_residual: 70.0, structural_basic_unet: 80.0, dynunet: 105.0}
+    campaign_seconds_per_epoch_by_feature_width: {v8_dyn_compact_5: 105.0, v8_dyn_balanced_5: 95.0, v8_dyn_context_5: 145.0, v8_dyn_deep_6: 95.0}
+    campaign_runtime_rates_finalised: true
+    campaign_runtime_calibration:
+      schema_version: feta-unet-v8-runtime-calibration-v1
+      holdout_subjects_evaluated: 0
+      structural_basic_unet:
+        source_run_id: feta-unet-campaign-22h-v7-v2-20260822
+        observed_median_total_seconds_per_epoch: 59.03
+        observed_p90_total_seconds_per_epoch: 76.37
+        observed_maximum_total_seconds_per_epoch: 155.88
+        selected_seconds_per_epoch: 80.0
+      dynunet:
+        source_reference: runtime:v8-dynunet-calibration-v2-20260823
+        source_log_sha256: 975a5d4cda820644957086e82a50230c17ad90862598b6fdd36f82e18d692ee1
+        roots:
+          - {feature_width: v8_dyn_compact_5, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 10.16105604171753, primary_score: 0.47390042093352713, root_index: 0, total_duration_seconds: 482.05821499973536, total_seconds_per_epoch: 96.41164299994708, trainable_parameters: 50795297, training_duration_seconds: 257.4469405002892, training_seconds_per_epoch: 51.48938810005784, wall_seconds: 486.1315786652267}
+          - {feature_width: v8_dyn_balanced_5, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 14.023687362670898, primary_score: 0.6458283332628721, root_index: 1, total_duration_seconds: 442.69691245257854, total_seconds_per_epoch: 88.5393824905157, trainable_parameters: 74300688, training_duration_seconds: 315.93435503169894, training_seconds_per_epoch: 63.186871006339786, wall_seconds: 444.7519389279187}
+          - {feature_width: v8_dyn_context_5, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 19.394338130950928, primary_score: 0.4985619173893397, root_index: 2, total_duration_seconds: 689.8473020531237, total_seconds_per_epoch: 137.96946041062475, trainable_parameters: 126572833, training_duration_seconds: 410.5982269048691, training_seconds_per_epoch: 82.11964538097382, wall_seconds: 693.7112964466214}
+          - {feature_width: v8_dyn_deep_6, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 13.468255043029785, primary_score: 0.5198129917066531, root_index: 3, total_duration_seconds: 446.58433309569955, total_seconds_per_epoch: 89.31686661913992, trainable_parameters: 115738656, training_duration_seconds: 250.48005563765764, training_seconds_per_epoch: 50.096011127531526, wall_seconds: 449.3632572442293}
+        selected_seconds_per_epoch: 105.0
+        non_promotable_feature_widths: [v8_dyn_context_5]
+    campaign_runtime_calibration_sha256: 34c94d0eb7736de23549cf57023071b282b92ae555f8708b761750c7b421725f
     campaign_portfolio_controller_implemented: true
     v8_parent_reuse_imported: false
     research_director_controller_implemented: true
@@ -167,9 +188,9 @@ runtime:
         verification_status: VERIFIED
       - evidence_id: v7-a6000-runtime-envelope
         evidence_type: RUNTIME
-        evidence_hash: ffe6f29e603ae9601353372b22aeda2dee631ce037899e120b69e194c655068d
+        evidence_hash: 7c8c9ecafc6dd121a1a99d9609dd00f29a3d4d11cbaccefac07e0893a66aaacc
         source_reference: artifact:v7-runtime-envelope:bfa11514baf5d7502d70d7215ffe9ce07c1923c960f915754fb1711163cbca96
-        summary: "Both selected V7 parents passed measured A6000 full-step checks well below the 44 GiB ceiling; V8 timing coefficients still require final calibration."
+        summary: "Measured A6000 structural and DynUNet timing is bound; the context-heavy root remains a non-promotable 10-epoch probe so V8 retains a protected graduation reserve."
         reference_ids: [checkpoint:763a397ac029d6d3efffe2d0e77b0c7bc9f61ee8baef937689a975677239c811, evaluation:fe388bcaf4b789e78feab1da88e0720093b98a0a0c3a423adf5d55b89a73550f]
         safe_payload:
           gpu: NVIDIA RTX A6000
@@ -180,7 +201,10 @@ runtime:
           measured_peak_cuda_allocated_mib: 2338
           measured_peak_cuda_reserved_mib: 3076
           measured_full_step_passed: true
-          runtime_coefficients_finalised: false
+          runtime_coefficients_finalised: true
+          runtime_calibration_sha256: 34c94d0eb7736de23549cf57023071b282b92ae555f8708b761750c7b421725f
+          selected_seconds_per_epoch: {structural_basic_unet: 80.0, dynunet: 105.0}
+          context_probe_seconds_per_epoch: 145.0
         verification_status: VERIFIED
       - evidence_id: v7-invalid-wildcard-loop
         evidence_type: FAILURE
@@ -198,7 +222,7 @@ runtime:
           remediation: prevalidate_trainable_parameter_count_before_returning_wildcard
           successful_evidence_affected: false
         verification_status: VERIFIED
-    research_director_evidence_manifest_sha256: ca6abf0faf250964d691352de9ffe0e42919f9f21dab82a6b7e6cdab56c8ccdd
+    research_director_evidence_manifest_sha256: 1b921f2c150317d597c04acf098437d3459005bceb5e5406fffd5984b655671c
     campaign_finalisation_reserve_seconds: 21600.0
     campaign_reporting_reserve_seconds: 1800.0
     campaign_prior_results: 40
@@ -206,6 +230,7 @@ runtime:
     maximum_peak_gpu_memory_bytes: 47244640256
     launch_gate: blocked_pending_v8_validation
     v7_parent_manifest_sha256: f19e808c05bc2780892f16a4c7e18d8bf665b990e745c36441631935b43303b4
+    cuda_preflight: null
     cuda_preflight_sha256: null
     initial_campaign_observations:
       - "Verified V6 single-model mean macro Dice reached 0.8206412646177336."
@@ -235,8 +260,8 @@ runtime:
         openevolve_generation_zero_reuse: true
         duplicate_scientific_identity_policy: reuse_verified_result
       local_optuna_allocation:
-        structural_basic_unet: 22
-        dynunet: 4
+        structural_basic_unet: 23
+        dynunet: 3
       parent_selection:
         required_parent_count: 2
         optional_parent_count: 1
@@ -270,6 +295,7 @@ runtime:
         alternative_evidence: [superior_trajectory_slope, req11_priority_gain, ensemble_complementarity]
         minimum_alternative_evidence_count: 2
         maximum_promotions_to_50: 1
+        non_promotable_feature_widths: [v8_dyn_context_5]
         cross_family_mutation: false
       controlled_direct_designs:
         - remove_deep_supervision_from_selected_parent

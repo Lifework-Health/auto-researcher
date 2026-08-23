@@ -952,6 +952,46 @@ def test_campaign_duration_estimate_uses_measured_model_family_rates():
     assert task.estimate_search_duration_seconds(mutable, runtime) == 2_450.0
 
 
+def test_campaign_duration_estimate_prefers_measured_feature_width_rate():
+    task = FeTAUNetSearchTask()
+    runtime = _runtime(
+        campaign_seconds_per_epoch=120.0,
+        campaign_seconds_per_epoch_by_model_variant={
+            "basic_unet": 70.0,
+            "unet_plain": 70.0,
+            "unet_residual": 70.0,
+            "structural_basic_unet": 78.0,
+            "dynunet": 120.0,
+        },
+        campaign_seconds_per_epoch_by_feature_width={
+            "v8_dyn_context_5": 145.0,
+        },
+    )
+    direct = _request(
+        SearchType.DIRECT,
+        {
+            "maximum_epochs": 10,
+            "model_variant": "dynunet",
+            "feature_width": "v8_dyn_context_5",
+        },
+        budget=1,
+    )
+    optuna = _request(
+        SearchType.OPTUNA,
+        {
+            "fixed": {
+                "maximum_epochs": 25,
+                "model_variant": "dynunet",
+                "feature_width": "v8_dyn_context_5",
+            }
+        },
+        budget=1,
+    )
+
+    assert task.estimate_search_duration_seconds(direct, runtime) == 1_450.0
+    assert task.estimate_search_duration_seconds(optuna, runtime) == 3_625.0
+
+
 def test_budget_deadline_survives_cycles_and_exhausts():
     started = datetime(2026, 8, 16, 8, tzinfo=UTC)
     deadline = started + timedelta(hours=20)

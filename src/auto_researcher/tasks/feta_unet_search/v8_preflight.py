@@ -45,7 +45,11 @@ V8_DURATION_SECONDS = 32 * 60 * 60
 V8_FINALISATION_RESERVE_SECONDS = 6 * 60 * 60
 V8_RESEARCH_DIRECTOR_MODEL = "claude-opus-5"
 V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS = 8
-V8_A6000_EPOCH_WORK = {"structural_basic_unet": 1_075, "dynunet": 245}
+V8_A6000_EPOCH_WORK = {
+    "structural_basic_unet": 1_085,
+    "dynunet_promotable": 225,
+    "v8_dyn_context_5": 10,
+}
 
 
 def _mapping(path: Path, reason: str) -> dict[str, Any]:
@@ -77,6 +81,118 @@ def _sha256_value(value: object) -> bool:
     return True
 
 
+def _runtime_calibration_valid(
+    calibration: object,
+    calibration_sha256: object,
+    *,
+    structural_rate: float,
+    dynunet_rate: float,
+    feature_width_rates: object,
+) -> bool:
+    if (
+        not isinstance(calibration, dict)
+        or not _sha256_value(calibration_sha256)
+        or payload_hash(calibration) != calibration_sha256
+        or calibration.get("schema_version") != "feta-unet-v8-runtime-calibration-v1"
+        or calibration.get("holdout_subjects_evaluated") != 0
+    ):
+        return False
+    structural = calibration.get("structural_basic_unet")
+    dynunet = calibration.get("dynunet")
+    if not isinstance(structural, dict) or not isinstance(dynunet, dict):
+        return False
+    if not _sha256_value(dynunet.get("source_log_sha256")):
+        return False
+    roots = dynunet.get("roots")
+    if (
+        not isinstance(roots, list)
+        or len(roots) != 4
+        or not all(isinstance(item, dict) for item in roots)
+        or {item.get("root_index") for item in roots} != {0, 1, 2, 3}
+        or not isinstance(feature_width_rates, dict)
+        or not all(
+            isinstance(name, str)
+            and not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and value > 0
+            for name, value in feature_width_rates.items()
+        )
+    ):
+        return False
+    try:
+        observed_promotable_dynunet_rate = max(
+            float(item["total_seconds_per_epoch"])
+            for item in roots
+            if item["feature_width"] != "v8_dyn_context_5"
+        )
+        observed_peak_memory = max(
+            float(item["peak_gpu_memory_gib"])
+            for item in roots
+            if isinstance(item, dict)
+        )
+        observed_widths = {str(item["feature_width"]) for item in roots}
+        return (
+            float(structural["selected_seconds_per_epoch"]) == structural_rate
+            and float(dynunet["selected_seconds_per_epoch"]) == dynunet_rate
+            and float(structural["observed_p90_total_seconds_per_epoch"])
+            <= structural_rate
+            and observed_promotable_dynunet_rate <= dynunet_rate
+            and dynunet.get("non_promotable_feature_widths") == ["v8_dyn_context_5"]
+            and observed_peak_memory <= 44.0
+            and set(feature_width_rates) == observed_widths
+            and all(
+                float(feature_width_rates[str(item["feature_width"])])
+                >= float(item["total_seconds_per_epoch"])
+                for item in roots
+            )
+            and all(item.get("holdout_subjects_evaluated") == 0 for item in roots)
+            and all(
+                V8_MINIMUM_TRAINABLE_PARAMETERS
+                <= int(item["trainable_parameters"])
+                <= V8_MAXIMUM_TRAINABLE_PARAMETERS
+                for item in roots
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _cuda_preflight_valid(
+    evidence: object,
+    evidence_sha256: object,
+    *,
+    runtime_calibration_sha256: object,
+    selected_parent_ids: set[str],
+) -> bool:
+    if (
+        not isinstance(evidence, dict)
+        or not _sha256_value(evidence_sha256)
+        or payload_hash(evidence) != evidence_sha256
+        or evidence.get("schema_version") != "feta-unet-v8-cuda-preflight-v1"
+        or evidence.get("gpu") != "NVIDIA RTX A6000"
+        or evidence.get("memory_ceiling_gib") != 44.0
+        or evidence.get("holdout_subjects_evaluated") != 0
+        or evidence.get("runtime_calibration_sha256") != runtime_calibration_sha256
+    ):
+        return False
+    parents = evidence.get("parents")
+    if (
+        not isinstance(parents, list)
+        or len(parents) != 2
+        or not all(isinstance(item, dict) for item in parents)
+        or {item.get("experiment_id") for item in parents} != selected_parent_ids
+    ):
+        return False
+    try:
+        return (
+            all(item.get("measured_full_step_passed") is True for item in parents)
+            and max(float(item["peak_gpu_memory_gib"]) for item in parents) <= 44.0
+            and evidence.get("dynunet_root_indexes") == [0, 1, 2, 3]
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
     raw = options.get("research_director_evidence")
     manifest = options.get("research_director_evidence_manifest_sha256")
@@ -99,6 +215,7 @@ def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
     ensemble = by_type["ENSEMBLE"].safe_payload
     runtime = by_type["RUNTIME"].safe_payload
     failure = by_type["FAILURE"].safe_payload
+    runtime_finalised = options.get("campaign_runtime_rates_finalised") is True
     if (
         v7.get("sealed_holdout_evaluations") != 0
         or req11.get("panel_identity") != V7_REQ11_PANEL_IDENTITY
@@ -109,13 +226,26 @@ def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
         or ensemble["mean_subject_macro_dice"] <= ensemble["best_single_score"]
         or runtime.get("gpu") != "NVIDIA RTX A6000"
         or runtime.get("measured_full_step_passed") is not True
-        or runtime.get("runtime_coefficients_finalised") is not False
+        or runtime.get("runtime_coefficients_finalised") is not runtime_finalised
         or failure.get("successful_evidence_affected") is not False
         or not isinstance(failure.get("trainable_parameters"), int)
         or not isinstance(failure.get("maximum_trainable_parameters"), int)
         or failure["trainable_parameters"] <= failure["maximum_trainable_parameters"]
     ):
         return False
+    if runtime_finalised:
+        raw_rates = options.get("campaign_seconds_per_epoch_by_model_variant")
+        if (
+            not isinstance(raw_rates, dict)
+            or runtime.get("runtime_calibration_sha256")
+            != options.get("campaign_runtime_calibration_sha256")
+            or runtime.get("selected_seconds_per_epoch")
+            != {
+                "structural_basic_unet": raw_rates.get("structural_basic_unet"),
+                "dynunet": raw_rates.get("dynunet"),
+            }
+        ):
+            return False
     return payload_hash([item.model_dump(mode="json") for item in evidence]) == manifest
 
 
@@ -192,7 +322,7 @@ def build_v8_preflight_plan(
         or portfolio.get("independent_confirmation_execution")
         != "l4_sidecar_after_champion_freeze"
         or portfolio.get("local_optuna_allocation")
-        != {"structural_basic_unet": 22, "dynunet": 4}
+        != {"structural_basic_unet": 23, "dynunet": 3}
     ):
         raise ValueError("feta_unet_v8_portfolio_invalid")
 
@@ -216,6 +346,7 @@ def build_v8_preflight_plan(
         ],
         "minimum_alternative_evidence_count": 2,
         "maximum_promotions_to_50": 1,
+        "non_promotable_feature_widths": ["v8_dyn_context_5"],
         "cross_family_mutation": False,
     }:
         raise ValueError("feta_unet_v8_dynunet_gate_invalid")
@@ -318,12 +449,19 @@ def build_v8_preflight_plan(
         raise ValueError("feta_unet_v8_runtime_rates_invalid")
     raw_structural_rate = raw_rates.get("structural_basic_unet")
     raw_dynunet_rate = raw_rates.get("dynunet")
+    raw_width_rates = options.get("campaign_seconds_per_epoch_by_feature_width")
+    raw_context_rate = (
+        raw_width_rates.get("v8_dyn_context_5")
+        if isinstance(raw_width_rates, dict)
+        else raw_dynunet_rate
+    )
     raw_reporting_reserve = options.get("campaign_reporting_reserve_seconds")
     if any(
         isinstance(value, bool) or not isinstance(value, (int, float))
         for value in (
             raw_structural_rate,
             raw_dynunet_rate,
+            raw_context_rate,
             raw_reporting_reserve,
         )
     ):
@@ -331,25 +469,38 @@ def build_v8_preflight_plan(
     try:
         structural_rate = float(raw_structural_rate)
         dynunet_rate = float(raw_dynunet_rate)
+        context_rate = float(raw_context_rate)
         reporting_reserve = float(raw_reporting_reserve)
     except (TypeError, ValueError) as exc:
         raise ValueError("feta_unet_v8_runtime_rates_invalid") from exc
     planned_training_seconds = (
         V8_A6000_EPOCH_WORK["structural_basic_unet"] * structural_rate
-        + V8_A6000_EPOCH_WORK["dynunet"] * dynunet_rate
+        + V8_A6000_EPOCH_WORK["dynunet_promotable"] * dynunet_rate
+        + V8_A6000_EPOCH_WORK["v8_dyn_context_5"] * context_rate
     )
     graduation_seconds = 100 * structural_rate + 50 * dynunet_rate
     runtime_envelope_valid = (
         structural_rate > 0
         and dynunet_rate > 0
         and dynunet_rate >= structural_rate
+        and context_rate >= dynunet_rate
         and reporting_reserve >= 0
         and planned_training_seconds + reporting_reserve <= V8_DURATION_SECONDS
         and graduation_seconds <= V8_FINALISATION_RESERVE_SECONDS
     )
+    runtime_calibration = options.get("campaign_runtime_calibration")
+    runtime_calibration_sha256 = options.get("campaign_runtime_calibration_sha256")
+    runtime_calibration_valid = _runtime_calibration_valid(
+        runtime_calibration,
+        runtime_calibration_sha256,
+        structural_rate=structural_rate,
+        dynunet_rate=dynunet_rate,
+        feature_width_rates=raw_width_rates,
+    )
     if (
         options.get("campaign_runtime_rates_finalised") is not True
         or not runtime_envelope_valid
+        or not runtime_calibration_valid
     ):
         blockers.append("runtime_coefficients_pending")
     if options.get("campaign_portfolio_controller_implemented") is not True:
@@ -368,7 +519,15 @@ def build_v8_preflight_plan(
         blockers.append("research_director_live_smoke_pending")
     if options.get("research_director_resume_replay_passed") is not True:
         blockers.append("research_director_resume_replay_pending")
-    if not _sha256_value(options.get("cuda_preflight_sha256")):
+    cuda_preflight = options.get("cuda_preflight")
+    cuda_preflight_sha256 = options.get("cuda_preflight_sha256")
+    cuda_preflight_valid = _cuda_preflight_valid(
+        cuda_preflight,
+        cuda_preflight_sha256,
+        runtime_calibration_sha256=runtime_calibration_sha256,
+        selected_parent_ids={str(item.get("experiment_id")) for item in selected},
+    )
+    if not cuda_preflight_valid:
         blockers.append("real_cuda_preflight_pending")
     if options.get("launch_gate") != "passed":
         blockers.append("launch_gate_not_passed")
@@ -387,6 +546,10 @@ def build_v8_preflight_plan(
         "graduation_seconds": graduation_seconds,
         "graduation_hours": graduation_seconds / 3_600,
         "runtime_envelope_valid": runtime_envelope_valid,
+        "runtime_calibration_valid": runtime_calibration_valid,
+        "runtime_calibration_sha256": runtime_calibration_sha256,
+        "cuda_preflight_valid": cuda_preflight_valid,
+        "cuda_preflight_sha256": cuda_preflight_sha256,
         "research_director": {
             "model_id": V8_RESEARCH_DIRECTOR_MODEL,
             "thinking": "adaptive",

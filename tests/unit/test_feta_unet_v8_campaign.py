@@ -264,7 +264,6 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "structural_wildcards": 2,
     }
     assert plan["blockers"] == [
-        "runtime_coefficients_pending",
         "v8_parent_reuse_import_pending",
         "research_director_shadow_evaluation_pending",
         "research_director_live_smoke_pending",
@@ -274,10 +273,15 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
     ]
     assert plan["model_calls_performed"] == 0
     assert plan["a6000_epoch_work"] == {
-        "structural_basic_unet": 1075,
-        "dynunet": 245,
+        "structural_basic_unet": 1085,
+        "dynunet_promotable": 225,
+        "v8_dyn_context_5": 10,
     }
-    assert plan["runtime_envelope_valid"] is False
+    assert plan["runtime_envelope_valid"] is True
+    assert plan["runtime_calibration_valid"] is True
+    assert plan["planned_training_seconds"] == 111_875.0
+    assert plan["graduation_seconds"] == 13_250.0
+    assert plan["cuda_preflight_valid"] is False
     assert plan["selected_v7_parent_count"] == 2
     assert plan["research_director"] == {
         "model_id": "claude-opus-5",
@@ -286,6 +290,66 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "maximum_calls": 8,
         "finalisation_reserve_suppressed": True,
     }
+
+
+def test_v8_preflight_accepts_hash_bound_measured_runtime_envelope(tmp_path):
+    from auto_researcher.runtime.identity import payload_hash
+
+    raw = yaml.safe_load(TASK_CONFIG.read_text(encoding="utf-8"))
+    options = raw["runtime"]["options"]
+    feature_widths = [
+        "v8_dyn_compact_5",
+        "v8_dyn_balanced_5",
+        "v8_dyn_context_5",
+        "v8_dyn_deep_6",
+    ]
+    roots = [
+        {
+            "root_index": index,
+            "feature_width": feature_width,
+            "trainable_parameters": 50_000_000 + index,
+            "total_seconds_per_epoch": 96.5 + index,
+            "peak_gpu_memory_gib": 10.0 + index,
+            "holdout_subjects_evaluated": 0,
+        }
+        for index, feature_width in enumerate(feature_widths)
+    ]
+    calibration = {
+        "schema_version": "feta-unet-v8-runtime-calibration-v1",
+        "holdout_subjects_evaluated": 0,
+        "structural_basic_unet": {
+            "observed_p90_total_seconds_per_epoch": 76.37,
+            "selected_seconds_per_epoch": 78.0,
+        },
+        "dynunet": {
+            "roots": roots,
+            "selected_seconds_per_epoch": 120.0,
+            "non_promotable_feature_widths": ["v8_dyn_context_5"],
+            "source_log_sha256": "a" * 64,
+        },
+    }
+    options["campaign_seconds_per_epoch_by_model_variant"].update(
+        {"structural_basic_unet": 78.0, "dynunet": 120.0}
+    )
+    options["campaign_seconds_per_epoch_by_feature_width"] = {
+        "v8_dyn_compact_5": 100.0,
+        "v8_dyn_balanced_5": 100.0,
+        "v8_dyn_context_5": 145.0,
+        "v8_dyn_deep_6": 120.0,
+    }
+    options["campaign_runtime_rates_finalised"] = True
+    options["campaign_runtime_calibration"] = calibration
+    options["campaign_runtime_calibration_sha256"] = payload_hash(calibration)
+    config_path = tmp_path / "campaign.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    plan = build_v8_preflight_plan(config_path, CONTRACT)
+
+    assert plan["runtime_calibration_valid"] is True
+    assert plan["runtime_envelope_valid"] is True
+    assert "runtime_coefficients_pending" not in plan["blockers"]
+    assert plan["planned_training_seconds"] == 113_080.0
+    assert plan["graduation_seconds"] == 13_800.0
 
 
 def test_v8_bound_evidence_matches_parent_and_director_manifests():
@@ -491,24 +555,36 @@ def test_v8_controller_replays_exact_44_to_3_envelope():
             <= maximum_dynunet
         )
     increments = {10: 10, 15: 5, 25: 10, 50: 25, 100: 50, 150: 50}
-    measured_work = {"structural_basic_unet": 0, "dynunet": 0}
+    measured_work = {
+        "structural_basic_unet": 0,
+        "dynunet_promotable": 0,
+        "v8_dyn_context_5": 0,
+    }
     for item in candidates:
-        measured_work[item.evidence.configuration["model_variant"]] += increments[
-            item.evidence.fidelity
-        ]
+        configuration = item.evidence.configuration
+        if configuration["model_variant"] == "structural_basic_unet":
+            family = "structural_basic_unet"
+        elif configuration["feature_width"] == "v8_dyn_context_5":
+            family = "v8_dyn_context_5"
+        else:
+            family = "dynunet_promotable"
+        measured_work[family] += increments[item.evidence.fidelity]
     assert sum(measured_work.values()) == sum(V8_A6000_EPOCH_WORK.values())
-    assert measured_work["dynunet"] <= V8_A6000_EPOCH_WORK["dynunet"]
+    assert (
+        measured_work["dynunet_promotable"] <= V8_A6000_EPOCH_WORK["dynunet_promotable"]
+    )
+    assert measured_work["v8_dyn_context_5"] == 10
     local = [item for item in candidates if item.stage == "v8-local-optuna"]
     assert (
         sum(item.evidence.configuration["model_variant"] == "dynunet" for item in local)
-        == 4
+        == 3
     )
     assert (
         sum(
             item.evidence.configuration["model_variant"] == "structural_basic_unet"
             for item in local
         )
-        == 22
+        == 23
     )
     assert _stage(requests[-1]) == "v8-promote-150"
     assert (
