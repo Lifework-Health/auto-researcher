@@ -83,15 +83,43 @@ def _canonical_generation_zero_experiment(
     published_configuration = dependencies.task.normalise_configuration(
         dict(published.configuration)
     )
-    if proposed_configuration != published_configuration:
+    configuration_differences = {
+        key
+        for key in proposed_configuration.keys() | published_configuration.keys()
+        if proposed_configuration.get(key) != published_configuration.get(key)
+    }
+    if configuration_differences - {"maximum_epochs"}:
         raise ValueError("openevolve_incumbent_configuration_conflict")
     if (
         proposed.evaluator_id != published.evaluator_id
-        or proposed.code_version != published.code_version
         or proposed.dataset_version != published.dataset_version
         or proposed.provenance != published.provenance
     ):
         raise ValueError("openevolve_incumbent_metadata_conflict")
+    if configuration_differences or proposed.code_version != published.code_version:
+        # Imported parents may have been produced by an earlier compatible
+        # evaluator implementation.  They cannot be reused under the current
+        # evaluator identity, but the unchanged policy remains a valid
+        # generation-zero candidate.  Give that re-evaluation a deterministic
+        # fresh identity instead of colliding with the imported artefact.
+        request = state.get("search_request")
+        request_id = (
+            request.request_id if request is not None else proposed.search_request_id
+        )
+        experiment_id = (
+            "experiment-"
+            + payload_hash(
+                {
+                    "identity": "openevolve-generation-zero-reanchor-v1",
+                    "run_id": state["run_id"],
+                    "search_request_id": request_id,
+                    "candidate_id": candidate.candidate_id,
+                    "configuration": proposed_configuration,
+                    "code_version": proposed.code_version,
+                }
+            )[:16]
+        )
+        return proposed.model_copy(update={"experiment_id": experiment_id})
     return published
 
 

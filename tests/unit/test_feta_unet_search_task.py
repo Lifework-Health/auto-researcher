@@ -662,7 +662,7 @@ def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path
         runtime_context=TaskRuntimeContext(run_id="run", output_dir=tmp_path),
         task=task,
     )
-    candidate = SimpleNamespace(generation=0)
+    candidate = SimpleNamespace(generation=0, candidate_id="candidate-seed")
 
     reused = _canonical_generation_zero_experiment(
         {"run_id": "run"}, dependencies, candidate, proposed
@@ -680,6 +680,50 @@ def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path
     with pytest.raises(ValueError, match="openevolve_incumbent_configuration_conflict"):
         _canonical_generation_zero_experiment(
             {"run_id": "run"}, dependencies, candidate, conflicting
+        )
+
+    reanchored = _canonical_generation_zero_experiment(
+        {"run_id": "run"},
+        dependencies,
+        candidate,
+        proposed.model_copy(update={"code_version": "current-evaluator-version"}),
+    )
+    assert reanchored.experiment_id.startswith("experiment-")
+    assert reanchored.experiment_id != published.experiment_id
+    assert reanchored.configuration == proposed.configuration
+    assert reanchored.code_version == "current-evaluator-version"
+    assert (
+        _canonical_generation_zero_experiment(
+            {"run_id": "run"},
+            dependencies,
+            candidate,
+            proposed.model_copy(update={"code_version": "current-evaluator-version"}),
+        )
+        == reanchored
+    )
+
+    lower_fidelity = _canonical_generation_zero_experiment(
+        {"run_id": "run"},
+        dependencies,
+        candidate,
+        proposed.model_copy(
+            update={
+                "configuration": {
+                    **configuration,
+                    "maximum_epochs": 5,
+                }
+            }
+        ),
+    )
+    assert lower_fidelity.experiment_id != published.experiment_id
+    assert lower_fidelity.configuration["maximum_epochs"] == 5
+
+    with pytest.raises(ValueError, match="openevolve_incumbent_metadata_conflict"):
+        _canonical_generation_zero_experiment(
+            {"run_id": "run"},
+            dependencies,
+            candidate,
+            proposed.model_copy(update={"dataset_version": "different-dataset"}),
         )
 
 
