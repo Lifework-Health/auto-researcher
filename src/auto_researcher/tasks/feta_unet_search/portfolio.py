@@ -890,17 +890,33 @@ def _tree_candidates(
                 root_trajectory=root,
             )
         )
-    seen: dict[tuple[str, SearchType, str], str] = {}
+    selected: list[TreeCandidate] = []
+    seen: dict[tuple[str, SearchType, str], TreeCandidate] = {}
     for candidate in candidates:
         key = (
             candidate.stage,
             candidate.action,
             candidate.evidence.trajectory_identity,
         )
-        previous = seen.setdefault(key, candidate.evidence.experiment_id)
-        if previous != candidate.evidence.experiment_id:
+        previous = seen.get(key)
+        if previous is None:
+            seen[key] = candidate
+            selected.append(candidate)
+            continue
+        if previous.evidence.experiment_id == candidate.evidence.experiment_id:
+            continue
+        recoverable_v8_duplicate = (
+            candidate.stage.startswith("v8-")
+            and previous.evidence.fidelity == candidate.evidence.fidelity
+            and previous.evidence.configuration == candidate.evidence.configuration
+        )
+        if not recoverable_v8_duplicate:
             raise ValueError("feta_unet_campaign_tree_duplicate_execution")
-    return tuple(candidates)
+        # V8 explicitly binds duplicate scientific identities to reuse.  A
+        # completed duplicate can still be present after an interrupted or
+        # upgraded run, so preserve its evidence but count only the first
+        # durable observation when advancing the deterministic controller.
+    return tuple(selected)
 
 
 def _unique_tree_stage(

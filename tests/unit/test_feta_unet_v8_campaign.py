@@ -666,6 +666,55 @@ def test_v8_controller_replays_exact_44_to_3_envelope():
     )
 
 
+def test_v8_controller_recovers_verified_duplicate_without_cherry_picking():
+    context = TaskRuntimeContext(task_options=_options())
+    first = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=1,
+        events=(),
+        runtime_context=context,
+    )
+    assert first is not None
+    configuration = _simulated_configurations(first, request_index=1)[0]
+    events = (
+        _planned(1, first),
+        _prepared(1, first, "experiment-v8-original"),
+        _verified(
+            1,
+            "experiment-v8-original",
+            configuration,
+            0.70,
+            SearchType.OPENEVOLVE,
+        ),
+        _prepared(1, first, "experiment-v8-duplicate"),
+        _verified(
+            1,
+            "experiment-v8-duplicate",
+            configuration,
+            0.71,
+            SearchType.OPENEVOLVE,
+        ),
+    )
+
+    candidates = _tree_candidates(events, _evidence(events))
+    second = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=2,
+        events=events,
+        runtime_context=context,
+    )
+
+    assert [item.evidence.experiment_id for item in candidates] == [
+        "experiment-v8-original"
+    ]
+    assert candidates[0].evidence.best_score == 0.70
+    assert second is not None
+    assert _stage(second) == "v8-structural-child"
+    assert second.experiment_budget == 4
+
+
 def test_v8_local_optuna_replay_fixes_every_architectural_field():
     events, _ = _replay_v8_portfolio()
     candidates = _tree_candidates(tuple(events), _evidence(tuple(events)))
