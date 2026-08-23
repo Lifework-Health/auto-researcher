@@ -27,6 +27,7 @@ from auto_researcher.tasks.models import TaskRuntimeContext
 ROOT = Path(__file__).parents[2]
 TASK_CONFIG = ROOT / "examples/tasks/feta_unet_search/campaign-32h-v8-template.yaml"
 CONTRACT = ROOT / "examples/tasks/feta_unet_search/contract-32h-v8.yaml"
+BOUND_EVIDENCE = ROOT / "examples/tasks/feta_unet_search/v8-bound-evidence.yaml"
 
 
 def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
@@ -49,11 +50,8 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "structural_wildcards": 2,
     }
     assert plan["blockers"] == [
-        "v7_parent_selection_pending",
-        "v7_parent_manifest_pending",
         "runtime_coefficients_pending",
         "v8_portfolio_controller_pending",
-        "research_director_evidence_binding_pending",
         "research_director_shadow_evaluation_pending",
         "research_director_live_smoke_pending",
         "research_director_resume_replay_pending",
@@ -61,6 +59,7 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "launch_gate_not_passed",
     ]
     assert plan["model_calls_performed"] == 0
+    assert plan["selected_v7_parent_count"] == 2
     assert plan["research_director"] == {
         "model_id": "claude-opus-5",
         "thinking": "adaptive",
@@ -68,6 +67,50 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "maximum_calls": 8,
         "finalisation_reserve_suppressed": True,
     }
+
+
+def test_v8_bound_evidence_matches_parent_and_director_manifests():
+    raw = yaml.safe_load(TASK_CONFIG.read_text(encoding="utf-8"))
+    bound = yaml.safe_load(BOUND_EVIDENCE.read_text(encoding="utf-8"))
+    options = raw["runtime"]["options"]
+    selected = options["campaign_portfolio"]["parent_selection"][
+        "selected_parents"
+    ]
+    evidence = options["research_director_evidence"]
+
+    assert options["v7_parent_manifest_sha256"] == bound[
+        "v7_parent_manifest_sha256"
+    ]
+    assert [item["experiment_id"] for item in selected] == [
+        item["experiment_id"] for item in bound["selected_parents"]
+    ]
+    assert options["research_director_evidence_manifest_sha256"] == bound[
+        "research_director_evidence_manifest_sha256"
+    ]
+    assert {item["evidence_type"]: item["evidence_hash"] for item in evidence} == (
+        bound["research_director_evidence_hashes"]
+    )
+    assert bound["sealed_holdout_evaluations"] == 0
+
+
+def test_v8_preflight_rejects_rehashed_but_semantically_invalid_evidence(
+    tmp_path: Path,
+):
+    from auto_researcher.runtime.identity import payload_hash
+
+    raw = yaml.safe_load(TASK_CONFIG.read_text(encoding="utf-8"))
+    evidence = raw["runtime"]["options"]["research_director_evidence"]
+    ensemble = next(item for item in evidence if item["evidence_type"] == "ENSEMBLE")
+    ensemble["safe_payload"]["sealed_holdout_evaluations"] = 1
+    ensemble["evidence_hash"] = payload_hash(ensemble["safe_payload"])
+    raw["runtime"]["options"]["research_director_evidence_manifest_sha256"] = (
+        payload_hash(evidence)
+    )
+    changed = tmp_path / "campaign.yaml"
+    changed.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    plan = build_v8_preflight_plan(changed, CONTRACT)
+    assert "research_director_evidence_binding_pending" in plan["blockers"]
 
 
 def test_v8_dynunet_roots_are_unique_and_inside_parameter_envelope():

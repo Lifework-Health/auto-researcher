@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V8_MINIMUM_TRAINABLE_PARAMETERS,
     FeTAUNetSearchConfiguration,
 )
+from auto_researcher.tasks.feta_unet_search.portfolio import V7_REQ11_PANEL_IDENTITY
 from auto_researcher.tasks.feta_unet_search.continuation import (
     trajectory_identity,
 )
@@ -87,6 +89,36 @@ def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
         return False
     required = {"V7", "REQ11", "ENSEMBLE", "RUNTIME", "FAILURE"}
     if {item.evidence_type for item in evidence} != required:
+        return False
+    if any(
+        item.evidence_hash != payload_hash(dict(item.safe_payload))
+        for item in evidence
+    ):
+        return False
+    by_type = {item.evidence_type: item for item in evidence}
+    v7 = by_type["V7"].safe_payload
+    req11 = by_type["REQ11"].safe_payload
+    ensemble = by_type["ENSEMBLE"].safe_payload
+    runtime = by_type["RUNTIME"].safe_payload
+    failure = by_type["FAILURE"].safe_payload
+    if (
+        v7.get("sealed_holdout_evaluations") != 0
+        or req11.get("panel_identity") != V7_REQ11_PANEL_IDENTITY
+        or req11.get("objective_role")
+        != "parent_selection_and_close_tie_evidence_only"
+        or ensemble.get("sealed_holdout_evaluations") != 0
+        or not isinstance(ensemble.get("mean_subject_macro_dice"), (int, float))
+        or not isinstance(ensemble.get("best_single_score"), (int, float))
+        or ensemble["mean_subject_macro_dice"] <= ensemble["best_single_score"]
+        or runtime.get("gpu") != "NVIDIA RTX A6000"
+        or runtime.get("measured_full_step_passed") is not True
+        or runtime.get("runtime_coefficients_finalised") is not False
+        or failure.get("successful_evidence_affected") is not False
+        or not isinstance(failure.get("trainable_parameters"), int)
+        or not isinstance(failure.get("maximum_trainable_parameters"), int)
+        or failure["trainable_parameters"]
+        <= failure["maximum_trainable_parameters"]
+    ):
         return False
     return payload_hash([item.model_dump(mode="json") for item in evidence]) == manifest
 
@@ -239,9 +271,17 @@ def build_v8_preflight_plan(
     if not isinstance(parent_selection, dict):
         raise ValueError("feta_unet_v8_parent_selection_invalid")
     selected = parent_selection.get("selected_parents")
-    if not isinstance(selected, list) or len(selected) > 3:
+    required_parent_count = parent_selection.get("required_parent_count")
+    optional_parent_count = parent_selection.get("optional_parent_count")
+    if (
+        not isinstance(selected, list)
+        or not isinstance(required_parent_count, int)
+        or not isinstance(optional_parent_count, int)
+        or len(selected) > required_parent_count + optional_parent_count
+    ):
         raise ValueError("feta_unet_v8_parent_selection_invalid")
     parent_ids: set[str] = set()
+    parent_trajectories: set[str] = set()
     for parent in selected:
         if (
             not isinstance(parent, dict)
@@ -250,17 +290,29 @@ def build_v8_preflight_plan(
             or parent["experiment_id"] in parent_ids
             or not isinstance(parent.get("configuration"), dict)
             or not isinstance(parent.get("score"), (int, float))
+            or not math.isfinite(float(parent["score"]))
+            or not isinstance(parent.get("trajectory_identity"), str)
+            or not _sha256_value(parent["trajectory_identity"])
+            or parent["trajectory_identity"] in parent_trajectories
+            or not isinstance(parent.get("v8_seed_trajectory_identity"), str)
+            or parent.get("selection_role") not in {"mandatory", "optional"}
         ):
             raise ValueError("feta_unet_v8_parent_selection_invalid")
         candidate = FeTAUNetSearchConfiguration.model_validate(parent["configuration"])
-        if candidate.model_variant != "structural_basic_unet":
+        if (
+            candidate.model_variant != "structural_basic_unet"
+            or candidate.maximum_epochs != 150
+            or trajectory_identity(candidate)
+            != parent["v8_seed_trajectory_identity"]
+        ):
             raise ValueError("feta_unet_v8_parent_selection_invalid")
         parent_ids.add(parent["experiment_id"])
+        parent_trajectories.add(parent["trajectory_identity"])
 
     blockers: list[str] = []
-    if len(selected) < int(parent_selection.get("required_parent_count", -1)):
+    if len(selected) < required_parent_count:
         blockers.append("v7_parent_selection_pending")
-    if not _sha256_value(options.get("v7_parent_manifest_sha256")):
+    if options.get("v7_parent_manifest_sha256") != payload_hash(selected):
         blockers.append("v7_parent_manifest_pending")
     if options.get("campaign_runtime_rates_finalised") is not True:
         blockers.append("runtime_coefficients_pending")

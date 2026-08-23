@@ -27,6 +27,8 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V6_BASIC_UNET_FEATURE_PROFILES,
     V6_OPTUNA_FEATURE_PROFILES,
     V7_ARCHITECTURE_BUDGET,
+    V7_MAXIMUM_TRAINABLE_PARAMETERS,
+    V7_MINIMUM_TRAINABLE_PARAMETERS,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
 )
@@ -1418,6 +1420,11 @@ def _v7_controlled_wildcard(
     parent: CandidateEvidence,
     existing: set[str],
 ) -> dict[str, Any]:
+    from auto_researcher.tasks.feta_unet_direct.model import (
+        create_unet_model,
+        trainable_parameter_count,
+    )
+
     base = {name: parent.configuration[name] for name in CANDIDATE_CONFIGURATION_FIELDS}
     axes: tuple[tuple[str, tuple[Any, ...]], ...] = (
         ("kernel_profile", ("standard", "large_front", "context_deep")),
@@ -1435,6 +1442,18 @@ def _v7_controlled_wildcard(
             try:
                 validated = FeTAUNetSearchConfiguration.model_validate(candidate)
             except ValueError:
+                continue
+            try:
+                model = create_unet_model(validated)
+            except ValueError:
+                continue
+            parameters = trainable_parameter_count(model)
+            del model
+            if not (
+                V7_MINIMUM_TRAINABLE_PARAMETERS
+                <= parameters
+                <= V7_MAXIMUM_TRAINABLE_PARAMETERS
+            ):
                 continue
             if trajectory_identity(validated) not in existing:
                 return {

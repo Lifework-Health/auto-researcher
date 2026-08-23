@@ -16,6 +16,8 @@ from auto_researcher.contracts.models import (
 )
 from auto_researcher.tasks.feta_unet_search.configuration import (
     V7_ARCHITECTURE_BUDGET,
+    V7_MAXIMUM_TRAINABLE_PARAMETERS,
+    V7_MINIMUM_TRAINABLE_PARAMETERS,
     FeTAUNetSearchConfiguration,
 )
 from auto_researcher.tasks.feta_unet_search.continuation import trajectory_identity
@@ -24,6 +26,8 @@ from auto_researcher.tasks.feta_unet_search.portfolio import (
     V7_REQ11_PANEL_IDENTITY,
     V7_REQ11_PRIORITIES,
     V7MechanismPortfolioPolicy,
+    CandidateEvidence,
+    _v7_controlled_wildcard,
     apply_portfolio_policy,
     apply_v7_deadline_graduation_policy,
 )
@@ -489,6 +493,57 @@ def test_v7_configuration_identity_includes_mechanism_axes():
     )
     assert trajectory_identity(first) != trajectory_identity(changed)
     assert V7_MECHANISM_PORTFOLIO_VERSION in _options()["campaign_portfolio"]["version"]
+
+
+def test_v7_controlled_wildcard_skips_over_budget_architecture():
+    from auto_researcher.tasks.feta_unet_direct.model import (
+        create_unet_model,
+        trainable_parameter_count,
+    )
+
+    raw = V7MechanismPortfolioPolicy.from_runtime(
+        TaskRuntimeContext(task_options=_options())
+    ).structural_roots[0]
+    parent_configuration = FeTAUNetSearchConfiguration.model_validate(
+        {
+            **raw,
+            "features": [40, 80, 160, 320, 640, 40],
+            "feature_width": "v7_deep_6",
+            "kernel_profile": "standard",
+            "residual_blocks": True,
+            "skip_fusion": "gated_concat",
+        }
+    )
+    parent = CandidateEvidence(
+        experiment_id="experiment-parent",
+        search_type=SearchType.DIRECT,
+        configuration=parent_configuration.model_dump(mode="json"),
+        trajectory_identity=trajectory_identity(parent_configuration),
+        fidelity=25,
+        rung_score=0.80,
+        best_score=0.80,
+        trajectory_slope=0.01,
+    )
+    large_front = parent_configuration.model_copy(
+        update={"kernel_profile": "large_front"}
+    )
+    over_budget = parent_configuration.model_copy(
+        update={"kernel_profile": "context_deep"}
+    )
+    assert (
+        trainable_parameter_count(create_unet_model(over_budget))
+        > V7_MAXIMUM_TRAINABLE_PARAMETERS
+    )
+
+    candidate = FeTAUNetSearchConfiguration.model_validate(
+        _v7_controlled_wildcard(
+            parent,
+            {trajectory_identity(large_front)},
+        )
+    )
+    parameters = trainable_parameter_count(create_unet_model(candidate))
+    assert candidate.kernel_profile != "context_deep"
+    assert V7_MINIMUM_TRAINABLE_PARAMETERS <= parameters <= V7_MAXIMUM_TRAINABLE_PARAMETERS
 
 
 def test_v7_structural_basicunet_roots_have_finite_forward_contracts():
