@@ -168,16 +168,24 @@ def can_resume_recoverable_planner_failure(values: Mapping[str, Any]) -> bool:
     except (KeyError, ValueError):
         return False
     errors = tuple(values.get("errors", ()))
-    return (
-        status == RunStatus.FAILED
-        and values.get("stop_reason") in {
-            "planner_agent_failed",
-            "agent_context_too_large",
-        }
+    stop_reason = values.get("stop_reason")
+    legacy_agent_failure = (
+        stop_reason in {"planner_agent_failed", "agent_context_too_large"}
         and errors
         and set(errors).issubset(
             {"planner_agent_failed", "agent_context_too_large"}
         )
+    )
+    directive_projection_failure = (
+        stop_reason == "research_director_openevolve_context_invalid"
+        and errors == ("research_director_openevolve_context_invalid",)
+        and values.get("planner_failure_stage")
+        == "research_directive_projection"
+        and values.get("active_research_directive") is not None
+    )
+    return (
+        status == RunStatus.FAILED
+        and (legacy_agent_failure or directive_projection_failure)
         and values.get("active_hypothesis") is not None
         and values.get("search_request") is None
         and "plan_search" in values.get("executed_nodes", ())

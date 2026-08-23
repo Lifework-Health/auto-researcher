@@ -9,6 +9,7 @@ from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.execution import (
     EXECUTION_ERROR_VOCABULARY_VERSION,
     RunExecutionError,
+    can_resume_recoverable_planner_failure,
     inspect_terminal_run,
     resume_run,
     start_run,
@@ -144,6 +145,33 @@ def test_resume_recovers_exact_legacy_planner_failure_without_new_hypothesis(
     assert final["active_hypothesis"].hypothesis_id == hypothesis_id
     assert final["recovered_error_codes"] == ["planner_agent_failed"]
     assert final["last_executed_search_type"] == SearchType.DIRECT
+
+
+def test_research_directive_projection_failure_is_narrowly_recoverable():
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "research_director_openevolve_context_invalid",
+        "errors": ["research_director_openevolve_context_invalid"],
+        "planner_failure_stage": "research_directive_projection",
+        "active_research_directive": object(),
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "planner_failure_stage": "portfolio_policy"}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "active_research_directive": None}
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(

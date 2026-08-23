@@ -11,6 +11,7 @@ from auto_researcher.agents.models import (
     AgentBudgetPolicy,
     ModelCallConfig,
     ModelPricing,
+    ResearchDirective,
     ResearchLandscapeEvidence,
 )
 from auto_researcher.agents.research_director_policy import (
@@ -413,6 +414,57 @@ def test_research_directive_is_projected_into_openevolve_mutation_context():
     assert mutation_context["research_directive"]["directive_id"] == (
         directive.directive_id
     )
+    assert f"research-directive:{directive.directive_id}" in (
+        projected.evidence_references
+    )
+
+
+def test_research_directive_projection_preserves_safe_metadata_only_context():
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.DIRECT, SearchType.OPENEVOLVE}),
+        maximum_experiments=4,
+    )
+    state = _state(contract)
+    directive = ResearchDirective(
+        directive_id="directive-safe-projection",
+        trigger="campaign_start",
+        mechanism_hypothesis="A bounded structural mutation may improve Dice.",
+        rationale="Keep the sealed holdout unchanged while screening candidates.",
+        parent_references=(),
+        selected_operators=(SearchType.OPENEVOLVE,),
+        experiment_allocation={"OPENEVOLVE": 1},
+        targeted_dimensions=("feature_width",),
+        expected_observation="objective score improves at the screening rung",
+        falsification_condition="objective score does not improve",
+        alternative_explanations=(),
+        evidence_references=(
+            "artifact:req11-panel:abc123",
+            "checkpoint:abc123",
+        ),
+        confidence=0.7,
+        agent_call_id="model-call-safe-projection",
+        prompt_version="2.0.0",
+        context_hash="context-safe-projection",
+    )
+    request = SearchRequest(
+        request_id="search-safe-projection",
+        hypothesis_id="hypothesis-1",
+        search_type=SearchType.OPENEVOLVE,
+        target="objective_score",
+        search_space={"campaign_context": {"locked": True}},
+        experiment_budget=1,
+        rationale="bounded mutation",
+    )
+
+    projected = _apply_research_directive(
+        request,
+        {**state, "active_research_directive": directive},
+    )
+
+    context = projected.search_space["campaign_context"]["research_directive"]
+    assert context["mechanism_hypothesis"] == directive.mechanism_hypothesis
+    assert context["evidence_references"] == ["artifact:req11-panel:abc123"]
+    assert "rationale" not in context
     assert f"research-directive:{directive.directive_id}" in (
         projected.evidence_references
     )

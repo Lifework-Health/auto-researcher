@@ -147,16 +147,22 @@ def _apply_research_directive(
     raw_context = search_space.get("campaign_context", {})
     if not isinstance(raw_context, dict):
         raise ValueError("research_director_openevolve_context_invalid")
+    safe_evidence_references: list[str] = []
+    for evidence_reference in directive.evidence_references:
+        try:
+            assert_no_prohibited_dynamic_content(evidence_reference)
+        except ValueError:
+            continue
+        safe_evidence_references.append(evidence_reference)
     projection = {
         "directive_id": directive.directive_id,
         "trigger": directive.trigger,
         "mechanism_hypothesis": directive.mechanism_hypothesis,
-        "rationale": directive.rationale,
         "selected_operators": [item.value for item in directive.selected_operators],
         "targeted_dimensions": list(directive.targeted_dimensions),
         "expected_observation": directive.expected_observation,
         "falsification_condition": directive.falsification_condition,
-        "evidence_references": list(directive.evidence_references),
+        "evidence_references": safe_evidence_references,
         "confidence": directive.confidence,
     }
     try:
