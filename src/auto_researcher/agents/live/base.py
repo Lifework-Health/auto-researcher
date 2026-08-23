@@ -92,6 +92,46 @@ class BoundedStructuredCall:
         self.clock = clock
         self.sleeper = sleeper
 
+    def replay_latest_completed(
+        self,
+        *,
+        run_id: str,
+        cycle: int,
+        role: AgentRole,
+        response_model: type[ProposalT],
+        reconcile: Callable[[ProposalT, str], ResultT],
+    ) -> tuple[ResultT, AgentCallTelemetry] | None:
+        """Reconcile the latest completed same-cycle call after orchestration recovery."""
+
+        schema_version = json_schema_version(response_model)
+        completed = [
+            record
+            for record in self.store.list_records(run_id)
+            if record.cycle == cycle
+            and record.role == role
+            and record.status == AgentCallStatus.COMPLETED
+            and record.provider == self.config.provider
+            and record.model_id == self.config.model_id
+            and record.prompt_version == self.config.prompt_version
+            and record.response_schema_version == schema_version
+        ]
+        if not completed:
+            return None
+        record = completed[-1]
+        assert record.structured_output is not None
+        try:
+            proposal = response_model.model_validate(record.structured_output)
+            result = reconcile(proposal, record.call_id)
+        except (ValidationError, ReconciliationError) as exc:
+            raise LiveAgentExecutionError(
+                "completed_call_reconciliation_conflict"
+            ) from exc
+        return result, _telemetry_from_record(
+            record,
+            replayed=True,
+            maximum_cost_per_call=self.config.maximum_cost_per_call,
+        )
+
     def run(
         self,
         *,

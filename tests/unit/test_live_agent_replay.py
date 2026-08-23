@@ -233,6 +233,55 @@ def test_planner_projection_recovery_allows_exactly_one_replacement_call():
         )
 
 
+def test_recovery_reconciles_latest_completed_planner_call_without_provider():
+    store = InMemoryAgentCallStore()
+    client = FakeStructuredModelClient(
+        {},
+        {
+            "search_type": "DIRECT",
+            "target": "objective_score",
+            "proposed_search_space": {"complexity": 3, "noise": 0.1},
+            "requested_experiment_budget": 1,
+            "rationale": "Run one bounded direct experiment.",
+            "recommends_human_approval": False,
+        },
+    )
+    call = BoundedStructuredCall(
+        client=client,
+        config=_call_config(),
+        budget_policy=AgentBudgetPolicy(maximum_planner_calls_per_cycle=1),
+        store=store,
+        clock=lambda: NOW,
+    )
+    prompt = load_prompt("planner", "1.0.0")
+    first, _ = call.run(
+        run_id="planner-semantic-replay-run",
+        cycle=1,
+        role=AgentRole.PLANNER,
+        context_hash="original-context",
+        context_json="{}",
+        remaining_cost_budget=1.0,
+        model_calls_used=0,
+        prompt=prompt,
+        response_model=PlannerProposal,
+        reconcile=lambda proposal, _call_id: proposal,
+    )
+
+    replayed = call.replay_latest_completed(
+        run_id="planner-semantic-replay-run",
+        cycle=1,
+        role=AgentRole.PLANNER,
+        response_model=PlannerProposal,
+        reconcile=lambda proposal, _call_id: proposal,
+    )
+
+    assert replayed is not None
+    proposal, telemetry = replayed
+    assert proposal == first
+    assert telemetry.replayed is True
+    assert len(client.calls) == 1
+
+
 def test_conflicting_completed_snapshots_fail_closed():
     contract = default_synthetic_contract()
     store = InMemoryAgentCallStore()

@@ -49,6 +49,34 @@ class LivePlannerAgent:
 
     def plan(self, context: PlannerAgentContext) -> SearchRequest:
         try:
+            recovery_codes = set(context.recovered_error_codes)
+            if (
+                "research_director_openevolve_context_invalid" in recovery_codes
+                and recovery_codes.issubset(
+                    {
+                        "research_director_openevolve_context_invalid",
+                        "maximum_agent_calls_per_cycle_reached",
+                    }
+                )
+            ):
+                replayed = self._call.replay_latest_completed(
+                    run_id=context.run_id,
+                    cycle=context.cycle,
+                    role=AgentRole.PLANNER,
+                    response_model=PlannerProposal,
+                    reconcile=lambda proposal, call_id: self._reconciler.reconcile(
+                        proposal,
+                        context,
+                        call_id=call_id,
+                        prompt_version=self._prompt.version,
+                    ),
+                )
+                if replayed is not None:
+                    request, telemetry = replayed
+                    self._telemetry = telemetry.model_copy(
+                        update={"grounding_status": request.grounding_status}
+                    )
+                    return request
             request, telemetry = self._call.run(
                 run_id=context.run_id,
                 cycle=context.cycle,
