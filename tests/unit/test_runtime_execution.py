@@ -172,6 +172,25 @@ def test_research_directive_projection_failure_is_narrowly_recoverable():
         )
         is False
     )
+    secondary = {
+        **values,
+        "stop_reason": "maximum_agent_calls_per_cycle_reached",
+        "errors": [
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+        ],
+        "planner_failure_stage": "model_call",
+        "recovered_error_codes": [
+            "research_director_openevolve_context_invalid"
+        ],
+    }
+    assert can_resume_recoverable_planner_failure(secondary) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**secondary, "recovered_error_codes": ["planner_agent_failed"]}
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(

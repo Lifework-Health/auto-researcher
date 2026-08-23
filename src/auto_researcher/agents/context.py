@@ -451,6 +451,7 @@ class AgentContextAssembler:
                 "Unknown parameters, widening, and fixed-context changes are forbidden.",
             ),
             "research_directive": state.get("active_research_directive"),
+            "recovered_error_codes": tuple(state.get("recovered_error_codes", ())),
         }
         serialisable = {
             key: (

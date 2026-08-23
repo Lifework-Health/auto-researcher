@@ -183,9 +183,25 @@ def can_resume_recoverable_planner_failure(values: Mapping[str, Any]) -> bool:
         == "research_directive_projection"
         and values.get("active_research_directive") is not None
     )
+    projection_recovery_call_limit = (
+        stop_reason == "maximum_agent_calls_per_cycle_reached"
+        and set(errors)
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+        }
+        and values.get("planner_failure_stage") == "model_call"
+        and set(values.get("recovered_error_codes", ()))
+        == {"research_director_openevolve_context_invalid"}
+        and values.get("active_research_directive") is not None
+    )
     return (
         status == RunStatus.FAILED
-        and (legacy_agent_failure or directive_projection_failure)
+        and (
+            legacy_agent_failure
+            or directive_projection_failure
+            or projection_recovery_call_limit
+        )
         and values.get("active_hypothesis") is not None
         and values.get("search_request") is None
         and "plan_search" in values.get("executed_nodes", ())

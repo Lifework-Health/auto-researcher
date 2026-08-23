@@ -105,6 +105,7 @@ class BoundedStructuredCall:
         prompt: PromptBundle,
         response_model: type[ProposalT],
         reconcile: Callable[[ProposalT, str], ResultT],
+        recovered_error_codes: tuple[str, ...] = (),
     ) -> tuple[ResultT, AgentCallTelemetry]:
         if prompt.version != self.config.prompt_version:
             raise LiveAgentExecutionError("prompt_version_configuration_mismatch")
@@ -171,9 +172,22 @@ class BoundedStructuredCall:
                 >= self.budget_policy.maximum_research_director_calls_total
             ):
                 raise LiveAgentExecutionError("maximum_research_director_calls_reached")
+        recovery_codes = set(recovered_error_codes)
+        planner_projection_recovery = (
+            role == AgentRole.PLANNER
+            and "research_director_openevolve_context_invalid" in recovery_codes
+            and recovery_codes.issubset(
+                {
+                    "research_director_openevolve_context_invalid",
+                    "maximum_agent_calls_per_cycle_reached",
+                }
+            )
+            and len(existing_role_calls) == role_limit
+        )
         if (
             base_call_id not in existing_role_calls
             and len(existing_role_calls) >= role_limit
+            and not planner_projection_recovery
         ):
             raise LiveAgentExecutionError("maximum_agent_calls_per_cycle_reached")
         completed = self._completed_record(base_call_id)

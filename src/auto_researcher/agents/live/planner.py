@@ -65,6 +65,7 @@ class LivePlannerAgent:
                     call_id=call_id,
                     prompt_version=self._prompt.version,
                 ),
+                recovered_error_codes=context.recovered_error_codes,
             )
             self._telemetry = telemetry.model_copy(
                 update={"grounding_status": request.grounding_status}
