@@ -32,8 +32,10 @@ from auto_researcher.tasks.feta_unet_search.openevolve import (
 )
 from auto_researcher.tasks.feta_unet_search.portfolio import (
     V7_MECHANISM_PORTFOLIO_VERSION,
+    V8_PORTFOLIO_VERSION,
     apply_portfolio_policy,
     apply_v7_deadline_graduation_policy,
+    apply_v8_deadline_graduation_policy,
 )
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
@@ -673,10 +675,17 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
     ) -> SearchRequest | None:
         del remaining_seconds
         raw = runtime_context.task_options.get("campaign_portfolio")
-        if (
-            not isinstance(raw, dict)
-            or raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION
-        ):
+        if not isinstance(raw, dict):
+            return None
+        if raw.get("version") == V8_PORTFOLIO_VERSION:
+            return apply_v8_deadline_graduation_policy(
+                request,
+                run_id=run_id,
+                cycle=cycle,
+                events=events,
+                runtime_context=runtime_context,
+            )
+        if raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION:
             return None
         return apply_v7_deadline_graduation_policy(
             request,

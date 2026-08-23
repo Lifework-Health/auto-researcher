@@ -26,23 +26,21 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V8_MINIMUM_TRAINABLE_PARAMETERS,
     FeTAUNetSearchConfiguration,
 )
-from auto_researcher.tasks.feta_unet_search.portfolio import V7_REQ11_PANEL_IDENTITY
+from auto_researcher.tasks.feta_unet_search.portfolio import (
+    V7_REQ11_PANEL_IDENTITY,
+    V8_FIDELITY_TARGETS,
+    V8_INITIAL_ALLOCATION,
+    V8_PORTFOLIO_VERSION,
+    V8PortfolioPolicy,
+)
 from auto_researcher.tasks.feta_unet_search.continuation import (
     trajectory_identity,
 )
 from auto_researcher.tasks.feta_unet_search.task import FeTAUNetSearchTask
+from auto_researcher.tasks.models import TaskRuntimeContext
 
 V8_PREFLIGHT_SCHEMA_VERSION = "feta-unet-v8-planning-preflight-v1"
-V8_PORTFOLIO_VERSION = "feta-unet-v8-exploitation-44-30-18-8-4-3-v1"
-V8_FIDELITY_TARGETS = {10: 44, 15: 30, 25: 18, 50: 8, 100: 4, 150: 3}
 V8_OPERATOR_LIMITS = {"OPTUNA": 26, "OPENEVOLVE": 10, "DIRECT": 8}
-V8_INITIAL_ALLOCATION = {
-    "v7_structural_children": 8,
-    "dynunet_roots": 4,
-    "branch_local_optuna": 26,
-    "controlled_direct_ablations": 4,
-    "structural_wildcards": 2,
-}
 V8_DURATION_SECONDS = 32 * 60 * 60
 V8_FINALISATION_RESERVE_SECONDS = 6 * 60 * 60
 V8_RESEARCH_DIRECTOR_MODEL = "claude-opus-5"
@@ -91,8 +89,7 @@ def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
     if {item.evidence_type for item in evidence} != required:
         return False
     if any(
-        item.evidence_hash != payload_hash(dict(item.safe_payload))
-        for item in evidence
+        item.evidence_hash != payload_hash(dict(item.safe_payload)) for item in evidence
     ):
         return False
     by_type = {item.evidence_type: item for item in evidence}
@@ -104,8 +101,7 @@ def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
     if (
         v7.get("sealed_holdout_evaluations") != 0
         or req11.get("panel_identity") != V7_REQ11_PANEL_IDENTITY
-        or req11.get("objective_role")
-        != "parent_selection_and_close_tie_evidence_only"
+        or req11.get("objective_role") != "parent_selection_and_close_tie_evidence_only"
         or ensemble.get("sealed_holdout_evaluations") != 0
         or not isinstance(ensemble.get("mean_subject_macro_dice"), (int, float))
         or not isinstance(ensemble.get("best_single_score"), (int, float))
@@ -116,8 +112,7 @@ def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
         or failure.get("successful_evidence_affected") is not False
         or not isinstance(failure.get("trainable_parameters"), int)
         or not isinstance(failure.get("maximum_trainable_parameters"), int)
-        or failure["trainable_parameters"]
-        <= failure["maximum_trainable_parameters"]
+        or failure["trainable_parameters"] <= failure["maximum_trainable_parameters"]
     ):
         return False
     return payload_hash([item.model_dump(mode="json") for item in evidence]) == manifest
@@ -302,8 +297,7 @@ def build_v8_preflight_plan(
         if (
             candidate.model_variant != "structural_basic_unet"
             or candidate.maximum_epochs != 150
-            or trajectory_identity(candidate)
-            != parent["v8_seed_trajectory_identity"]
+            or trajectory_identity(candidate) != parent["v8_seed_trajectory_identity"]
         ):
             raise ValueError("feta_unet_v8_parent_selection_invalid")
         parent_ids.add(parent["experiment_id"])
@@ -318,6 +312,10 @@ def build_v8_preflight_plan(
         blockers.append("runtime_coefficients_pending")
     if options.get("campaign_portfolio_controller_implemented") is not True:
         blockers.append("v8_portfolio_controller_pending")
+    else:
+        V8PortfolioPolicy.from_runtime(TaskRuntimeContext(task_options=options))
+    if options.get("v8_parent_reuse_imported") is not True:
+        blockers.append("v8_parent_reuse_import_pending")
     if options.get("research_director_controller_implemented") is not True:
         blockers.append("research_director_controller_pending")
     if not _research_director_evidence_bound(options):

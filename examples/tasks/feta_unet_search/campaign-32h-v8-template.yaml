@@ -108,7 +108,8 @@ runtime:
     campaign_seconds_per_epoch: 120.0
     campaign_seconds_per_epoch_by_model_variant: {basic_unet: 70.0, unet_plain: 70.0, unet_residual: 70.0, structural_basic_unet: 90.0, dynunet: 120.0}
     campaign_runtime_rates_finalised: false
-    campaign_portfolio_controller_implemented: false
+    campaign_portfolio_controller_implemented: true
+    v8_parent_reuse_imported: false
     research_director_controller_implemented: true
     research_director_shadow_evaluation_implementation_ready: true
     research_director_shadow_evaluation_passed: false

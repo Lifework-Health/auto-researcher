@@ -237,7 +237,10 @@ class FeTAUNetSearchConfiguration(BaseModel):
     inference_overlap: float = 0.5
     inference_blending: Literal["gaussian"] = "gaussian"
     sliding_window_batch_size: Literal[1] = 1
-    seed: Literal[20260807] = 20260807
+    # The alternate value is reserved for the single predeclared V8 finalist
+    # confirmation.  Seed is intentionally absent from every search space, so
+    # it cannot become an optimisation dimension.
+    seed: Literal[20260807, 20260824] = 20260807
     progress_milestone_epochs: tuple[
         Literal[25], Literal[50], Literal[100], Literal[150]
     ] = (

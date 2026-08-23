@@ -29,6 +29,9 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V7_ARCHITECTURE_BUDGET,
     V7_MAXIMUM_TRAINABLE_PARAMETERS,
     V7_MINIMUM_TRAINABLE_PARAMETERS,
+    V8_DYNUNET_ARCHITECTURE_BUDGET,
+    V8_MAXIMUM_TRAINABLE_PARAMETERS,
+    V8_MINIMUM_TRAINABLE_PARAMETERS,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
 )
@@ -43,6 +46,20 @@ PORTFOLIO_VERSION = "feta-unet-60-18-7-2-portfolio-v1"
 TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-18-6-8-4-2-v3"
 V6_TREE_PORTFOLIO_VERSION = "feta-basicunet-architecture-tree-12-18-6-10-5-3-v1"
 V7_MECHANISM_PORTFOLIO_VERSION = "feta-basicunet-structural-tree-4-12-8-2-8-4-2-v2"
+V8_PORTFOLIO_VERSION = "feta-unet-v8-exploitation-44-30-18-8-4-3-v1"
+V8_FIDELITY_TARGETS = {10: 44, 15: 30, 25: 18, 50: 8, 100: 4, 150: 3}
+V8_OPERATOR_LIMITS = {
+    SearchType.OPTUNA: 26,
+    SearchType.OPENEVOLVE: 10,
+    SearchType.DIRECT: 8,
+}
+V8_INITIAL_ALLOCATION = {
+    "v7_structural_children": 8,
+    "dynunet_roots": 4,
+    "branch_local_optuna": 26,
+    "controlled_direct_ablations": 4,
+    "structural_wildcards": 2,
+}
 V7_REQ11_DIAGNOSTIC_SCHEMA_VERSION = "feta-unet-diagnostic-report-v1"
 V7_REQ11_PANEL_IDENTITY = (
     "c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871"
@@ -340,8 +357,7 @@ class V7MechanismPortfolioPolicy:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("feta_unet_v7_req11_diagnostic_invalid") from exc
         if (
-            req11_diagnostic.get("schema_version")
-            != V7_REQ11_DIAGNOSTIC_SCHEMA_VERSION
+            req11_diagnostic.get("schema_version") != V7_REQ11_DIAGNOSTIC_SCHEMA_VERSION
             or req11_diagnostic.get("diagnostic_id")
             != "feta-unet-v7-parent-diagnostics-20260822"
             or req11_diagnostic.get("panel_identity") != V7_REQ11_PANEL_IDENTITY
@@ -424,6 +440,114 @@ class V7MechanismPortfolioPolicy:
             wildcard_counts=wildcards,
             v6_parent_evidence=tuple(validated_v6_parents),
             req11_diagnostic=req11_diagnostic,
+        )
+
+
+@dataclass(frozen=True)
+class V8PortfolioPolicy:
+    selected_parents: tuple[dict[str, Any], ...]
+    dynunet_roots: tuple[dict[str, Any], ...]
+    direct_designs: tuple[str, ...]
+    fidelity_targets: dict[int, int]
+    operator_limits: dict[SearchType, int]
+
+    @classmethod
+    def from_runtime(cls, context: TaskRuntimeContext) -> "V8PortfolioPolicy":
+        raw = context.task_options.get("campaign_portfolio")
+        if not isinstance(raw, dict) or raw.get("version") != V8_PORTFOLIO_VERSION:
+            raise ValueError("feta_unet_v8_portfolio_invalid")
+        try:
+            targets = {
+                int(name): int(value)
+                for name, value in dict(raw["fidelity_targets"]).items()
+            }
+            limits = {
+                SearchType(name): int(value)
+                for name, value in dict(raw["operator_limits"]).items()
+            }
+            allocation = dict(raw["initial_candidate_allocation"])
+            parents = tuple(
+                dict(item)
+                for item in raw["parent_selection"]["selected_parents"]
+                if item.get("selection_role") == "mandatory"
+            )
+            dynunet_roots = tuple(
+                dict(item) for item in raw["dynunet_root_configurations"]
+            )
+            direct_designs = tuple(
+                str(item) for item in raw["controlled_direct_designs"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("feta_unet_v8_portfolio_invalid") from exc
+        if (
+            targets != V8_FIDELITY_TARGETS
+            or limits != V8_OPERATOR_LIMITS
+            or allocation != V8_INITIAL_ALLOCATION
+            or len(parents) != 2
+            or len(dynunet_roots) != 4
+            or len(direct_designs) != 4
+        ):
+            raise ValueError("feta_unet_v8_portfolio_invalid")
+
+        validated_parents: list[dict[str, Any]] = []
+        parent_identities: set[str] = set()
+        for item in parents:
+            try:
+                experiment_id = str(item["experiment_id"])
+                score = float(item["score"])
+                expected_identity = str(item["v8_seed_trajectory_identity"])
+                configuration = FeTAUNetSearchConfiguration.model_validate(
+                    item["configuration"]
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("feta_unet_v8_parent_evidence_invalid") from exc
+            seed_configuration = configuration.model_copy(update={"maximum_epochs": 10})
+            identity = trajectory_identity(seed_configuration)
+            if (
+                not experiment_id.startswith("experiment-")
+                or not math.isfinite(score)
+                or not 0.0 <= score <= 1.0
+                or configuration.maximum_epochs != 150
+                or configuration.model_variant != "structural_basic_unet"
+                or identity != expected_identity
+                or identity in parent_identities
+            ):
+                raise ValueError("feta_unet_v8_parent_evidence_invalid")
+            parent_identities.add(identity)
+            validated_parents.append(
+                {
+                    "experiment_id": experiment_id,
+                    "score": score,
+                    "trajectory_identity": identity,
+                    "configuration": seed_configuration.model_dump(mode="json"),
+                }
+            )
+
+        validated_roots: list[dict[str, Any]] = []
+        root_identities: set[str] = set()
+        for item in dynunet_roots:
+            configuration = FeTAUNetSearchConfiguration.model_validate(item)
+            identity = trajectory_identity(configuration)
+            if (
+                configuration.maximum_epochs != 10
+                or configuration.model_variant != "dynunet"
+                or configuration.architecture_budget != V8_DYNUNET_ARCHITECTURE_BUDGET
+                or identity in root_identities
+            ):
+                raise ValueError("feta_unet_v8_dynunet_roots_invalid")
+            root_identities.add(identity)
+            validated_roots.append(
+                {
+                    name: configuration.model_dump(mode="json")[name]
+                    for name in CANDIDATE_CONFIGURATION_FIELDS
+                }
+            )
+        return cls(
+            selected_parents=tuple(validated_parents),
+            dynunet_roots=tuple(validated_roots),
+            direct_designs=direct_designs,
+            fidelity_targets=targets,
+            operator_limits=limits,
         )
 
 
@@ -849,7 +973,7 @@ def _tree_references(
 
 
 def _local_optuna_space(
-    parent: CandidateEvidence, *, seed: int, trial_budget: int
+    parent: CandidateEvidence, *, seed: int, trial_budget: int, fidelity: int = 25
 ) -> dict[str, Any]:
     configuration = parent.configuration
     learning_rate = float(configuration["learning_rate"])
@@ -860,7 +984,7 @@ def _local_optuna_space(
         "seed": seed,
         "n_startup_trials": min(2, trial_budget),
         "fixed": {
-            "maximum_epochs": 25,
+            "maximum_epochs": fidelity,
             **{
                 name: configuration[name]
                 for name in (
@@ -873,6 +997,8 @@ def _local_optuna_space(
                     "residual_blocks",
                     "deep_supervision_heads",
                     "convolutions_per_stage",
+                    "stage_block_profile",
+                    "residual_profile",
                     "dilation_profile",
                     "skip_fusion",
                     "downsample",
@@ -1790,6 +1916,558 @@ def apply_v7_deadline_graduation_policy(
     )
 
 
+def _v8_parent_evidence(item: dict[str, Any]) -> CandidateEvidence:
+    configuration = FeTAUNetSearchConfiguration.model_validate(item["configuration"])
+    return CandidateEvidence(
+        experiment_id=str(item["experiment_id"]),
+        search_type=SearchType.DIRECT,
+        configuration={
+            name: configuration.model_dump(mode="json")[name]
+            for name in CANDIDATE_CONFIGURATION_FIELDS
+        },
+        trajectory_identity=str(item["trajectory_identity"]),
+        fidelity=10,
+        rung_score=float(item["score"]),
+        best_score=float(item["score"]),
+        trajectory_slope=0.0,
+    )
+
+
+def _v8_controlled_direct_ablation(
+    design: str,
+    parents: tuple[TreeCandidate, ...],
+    existing: set[str],
+) -> tuple[dict[str, Any], TreeCandidate]:
+    from auto_researcher.tasks.feta_unet_direct.model import (
+        create_unet_model,
+        trainable_parameter_count,
+    )
+
+    axes: dict[str, tuple[str, Any, Any]] = {
+        "remove_deep_supervision_from_selected_parent": (
+            "deep_supervision_heads",
+            lambda value: value > 0,
+            0,
+        ),
+        "replace_gated_skip_with_concat": (
+            "skip_fusion",
+            lambda value: value == "gated_concat",
+            "concat",
+        ),
+        "replace_stagewise_blocks_with_uniform_blocks": (
+            "stage_block_profile",
+            lambda value: value != "uniform",
+            "uniform",
+        ),
+        "replace_stagewise_residuals_with_uniform_residuals": (
+            "residual_profile",
+            lambda value: value != "uniform",
+            "uniform",
+        ),
+    }
+    if design not in axes:
+        raise ValueError("feta_unet_v8_direct_design_invalid")
+    name, applicable, replacement = axes[design]
+    ranked = sorted(
+        parents,
+        key=lambda item: (
+            item.evidence.best_score,
+            item.evidence.trajectory_slope,
+            item.evidence.trajectory_identity,
+        ),
+        reverse=True,
+    )
+    for parent in ranked:
+        base = {
+            field: parent.evidence.configuration[field]
+            for field in CANDIDATE_CONFIGURATION_FIELDS
+        }
+        if not applicable(base[name]):
+            continue
+        candidate = {**base, name: replacement, "maximum_epochs": 10}
+        try:
+            configuration = FeTAUNetSearchConfiguration.model_validate(candidate)
+            model = create_unet_model(configuration)
+        except ValueError:
+            continue
+        parameters = trainable_parameter_count(model)
+        del model
+        identity = trajectory_identity(configuration)
+        if (
+            V8_MINIMUM_TRAINABLE_PARAMETERS
+            <= parameters
+            <= V8_MAXIMUM_TRAINABLE_PARAMETERS
+            and identity not in existing
+        ):
+            return (
+                {
+                    field: configuration.model_dump(mode="json")[field]
+                    for field in CANDIDATE_CONFIGURATION_FIELDS
+                },
+                parent,
+            )
+    raise ValueError(f"feta_unet_v8_direct_design_unavailable:{design}")
+
+
+def _v8_promotion_cohort(
+    source: tuple[TreeCandidate, ...],
+    *,
+    target: int,
+    target_fidelity: int,
+) -> tuple[TreeCandidate, ...]:
+    eligible = source
+    if target_fidelity in {15, 25}:
+        dynunet_cap = {15: 10, 25: 6}[target_fidelity]
+        ranked = sorted(
+            source,
+            key=lambda item: (
+                item.evidence.best_score,
+                item.evidence.rung_score,
+                item.evidence.trajectory_slope,
+                item.evidence.trajectory_identity,
+            ),
+            reverse=True,
+        )
+        selected: list[TreeCandidate] = []
+        selected_dynunet = 0
+        for item in ranked:
+            is_dynunet = item.evidence.configuration["model_variant"] == "dynunet"
+            if is_dynunet and selected_dynunet >= dynunet_cap:
+                continue
+            selected.append(item)
+            selected_dynunet += int(is_dynunet)
+            if len(selected) == target:
+                break
+        eligible = tuple(selected)
+    if target_fidelity == 50:
+        structural = tuple(
+            item
+            for item in source
+            if item.evidence.configuration["model_variant"] != "dynunet"
+        )
+        dynunet = tuple(
+            item
+            for item in source
+            if item.evidence.configuration["model_variant"] == "dynunet"
+        )
+        if structural:
+            best_structural = max(item.evidence.rung_score for item in structural)
+            admitted_dynunet = tuple(
+                item
+                for item in sorted(
+                    dynunet,
+                    key=lambda candidate: (
+                        candidate.evidence.rung_score,
+                        candidate.evidence.trajectory_slope,
+                    ),
+                    reverse=True,
+                )
+                if best_structural - item.evidence.rung_score <= 0.015
+            )[:2]
+            eligible = (*structural, *admitted_dynunet)
+    return _tree_cohort(eligible, target=target, wildcard_count=min(2, target // 4))
+
+
+def apply_v8_portfolio_policy(
+    original: SearchRequest,
+    *,
+    run_id: str,
+    cycle: int,
+    events: tuple[DecisionEvent, ...],
+    runtime_context: TaskRuntimeContext,
+) -> SearchRequest | None:
+    """Run the frozen 44-to-3 mixed-family V8 exploitation envelope."""
+
+    policy = V8PortfolioPolicy.from_runtime(runtime_context)
+    candidates = _tree_candidates(events, _evidence(events))
+
+    structural_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "v8-structural-child" and item.action == SearchType.OPENEVOLVE
+    )
+    for raw_parent in policy.selected_parents:
+        parent = _v8_parent_evidence(raw_parent)
+        completed = {
+            item.evidence.trajectory_identity
+            for item in structural_candidates
+            if item.parent_trajectory == parent.trajectory_identity
+            and item.evidence.trajectory_identity != parent.trajectory_identity
+        }
+        if len(completed) >= 4:
+            continue
+        remaining = 4 - len(completed)
+        evaluations = remaining + 1
+        search_space = default_openevolve_configuration(
+            candidate_evaluations=evaluations
+        )
+        search_space["openevolve"].update(
+            {
+                "maximum_failed_candidates": evaluations,
+                "maximum_consecutive_failures": evaluations,
+            }
+        )
+        search_space["campaign_context"] = {
+            "incumbent_training_policy": policy_from_configuration(
+                parent.configuration
+            ).model_dump(mode="json"),
+            "incumbent_primary_score": parent.best_score,
+            "incumbent_search_type": SearchType.DIRECT.value,
+            "incumbent_experiment_id": parent.experiment_id,
+            "external_verified_incumbent": True,
+            "required_model_variant": "structural_basic_unet",
+            "required_architecture_budget": V7_ARCHITECTURE_BUDGET,
+            "mutation_objective": (
+                "Generate a novel structural BasicUNet child that changes at least one mechanism while using the bound V7, REQ-11 and ensemble evidence to prioritise topology continuity, deep-grey boundaries, external-CSF retention and complementary error structure."
+            ),
+            "prior_verified_results": [
+                {
+                    "search_type": SearchType.DIRECT.value,
+                    "primary_score": float(item["score"]),
+                    "configuration": item["configuration"],
+                    "source_experiment_id": item["experiment_id"],
+                    "evidence_role": "v7_parent_not_retrained",
+                }
+                for item in policy.selected_parents
+            ],
+        }
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v8-structural-openevolve",
+            search_type=SearchType.OPENEVOLVE,
+            search_space=search_space,
+            experiment_budget=evaluations,
+            rationale=(
+                f"{V8_PORTFOLIO_VERSION}: generate {remaining} novel structural children from verified V7 parent {parent.trajectory_identity[:12]}."
+            ),
+            evidence_references=_tree_references(
+                stage="v8-structural-child",
+                action=SearchType.OPENEVOLVE,
+                parent=parent.trajectory_identity,
+                root=parent.trajectory_identity,
+                extra=(parent.experiment_id, "parent-evidence:v7-verified-150"),
+            ),
+        )
+
+    dynunet_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "v8-dynunet-root" and item.action == SearchType.DIRECT
+    )
+    dynunet_identities = {
+        item.evidence.trajectory_identity for item in dynunet_candidates
+    }
+    for configuration in policy.dynunet_roots:
+        identity = trajectory_identity(
+            FeTAUNetSearchConfiguration.model_validate(configuration)
+        )
+        if identity in dynunet_identities:
+            continue
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v8-dynunet-root",
+            search_type=SearchType.DIRECT,
+            search_space=configuration,
+            experiment_budget=1,
+            rationale=(
+                f"{V8_PORTFOLIO_VERSION}: execute one frozen, independently bounded DynUNet mechanism root."
+            ),
+            evidence_references=_tree_references(
+                stage="v8-dynunet-root", action=SearchType.DIRECT
+            ),
+        )
+
+    structural = tuple(
+        _unique_tree_stage(structural_candidates, "v8-structural-child").values()
+    )
+    dynunet = tuple(_unique_tree_stage(dynunet_candidates, "v8-dynunet-root").values())
+    branch_parents = _tree_cohort((*structural, *dynunet), target=12, wildcard_count=2)
+    local_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "v8-local-optuna" and item.action == SearchType.OPTUNA
+    )
+    local_targets = {
+        item.evidence.trajectory_identity: (3 if index < 2 else 2)
+        for index, item in enumerate(branch_parents)
+    }
+    for parent in branch_parents:
+        parent_id = parent.evidence.trajectory_identity
+        completed = {
+            item.evidence.trajectory_identity
+            for item in local_candidates
+            if item.parent_trajectory == parent_id
+        }
+        target = local_targets[parent_id]
+        if len(completed) >= target:
+            continue
+        remaining = target - len(completed)
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v8-local-optuna",
+            search_type=SearchType.OPTUNA,
+            search_space=_local_optuna_space(
+                parent.evidence,
+                seed=_tree_seed(parent_id, SearchType.OPTUNA, len(completed)),
+                trial_budget=remaining,
+                fidelity=10,
+            ),
+            experiment_budget=remaining,
+            rationale=(
+                f"{V8_PORTFOLIO_VERSION}: run {remaining} branch-local trials around {parent_id[:12]} while fixing every architectural field."
+            ),
+            evidence_references=_tree_references(
+                stage="v8-local-optuna",
+                action=SearchType.OPTUNA,
+                parent=parent_id,
+                root=parent.root_trajectory,
+            ),
+        )
+
+    local = tuple(_unique_tree_stage(local_candidates, "v8-local-optuna").values())
+    direct_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "v8-direct-ablation" and item.action == SearchType.DIRECT
+    )
+    existing = {
+        item.evidence.trajectory_identity
+        for item in (*structural, *dynunet, *local, *direct_candidates)
+    }
+    for design in policy.direct_designs[len(direct_candidates) :]:
+        configuration, parent = _v8_controlled_direct_ablation(
+            design, structural, existing
+        )
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v8-direct-ablation",
+            search_type=SearchType.DIRECT,
+            search_space=configuration,
+            experiment_budget=1,
+            rationale=(
+                f"{V8_PORTFOLIO_VERSION}: execute controlled single-mechanism design {design} from lineage {parent.evidence.trajectory_identity[:12]}."
+            ),
+            evidence_references=_tree_references(
+                stage="v8-direct-ablation",
+                action=SearchType.DIRECT,
+                parent=parent.evidence.trajectory_identity,
+                root=parent.root_trajectory,
+                extra=(f"direct-design:{design}",),
+            ),
+        )
+
+    direct = tuple(_unique_tree_stage(direct_candidates, "v8-direct-ablation").values())
+    wildcard_candidates = tuple(
+        item
+        for item in candidates
+        if item.stage == "v8-structural-wildcard"
+        and item.action == SearchType.OPENEVOLVE
+    )
+    wildcard_identities = {
+        item.evidence.trajectory_identity for item in wildcard_candidates
+    }
+    wildcard_parents = _tree_cohort(structural, target=2, wildcard_count=1)
+    for parent in wildcard_parents:
+        completed = {
+            item.evidence.trajectory_identity
+            for item in wildcard_candidates
+            if item.parent_trajectory == parent.evidence.trajectory_identity
+            and item.evidence.trajectory_identity != parent.evidence.trajectory_identity
+        }
+        if completed:
+            continue
+        search_space = default_openevolve_configuration(candidate_evaluations=2)
+        search_space["openevolve"].update(
+            {"maximum_failed_candidates": 2, "maximum_consecutive_failures": 2}
+        )
+        search_space["campaign_context"] = {
+            "incumbent_training_policy": policy_from_configuration(
+                parent.evidence.configuration
+            ).model_dump(mode="json"),
+            "incumbent_primary_score": parent.evidence.best_score,
+            "incumbent_search_type": parent.action.value,
+            "incumbent_experiment_id": parent.evidence.experiment_id,
+            "required_model_variant": "structural_basic_unet",
+            "required_architecture_budget": V7_ARCHITECTURE_BUDGET,
+            "mutation_objective": (
+                "Explore one evidence-grounded structural wildcard outside the locally tuned neighborhood while preserving the 15M-150M parameter envelope and BasicUNet lineage."
+            ),
+        }
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v8-structural-wildcard",
+            search_type=SearchType.OPENEVOLVE,
+            search_space=search_space,
+            experiment_budget=2,
+            rationale=(
+                f"{V8_PORTFOLIO_VERSION}: evolve one structural wildcard from lineage {parent.evidence.trajectory_identity[:12]}."
+            ),
+            evidence_references=_tree_references(
+                stage="v8-structural-wildcard",
+                action=SearchType.OPENEVOLVE,
+                parent=parent.evidence.trajectory_identity,
+                root=parent.root_trajectory,
+            ),
+        )
+
+    wildcards = tuple(
+        _unique_tree_stage(wildcard_candidates, "v8-structural-wildcard").values()
+    )
+    del wildcard_identities
+    source = (*structural, *dynunet, *local, *direct, *wildcards)
+    source_fidelity = 10
+    for target_fidelity in (15, 25, 50, 100, 150):
+        cohort = _v8_promotion_cohort(
+            source,
+            target=policy.fidelity_targets[target_fidelity],
+            target_fidelity=target_fidelity,
+        )
+        completed = _unique_tree_stage(candidates, f"v8-promote-{target_fidelity}")
+        pending = next(
+            (
+                item
+                for item in cohort
+                if item.evidence.trajectory_identity not in completed
+            ),
+            None,
+        )
+        if pending is not None:
+            configuration = dict(pending.evidence.configuration)
+            configuration["maximum_epochs"] = target_fidelity
+            return _request(
+                original,
+                run_id=run_id,
+                cycle=cycle,
+                stage=f"v8-promote-{source_fidelity}-{target_fidelity}",
+                search_type=SearchType.DIRECT,
+                search_space=configuration,
+                experiment_budget=1,
+                rationale=(
+                    f"{V8_PORTFOLIO_VERSION}: continue diverse lineage {pending.evidence.trajectory_identity[:12]} from {source_fidelity} to {target_fidelity} epochs."
+                ),
+                evidence_references=_tree_references(
+                    stage=f"v8-promote-{target_fidelity}",
+                    action=pending.action,
+                    parent=pending.evidence.trajectory_identity,
+                    root=pending.root_trajectory,
+                    extra=(
+                        pending.evidence.experiment_id,
+                        f"promotion-from-epoch:{source_fidelity}",
+                        f"origin-search-type:{pending.action.value}",
+                    ),
+                ),
+            )
+        source = tuple(completed.values())
+        source_fidelity = target_fidelity
+
+    confirmations = _unique_tree_stage(candidates, "v8-confirmation-150")
+    if not confirmations:
+        finalists = _unique_tree_stage(candidates, "v8-promote-150")
+        champion = max(
+            finalists.values(),
+            key=lambda item: (
+                item.evidence.best_score,
+                item.evidence.rung_score,
+                item.evidence.trajectory_identity,
+            ),
+        )
+        configuration = dict(champion.evidence.configuration)
+        configuration.update({"maximum_epochs": 150, "seed": 20260824})
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v8-independent-confirmation",
+            search_type=SearchType.DIRECT,
+            search_space=configuration,
+            experiment_budget=1,
+            rationale=(
+                f"{V8_PORTFOLIO_VERSION}: independently confirm the selected development-fold champion with a predeclared alternate training seed."
+            ),
+            evidence_references=_tree_references(
+                stage="v8-confirmation-150",
+                action=SearchType.DIRECT,
+                parent=champion.evidence.trajectory_identity,
+                root=champion.root_trajectory,
+                extra=(champion.evidence.experiment_id, "confirmation-seed:20260824"),
+            ),
+        )
+    return None
+
+
+def apply_v8_deadline_graduation_policy(
+    original: SearchRequest,
+    *,
+    run_id: str,
+    cycle: int,
+    events: tuple[DecisionEvent, ...],
+    runtime_context: TaskRuntimeContext,
+) -> SearchRequest | None:
+    """Stop V8 exploration and protect three diverse 150-epoch finalists."""
+
+    V8PortfolioPolicy.from_runtime(runtime_context)
+    candidates = _tree_candidates(events, _evidence(events))
+    highest: dict[str, TreeCandidate] = {}
+    for item in candidates:
+        identity = item.evidence.trajectory_identity
+        current = highest.get(identity)
+        if current is None or item.evidence.fidelity > current.evidence.fidelity:
+            highest[identity] = item
+    completed = tuple(
+        item for item in highest.values() if item.evidence.fidelity == 150
+    )
+    remaining = V8_FIDELITY_TARGETS[150] - len(completed)
+    if remaining <= 0:
+        return None
+    pool = tuple(item for item in highest.values() if item.evidence.fidelity < 150)
+    if not pool:
+        return None
+    represented = {item.root_trajectory for item in completed}
+    diverse = tuple(item for item in pool if item.root_trajectory not in represented)
+    cohort = _tree_cohort(
+        diverse if len(diverse) >= remaining else pool,
+        target=remaining,
+        wildcard_count=0,
+    )
+    pending = cohort[0]
+    configuration = dict(pending.evidence.configuration)
+    configuration["maximum_epochs"] = 150
+    return _request(
+        original,
+        run_id=run_id,
+        cycle=cycle,
+        stage="v8-deadline-graduation",
+        search_type=SearchType.DIRECT,
+        search_space=configuration,
+        experiment_budget=1,
+        rationale=(
+            f"{V8_PORTFOLIO_VERSION}: protected deadline mode; stop exploration and continue diverse finalist {pending.evidence.trajectory_identity[:12]} from {pending.evidence.fidelity} to 150 epochs."
+        ),
+        evidence_references=_tree_references(
+            stage="v8-promote-150",
+            action=pending.action,
+            parent=pending.evidence.trajectory_identity,
+            root=pending.root_trajectory,
+            extra=(
+                pending.evidence.experiment_id,
+                f"promotion-from-epoch:{pending.evidence.fidelity}",
+                f"origin-search-type:{pending.action.value}",
+                "graduation-mode:protected-deadline",
+            ),
+        ),
+    )
+
+
 def apply_portfolio_policy(
     original: SearchRequest,
     *,
@@ -1799,6 +2477,17 @@ def apply_portfolio_policy(
     runtime_context: TaskRuntimeContext,
 ) -> SearchRequest | None:
     raw_policy = runtime_context.task_options.get("campaign_portfolio")
+    if (
+        isinstance(raw_policy, dict)
+        and raw_policy.get("version") == V8_PORTFOLIO_VERSION
+    ):
+        return apply_v8_portfolio_policy(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            events=events,
+            runtime_context=runtime_context,
+        )
     if (
         isinstance(raw_policy, dict)
         and raw_policy.get("version") == V7_MECHANISM_PORTFOLIO_VERSION
