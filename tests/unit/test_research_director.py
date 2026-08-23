@@ -144,6 +144,44 @@ def test_research_director_is_typed_checkpointed_and_replay_safe():
     assert len(client.calls) == 1
 
 
+def test_research_director_accepts_dict_restored_active_directive():
+    contract = default_synthetic_contract(
+        search_types=frozenset({SearchType.DIRECT}),
+        maximum_experiments=4,
+    )
+    store = InMemoryAgentCallStore()
+    client = FakeStructuredModelClient({}, _proposal(contract.contract_id))
+    client.model_id = "claude-opus-5"
+    dependencies = task_memory_dependencies(
+        SyntheticTask(),
+        TaskRuntimeContext(),
+        contract,
+        default_synthetic_configuration(),
+        clock=lambda: NOW,
+    )
+    director = LiveResearchDirectorAgent(
+        client=client,
+        call_config=_config(),
+        budget_policy=AgentBudgetPolicy(maximum_input_context_size=128_000),
+        call_store=store,
+        clock=lambda: NOW,
+    )
+    object.__setattr__(dependencies, "research_director_agent", director)
+    state = _state(contract)
+    first = research_director_decide(state, dependencies)
+    directive = first["active_research_directive"]
+
+    replay_state = {
+        **state,
+        "budget": first["budget"],
+        "active_research_directive": directive.model_dump(mode="json"),
+    }
+    second = research_director_decide(replay_state, dependencies)
+
+    assert second["research_director_trigger_history"] == ("campaign_start",)
+    assert len(client.calls) == 1
+
+
 def test_research_director_reuses_last_directive_after_transient_failure():
     contract = default_synthetic_contract(
         search_types=frozenset({SearchType.DIRECT}),
