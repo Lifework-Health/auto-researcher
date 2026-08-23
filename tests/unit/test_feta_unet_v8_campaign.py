@@ -336,6 +336,23 @@ def test_v8_dynunet_roots_are_unique_and_inside_parameter_envelope():
     )
 
 
+def test_v8_dynunet_parameter_budget_is_registered_by_trusted_runner():
+    from auto_researcher.tasks.feta_unet_direct.runner import (
+        _architecture_parameter_bounds,
+    )
+
+    raw = yaml.safe_load(TASK_CONFIG.read_text(encoding="utf-8"))
+    root = FeTAUNetSearchConfiguration.model_validate(
+        raw["runtime"]["options"]["campaign_portfolio"]["dynunet_root_configurations"][
+            0
+        ]
+    )
+    assert _architecture_parameter_bounds(root) == (
+        V8_MINIMUM_TRAINABLE_PARAMETERS,
+        V8_MAXIMUM_TRAINABLE_PARAMETERS,
+    )
+
+
 def test_v8_supports_real_ten_and_fifteen_epoch_trajectories():
     ten = FeTAUNetSearchConfiguration(maximum_epochs=10)
     fifteen = FeTAUNetSearchConfiguration(maximum_epochs=15)
