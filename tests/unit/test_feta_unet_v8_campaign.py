@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -24,7 +25,9 @@ from auto_researcher.tasks.feta_unet_search.v8_preflight import (
     V8_A6000_EPOCH_WORK,
     V8_FIDELITY_TARGETS,
     V8_PORTFOLIO_VERSION,
+    _cuda_preflight_valid,
     build_v8_preflight_plan,
+    run_v8_cuda_preflight,
 )
 from auto_researcher.tasks.feta_unet_search.continuation import trajectory_identity
 from auto_researcher.tasks.feta_unet_search.portfolio import (
@@ -365,6 +368,50 @@ def test_v8_preflight_accepts_hash_bound_measured_runtime_envelope(tmp_path):
     assert "runtime_coefficients_pending" not in plan["blockers"]
     assert plan["planned_training_seconds"] == 113_080.0
     assert plan["graduation_seconds"] == 13_800.0
+
+
+def test_v8_cuda_preflight_measures_both_parents_and_all_dynunet_roots():
+    from auto_researcher.runtime.identity import payload_hash
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 1
+
+        @staticmethod
+        def mem_get_info(_device):
+            total = 48 * 1024**3
+            return total, total
+
+        @staticmethod
+        def get_device_name(_device):
+            return "NVIDIA RTX A6000"
+
+    report = run_v8_cuda_preflight(
+        TASK_CONFIG,
+        CONTRACT,
+        torch_module=SimpleNamespace(cuda=FakeCuda()),
+        step_runner=lambda _configuration: 2 * 1024**3,
+    )
+    options = _options()
+    selected = options["campaign_portfolio"]["parent_selection"]["selected_parents"]
+
+    assert report["passed"] is True
+    assert report["model_calls_performed"] == 0
+    assert report["holdout_subjects_evaluated"] == 0
+    assert len(report["parents"]) == 2
+    assert report["dynunet_root_indexes"] == [0, 1, 2, 3]
+    assert len(report["dynunet_roots"]) == 4
+    assert _cuda_preflight_valid(
+        report,
+        payload_hash(report),
+        runtime_calibration_sha256=options["campaign_runtime_calibration_sha256"],
+        selected_parent_ids={item["experiment_id"] for item in selected},
+    )
 
 
 def test_v8_bound_evidence_matches_parent_and_director_manifests():

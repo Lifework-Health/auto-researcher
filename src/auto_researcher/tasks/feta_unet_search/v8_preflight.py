@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,11 @@ from auto_researcher.tasks.feta_unet_direct.model import (
     architecture_identity,
     create_unet_model,
     trainable_parameter_count,
+)
+from auto_researcher.tasks.feta_unet_direct.trainer import (
+    create_loss,
+    create_optimizer,
+    deep_supervision_training_loss,
 )
 from auto_researcher.tasks.feta_unet_search.configuration import (
     V8_DYNUNET_ARCHITECTURE_BUDGET,
@@ -50,6 +57,8 @@ V8_A6000_EPOCH_WORK = {
     "dynunet_promotable": 225,
     "v8_dyn_context_5": 10,
 }
+V8_CUDA_PREFLIGHT_SCHEMA_VERSION = "feta-unet-v8-cuda-preflight-v1"
+MAXIMUM_EXISTING_GPU_ALLOCATION_BYTES = 1024**3
 
 
 def _mapping(path: Path, reason: str) -> dict[str, Any]:
@@ -668,12 +677,166 @@ def build_v8_preflight_plan(
     }
 
 
+def _run_cuda_amp_step(
+    configuration: FeTAUNetSearchConfiguration,
+    torch: Any,
+) -> int:
+    model = None
+    optimizer = None
+    inputs = None
+    target = None
+    output = None
+    loss = None
+    try:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        model = create_unet_model(configuration).to("cuda")
+        model.train()
+        optimizer = create_optimizer(model, configuration)
+        loss_function = create_loss(configuration)
+        inputs = torch.randn(
+            (
+                configuration.batch_size,
+                configuration.in_channels,
+                *configuration.patch_size,
+            ),
+            device="cuda",
+            dtype=torch.float32,
+        )
+        target = torch.randint(
+            0,
+            configuration.out_channels,
+            (configuration.batch_size, 1, *configuration.patch_size),
+            device="cuda",
+            dtype=torch.int64,
+        )
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            output = model(inputs)
+            tensors = output if isinstance(output, (list, tuple)) else (output,)
+            if not all(bool(torch.isfinite(item).all()) for item in tensors):
+                raise ValueError("feta_unet_v8_preflight_prediction_non_finite")
+            loss = deep_supervision_training_loss(
+                output,
+                target,
+                loss_function,
+                configuration,
+            )
+        if not bool(torch.isfinite(loss)):
+            raise ValueError("feta_unet_v8_preflight_loss_non_finite")
+        loss.backward()
+        optimizer.step()
+        torch.cuda.synchronize()
+        peak = int(torch.cuda.max_memory_allocated())
+        if peak > V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
+            raise RuntimeError("feta_unet_v8_preflight_memory_ceiling_exceeded")
+        return peak
+    except torch.OutOfMemoryError as exc:
+        raise RuntimeError("feta_unet_v8_preflight_cuda_out_of_memory") from exc
+    finally:
+        del loss, output, target, inputs, optimizer, model
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+def run_v8_cuda_preflight(
+    task_config_path: Path,
+    contract_path: Path,
+    *,
+    torch_module: Any | None = None,
+    step_runner: Callable[[FeTAUNetSearchConfiguration], int] | None = None,
+) -> dict[str, Any]:
+    """Run one measured AMP training step for both parents and all DynUNet roots."""
+
+    build_v8_preflight_plan(task_config_path, contract_path)
+    raw_config = _mapping(
+        task_config_path, "feta_unet_v8_preflight_configuration_invalid"
+    )
+    options = raw_config["runtime"]["options"]
+    policy = V8PortfolioPolicy.from_runtime(TaskRuntimeContext(task_options=options))
+    if torch_module is None:
+        try:
+            import torch as torch_module
+        except ImportError as exc:
+            raise RuntimeError("feta_unet_v8_preflight_torch_unavailable") from exc
+    torch = torch_module
+    if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+        raise RuntimeError("feta_unet_v8_preflight_single_cuda_required")
+    free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+    if total_bytes < V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
+        raise RuntimeError("feta_unet_v8_preflight_gpu_capacity_insufficient")
+    if total_bytes - free_bytes > MAXIMUM_EXISTING_GPU_ALLOCATION_BYTES:
+        raise RuntimeError("feta_unet_v8_preflight_gpu_not_idle")
+
+    run_step = step_runner or (
+        lambda configuration: _run_cuda_amp_step(configuration, torch)
+    )
+
+    def measure(configuration: FeTAUNetSearchConfiguration) -> dict[str, Any]:
+        model = create_unet_model(configuration)
+        parameters = trainable_parameter_count(model)
+        identity = architecture_identity(configuration)
+        del model
+        if not (
+            V8_MINIMUM_TRAINABLE_PARAMETERS
+            <= parameters
+            <= V8_MAXIMUM_TRAINABLE_PARAMETERS
+        ):
+            raise ValueError("feta_unet_v8_preflight_parameter_envelope_invalid")
+        peak = int(run_step(configuration))
+        if peak < 0 or peak > V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
+            raise RuntimeError("feta_unet_v8_preflight_memory_ceiling_exceeded")
+        return {
+            "architecture_identity": identity,
+            "feature_width": configuration.feature_width,
+            "trainable_parameters": parameters,
+            "peak_gpu_memory_bytes": peak,
+            "peak_gpu_memory_gib": peak / 1024**3,
+            "measured_full_step_passed": True,
+        }
+
+    parent_results = []
+    for parent in policy.selected_parents:
+        configuration = FeTAUNetSearchConfiguration.model_validate(
+            parent["configuration"]
+        )
+        parent_results.append(
+            {
+                "experiment_id": parent["experiment_id"],
+                **measure(configuration),
+            }
+        )
+    root_results = []
+    for index, raw_root in enumerate(policy.dynunet_roots):
+        configuration = FeTAUNetSearchConfiguration.model_validate(raw_root)
+        root_results.append({"root_index": index, **measure(configuration)})
+
+    return {
+        "schema_version": V8_CUDA_PREFLIGHT_SCHEMA_VERSION,
+        "gpu": torch.cuda.get_device_name(0),
+        "gpu_total_memory_bytes": int(total_bytes),
+        "memory_ceiling_gib": V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES / 1024**3,
+        "holdout_subjects_evaluated": 0,
+        "runtime_calibration_sha256": options["campaign_runtime_calibration_sha256"],
+        "parents": parent_results,
+        "dynunet_root_indexes": [item["root_index"] for item in root_results],
+        "dynunet_roots": root_results,
+        "model_calls_performed": 0,
+        "passed": True,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("planning", "cuda"), default="planning")
     parser.add_argument("--task-config", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     args = parser.parse_args(argv)
-    value = build_v8_preflight_plan(args.task_config, args.contract)
+    value = (
+        run_v8_cuda_preflight(args.task_config, args.contract)
+        if args.mode == "cuda"
+        else build_v8_preflight_plan(args.task_config, args.contract)
+    )
     print(json.dumps(value, indent=2, sort_keys=True))
     return 0
 
