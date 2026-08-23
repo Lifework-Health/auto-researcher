@@ -14,6 +14,7 @@ from auto_researcher.secrets.models import (
     SecretResolutionError,
     SecretResolutionErrorCode,
 )
+from auto_researcher.secrets.linux_keyring import LinuxKernelKeyringSecretProvider
 
 
 @runtime_checkable
@@ -199,6 +200,8 @@ def provider_for_reference(reference: SecretReference) -> SecretProvider:
         return EnvironmentSecretProvider()
     if reference.provider is SecretProviderKind.GOOGLE_SECRET_MANAGER:
         return GoogleSecretManagerProvider()
+    if reference.provider is SecretProviderKind.LINUX_KERNEL_KEYRING:
+        return LinuxKernelKeyringSecretProvider()
     raise SecretResolutionError(
         SecretResolutionErrorCode.INVALID_REFERENCE,
         reference,

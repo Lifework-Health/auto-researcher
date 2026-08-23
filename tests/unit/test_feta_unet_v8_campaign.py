@@ -9,6 +9,7 @@ import yaml
 from auto_researcher.contracts.enums import EventType, ProvenanceKind, SearchType
 from auto_researcher.contracts.models import DecisionEvent, SearchRequest
 from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.secrets import SecretProviderKind, parse_secret_reference
 from auto_researcher.tasks.feta_unet_direct.model import (
     architecture_identity,
     create_unet_model,
@@ -43,6 +44,18 @@ BOUND_EVIDENCE = ROOT / "examples/tasks/feta_unet_search/v8-bound-evidence.yaml"
 
 def _options() -> dict:
     return yaml.safe_load(TASK_CONFIG.read_text(encoding="utf-8"))["runtime"]["options"]
+
+
+def test_v8_uses_one_persistent_keyring_reference_for_all_anthropic_calls():
+    task_config = yaml.safe_load(TASK_CONFIG.read_text(encoding="utf-8"))
+    agent_credential = parse_secret_reference(task_config["agents"]["credential"])
+    mutation_credential = parse_secret_reference(
+        task_config["openevolve_development_mutation"]["credential"]
+    )
+
+    assert agent_credential.provider is SecretProviderKind.LINUX_KERNEL_KEYRING
+    assert mutation_credential == agent_credential
+    assert agent_credential.provider_identifier == "auto-researcher/anthropic-api-key"
 
 
 def _original() -> SearchRequest:

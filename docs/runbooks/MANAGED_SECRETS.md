@@ -72,6 +72,54 @@ new runtime assembly resolves again, so a restart or fresh assembly observes a
 rotated environment value or managed-secret version. The runtime does not poll
 or refresh a credential inside an existing assembly.
 
+## Linux campaign-recovery keyring
+
+On a single Linux campaign server without Secret Manager, use the kernel user
+keyring rather than an exported environment variable or plaintext secret
+file. The value is supplied twice through hidden terminal input, reaches
+`keyctl` only on standard input, is readable only by the same Unix user, and is
+given a bounded lifetime. It does not enter shell history, process arguments,
+configuration, logs, checkpoints, provenance, or scientific identity.
+
+Load or rotate the credential once for a seven-day campaign window:
+
+```bash
+PYTHONPATH=src python -m auto_researcher.secret_cli keyring store \
+  --identifier auto-researcher/anthropic-api-key \
+  --timeout-seconds 604800
+```
+
+The command prints only the identifier and lifetime. Check presence without
+resolving or printing the value:
+
+```bash
+PYTHONPATH=src python -m auto_researcher.secret_cli keyring status \
+  --identifier auto-researcher/anthropic-api-key
+```
+
+Remove it when no longer required:
+
+```bash
+PYTHONPATH=src python -m auto_researcher.secret_cli keyring remove \
+  --identifier auto-researcher/anthropic-api-key
+```
+
+The keyring reference is value-free configuration:
+
+```yaml
+credential:
+  logical_name: anthropic_api_key
+  provider: linux_kernel_keyring
+  provider_identifier: auto-researcher/anthropic-api-key
+  required: true
+```
+
+The key must be loaded again after its timeout or a host reboot. Missing,
+expired, unreadable, or unavailable keyring state fails closed before provider
+dispatch. This mechanism is deliberately scoped to recovery by processes owned
+by the same Unix account; use attached identity plus a managed secret service
+for multi-host production deployment.
+
 ## Environment and local fallback
 
 Omitting `agents.credential` preserves the existing `ANTHROPIC_API_KEY`
