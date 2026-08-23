@@ -57,6 +57,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     CANDIDATE_CONFIGURATION_FIELDS,
     V6_ARCHITECTURE_BUDGET,
     V6_BASIC_UNET_FEATURE_PROFILES,
+    V8_DYNUNET_ARCHITECTURE_BUDGET,
 )
 from auto_researcher.tasks.feta_unet_search.evaluator import (
     AUGMENTATION_ID,
@@ -577,6 +578,63 @@ def test_v6_optuna_rejects_invalid_fixed_feature_vectors(
                 budget=2,
             ),
         )
+
+
+def test_v8_dynunet_optuna_accepts_complete_fixed_parent_architecture():
+    task = FeTAUNetSearchTask()
+    configuration = FeTAUNetSearchConfiguration(
+        maximum_epochs=10,
+        model_variant="dynunet",
+        feature_width="v8_dyn_balanced_5",
+        architecture_budget=V8_DYNUNET_ARCHITECTURE_BUDGET,
+        kernel_profile="large_front",
+        deep_supervision_heads=1,
+        activation="ReLU",
+        norm="instance",
+        optimizer="AdamW",
+    ).model_dump(mode="json")
+    fixed_names = (
+        "maximum_epochs",
+        "model_variant",
+        "feature_width",
+        "features",
+        "architecture_budget",
+        "upsample",
+        "kernel_profile",
+        "residual_blocks",
+        "deep_supervision_heads",
+        "convolutions_per_stage",
+        "stage_block_profile",
+        "residual_profile",
+        "dilation_profile",
+        "skip_fusion",
+        "downsample",
+        "activation",
+        "norm",
+        "optimizer",
+    )
+
+    specification = task.create_optuna_study_spec(
+        default_feta_unet_search_contract(),
+        _request(
+            SearchType.OPTUNA,
+            {"fixed": {name: configuration[name] for name in fixed_names}},
+            budget=1,
+        ),
+    )
+
+    invariant_names = {
+        "residual_blocks",
+        "convolutions_per_stage",
+        "stage_block_profile",
+        "residual_profile",
+        "dilation_profile",
+        "skip_fusion",
+        "downsample",
+    }
+    assert {
+        name: specification.fixed_configuration[name] for name in invariant_names
+    } == {name: configuration[name] for name in invariant_names}
 
 
 def test_v6_direct_replay_preserves_registered_feature_vector():

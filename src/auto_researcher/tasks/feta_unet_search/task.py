@@ -400,6 +400,25 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 feature_width=validated_architecture["feature_width"],
                 features=validated_architecture["features"],
             )
+            if v8_dynunet:
+                # DynUNet local studies may tune kernel/deep-supervision choices,
+                # but the remaining structural fields are task-owned invariants.
+                # Register those validated values so a portfolio request can bind
+                # the complete parent architecture without generic Optuna
+                # narrowing rejecting them as unknown fixed parameters.
+                registered_fixed_configuration.update(
+                    residual_blocks=validated_architecture["residual_blocks"],
+                    convolutions_per_stage=validated_architecture[
+                        "convolutions_per_stage"
+                    ],
+                    stage_block_profile=validated_architecture[
+                        "stage_block_profile"
+                    ],
+                    residual_profile=validated_architecture["residual_profile"],
+                    dilation_profile=validated_architecture["dilation_profile"],
+                    skip_fusion=validated_architecture["skip_fusion"],
+                    downsample=validated_architecture["downsample"],
+                )
         feature_width_parameters = (
             ()
             if fixed_feature_vector
