@@ -10,6 +10,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 ALLOWED_CHECKPOINT_TYPES = [
+    ("auto_researcher.agents.models", "ResearchDirective"),
     ("auto_researcher.contracts.enums", "EvidenceStatus"),
     ("auto_researcher.contracts.enums", "GroundingStatus"),
     ("auto_researcher.contracts.enums", "EventType"),

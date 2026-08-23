@@ -417,6 +417,18 @@ def test_research_directive_is_projected_into_openevolve_mutation_context():
     assert f"research-directive:{directive.directive_id}" in (
         projected.evidence_references
     )
+    projected_from_legacy_dict = _apply_research_directive(
+        request,
+        {
+            **_state(contract),
+            "active_research_directive": directive.model_dump(mode="json"),
+        },
+    )
+    assert (
+        projected_from_legacy_dict.search_space["campaign_context"]
+        ["research_directive"]["directive_id"]
+        == directive.directive_id
+    )
 
 
 def test_research_directive_projection_preserves_safe_metadata_only_context():

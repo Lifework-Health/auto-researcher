@@ -4,6 +4,7 @@ import hashlib
 
 from auto_researcher.agents.context import AgentContextAssemblyError
 from auto_researcher.agents.live.base import LiveAgentExecutionError
+from auto_researcher.agents.models import ResearchDirective
 from auto_researcher.agents.telemetry import (
     apply_agent_telemetry,
     consume_agent_telemetry,
@@ -134,6 +135,11 @@ def _apply_research_directive(
     directive = state.get("active_research_directive")
     if directive is None:
         return request
+    if not isinstance(directive, ResearchDirective):
+        try:
+            directive = ResearchDirective.model_validate(directive)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("research_director_openevolve_context_invalid") from exc
     reference = f"research-directive:{directive.directive_id}"
     evidence_references = tuple(dict.fromkeys((*request.evidence_references, reference)))
     if request.search_type != SearchType.OPENEVOLVE:
