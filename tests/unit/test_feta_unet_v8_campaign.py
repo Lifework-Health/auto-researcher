@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from auto_researcher.cli import _load_development_openevolve_runtime
 from auto_researcher.contracts.enums import EventType, ProvenanceKind, SearchType
 from auto_researcher.contracts.models import DecisionEvent, SearchRequest
 from auto_researcher.contracts.models import ResearchContract
@@ -59,6 +60,16 @@ def test_v8_uses_one_persistent_keyring_reference_for_all_anthropic_calls():
     assert agent_credential.provider is SecretProviderKind.LINUX_KERNEL_KEYRING
     assert mutation_credential == agent_credential
     assert agent_credential.provider_identifier == "auto-researcher/anthropic-api-key"
+
+
+def test_v8_development_openevolve_guardrails_fit_runtime_interface():
+    task_config = yaml.safe_load(TASK_CONFIG.read_text(encoding="utf-8"))
+
+    runtime = _load_development_openevolve_runtime(task_config)
+
+    assert runtime is not None
+    assert runtime.maximum_model_calls == 100
+    assert runtime.maximum_total_cost_usd == 50.0
 
 
 def _original() -> SearchRequest:
