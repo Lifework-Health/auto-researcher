@@ -133,10 +133,9 @@ runtime:
     v8_parent_reuse_imported: false
     research_director_controller_implemented: true
     research_director_shadow_evaluation_implementation_ready: true
-    research_director_shadow_evaluation_passed: false
-    research_director_live_smoke_sha256: null
     research_director_resume_replay_implementation_ready: true
-    research_director_resume_replay_passed: false
+    research_director_gate: null
+    research_director_gate_sha256: null
     research_director_evidence:
       - evidence_id: v7-final-evidence
         evidence_type: V7
@@ -225,7 +224,7 @@ runtime:
     research_director_evidence_manifest_sha256: 1b921f2c150317d597c04acf098437d3459005bceb5e5406fffd5984b655671c
     campaign_finalisation_reserve_seconds: 21600.0
     campaign_reporting_reserve_seconds: 1800.0
-    campaign_prior_results: 40
+    campaign_prior_results: 30
     continue_after_failed_candidate: true
     maximum_peak_gpu_memory_bytes: 47244640256
     launch_gate: blocked_pending_v8_validation

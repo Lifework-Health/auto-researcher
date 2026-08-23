@@ -249,6 +249,97 @@ def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
     return payload_hash([item.model_dump(mode="json") for item in evidence]) == manifest
 
 
+def _research_director_gate_valid(options: dict[str, Any]) -> bool:
+    report = options.get("research_director_gate")
+    report_sha256 = options.get("research_director_gate_sha256")
+    if (
+        not isinstance(report, dict)
+        or not _sha256_value(report_sha256)
+        or payload_hash(report) != report_sha256
+        or report.get("schema_version") != "feta-unet-v8-research-director-gate-v1"
+        or report.get("research_director_evidence_manifest_sha256")
+        != options.get("research_director_evidence_manifest_sha256")
+    ):
+        return False
+    report_base = dict(report)
+    internal_sha256 = report_base.pop("report_sha256", None)
+    if (
+        not _sha256_value(internal_sha256)
+        or payload_hash(report_base) != internal_sha256
+    ):
+        return False
+    model = report.get("model")
+    shadow = report.get("shadow_report")
+    first = report.get("first_call_telemetry")
+    replay = report.get("replay_telemetry")
+    directive = report.get("directive")
+    records = report.get("durable_call_records")
+    if not all(
+        isinstance(item, dict) for item in (model, shadow, first, replay, directive)
+    ):
+        return False
+    if not isinstance(records, list) or len(records) < 2:
+        return False
+    shadow_base = dict(shadow)
+    shadow_sha256 = shadow_base.pop("report_sha256", None)
+    if not _sha256_value(shadow_sha256) or payload_hash(shadow_base) != shadow_sha256:
+        return False
+    expected_limits = {"DIRECT": 8, "OPTUNA": 26, "OPENEVOLVE": 10}
+    allocation = directive.get("experiment_allocation")
+    if not isinstance(allocation, dict):
+        return False
+    try:
+        allocation_valid = (
+            set(allocation).issubset(expected_limits)
+            and all(
+                type(value) is int and 0 <= value <= expected_limits[key]
+                for key, value in allocation.items()
+            )
+            and sum(allocation.values()) <= 44
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        model.get("provider") == "anthropic"
+        and model.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+        and model.get("thinking") == {"type": "adaptive"}
+        and model.get("effort") == "xhigh"
+        and report.get("operator_limits") == expected_limits
+        and report.get("maximum_total_allocation") == 44
+        and report.get("passed") is True
+        and shadow.get("policy_id") == "feta-unet-v8-operator-envelope-v1"
+        and shadow.get("passed") is True
+        and shadow.get("violations") == []
+        and shadow.get("total_allocation") == sum(allocation.values())
+        and allocation_valid
+        and first.get("provider") == "anthropic"
+        and first.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+        and first.get("role") == "RESEARCH_DIRECTOR"
+        and first.get("replayed") is False
+        and first.get("failed") is False
+        and isinstance(first.get("provider_attempts"), int)
+        and first["provider_attempts"] >= 1
+        and replay.get("provider") == "anthropic"
+        and replay.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+        and replay.get("role") == "RESEARCH_DIRECTOR"
+        and replay.get("replayed") is True
+        and replay.get("failed") is False
+        and replay.get("call_id") == first.get("call_id")
+        and replay.get("context_hash") == first.get("context_hash")
+        and report.get("context_hash") == first.get("context_hash")
+        and report.get("replay_provider_calls") == 0
+        and report.get("directive_replayed_exactly") is True
+        and report.get("experiments_dispatched") == 0
+        and report.get("holdout_subjects_evaluated") == 0
+        and any(item.get("status") == "COMPLETED" for item in records)
+        and all(
+            item.get("provider") == "anthropic"
+            and item.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+            for item in records
+        )
+    )
+
+
 def build_v8_preflight_plan(
     task_config_path: Path,
     contract_path: Path,
@@ -513,11 +604,10 @@ def build_v8_preflight_plan(
         blockers.append("research_director_controller_pending")
     if not _research_director_evidence_bound(options):
         blockers.append("research_director_evidence_binding_pending")
-    if options.get("research_director_shadow_evaluation_passed") is not True:
+    research_director_gate_valid = _research_director_gate_valid(options)
+    if not research_director_gate_valid:
         blockers.append("research_director_shadow_evaluation_pending")
-    if not _sha256_value(options.get("research_director_live_smoke_sha256")):
         blockers.append("research_director_live_smoke_pending")
-    if options.get("research_director_resume_replay_passed") is not True:
         blockers.append("research_director_resume_replay_pending")
     cuda_preflight = options.get("cuda_preflight")
     cuda_preflight_sha256 = options.get("cuda_preflight_sha256")
@@ -556,6 +646,8 @@ def build_v8_preflight_plan(
             "effort": "xhigh",
             "maximum_calls": V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS,
             "finalisation_reserve_suppressed": True,
+            "gate_valid": research_director_gate_valid,
+            "gate_sha256": options.get("research_director_gate_sha256"),
         },
         "dynunet_gate": dynunet_gate,
         "lineage_rules": lineage,

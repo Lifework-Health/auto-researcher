@@ -289,6 +289,8 @@ def test_v8_planning_preflight_locks_envelope_but_blocks_launch():
         "effort": "xhigh",
         "maximum_calls": 8,
         "finalisation_reserve_suppressed": True,
+        "gate_valid": False,
+        "gate_sha256": None,
     }
 
 
