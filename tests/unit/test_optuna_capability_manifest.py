@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import optuna
 
 from auto_researcher.search.optuna.capabilities import (
     CAPABILITY_MANIFEST_VERSION,
     CapabilityClassification,
+    OPTUNA_4_9_0_PORTABLE_IDENTITY,
+    OPTUNA_PORTABLE_IDENTITY_SCHEME,
+    portable_distribution_identity,
     verify_capability_manifest,
 )
 from auto_researcher.search.optuna.components import NATIVE_PRUNERS, NATIVE_SAMPLERS
@@ -106,6 +110,34 @@ def test_exact_pin_capability_manifest_is_executable_and_complete() -> None:
     assert len(capabilities) >= 95
     assert sum(manifest.counts().values()) == len(capabilities)
     assert all(manifest.counts().values())
+
+
+def test_optuna_identity_excludes_environment_generated_record_rows() -> None:
+    class File:
+        def __init__(self, name: str, value: str) -> None:
+            self.name = name
+            self.hash = SimpleNamespace(mode="sha256", value=value)
+
+        def __str__(self) -> str:
+            return self.name
+
+    wheel_rows = [
+        File("optuna/__init__.py", "package"),
+        File("optuna-4.9.0.dist-info/METADATA", "metadata"),
+        File("optuna-4.9.0.dist-info/WHEEL", "wheel"),
+    ]
+    first = portable_distribution_identity(
+        [*wheel_rows, File("../../../bin/optuna", "mac-launcher")]
+    )
+    second = portable_distribution_identity(
+        [*wheel_rows, File("../../../bin/optuna", "linux-launcher")]
+    )
+
+    assert OPTUNA_PORTABLE_IDENTITY_SCHEME == (
+        "optuna-portable-wheel-content-identity-v1"
+    )
+    assert first == second
+    assert len(OPTUNA_4_9_0_PORTABLE_IDENTITY) == 64
 
 
 def test_manifest_claims_name_real_runtime_probes_and_adapter_contracts() -> None:

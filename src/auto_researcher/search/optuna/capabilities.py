@@ -12,6 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 CAPABILITY_MANIFEST_VERSION = "optuna-capability-manifest-v1"
+OPTUNA_PORTABLE_IDENTITY_SCHEME = "optuna-portable-wheel-content-identity-v1"
+OPTUNA_4_9_0_PORTABLE_IDENTITY = (
+    "e4fe2b30f50e56472c518dc839d67d96a2c703089b92efdc80f9800aa43eda8d"
+)
 
 
 class CapabilityClassification(StrEnum):
@@ -102,6 +106,29 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def portable_distribution_identity(files: object) -> str:
+    """Hash only wheel-provided Optuna content, excluding environment artefacts."""
+
+    rows: list[str] = []
+    for item in files or ():  # type: ignore[union-attr]
+        name = str(item)
+        lowered = name.casefold()
+        content_hash = getattr(item, "hash", None)
+        if content_hash is None:
+            continue
+        if "__pycache__" in lowered.split("/") or lowered.endswith(".pyc"):
+            continue
+        if not (
+            name.startswith("optuna/")
+            or name.endswith((".dist-info/METADATA", ".dist-info/WHEEL"))
+        ):
+            continue
+        rows.append(f"{name}|{content_hash.mode}|{content_hash.value}")
+    if not rows:
+        raise ValueError("portable Optuna distribution identity has no hashed rows")
+    return hashlib.sha256(("\n".join(sorted(rows)) + "\n").encode()).hexdigest()
+
+
 def verify_capability_manifest(
     path: Path,
     *,
@@ -117,15 +144,9 @@ def verify_capability_manifest(
     distribution = metadata.distribution(manifest.upstream_package)
     if distribution.version != manifest.upstream_version:
         raise ValueError("installed Optuna version does not match capability manifest")
-    record_entry = next(
-        (item for item in distribution.files or () if item.name == "RECORD"),
-        None,
-    )
-    if record_entry is None:
-        raise ValueError("installed Optuna distribution has no RECORD")
-    record_path = Path(str(distribution.locate_file(record_entry)))
-    if _sha256(record_path) != manifest.installed_record_hash:
-        raise ValueError("installed Optuna RECORD hash does not match manifest")
+    portable_identity = portable_distribution_identity(distribution.files)
+    if portable_identity != OPTUNA_4_9_0_PORTABLE_IDENTITY:
+        raise ValueError("installed Optuna portable identity does not match manifest")
     lock_path = repository_root / manifest.dependency_lock
     if _sha256(lock_path) != manifest.dependency_lock_sha256:
         raise ValueError("Optuna dependency lock changed without manifest review")
