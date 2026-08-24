@@ -716,6 +716,84 @@ def test_v8_controller_recovers_verified_duplicate_without_cherry_picking():
     assert second.experiment_budget == 4
 
 
+def test_v8_wildcard_duplicate_of_screened_candidate_is_retried():
+    context = TaskRuntimeContext(task_options=_options())
+    events: list[DecisionEvent] = []
+    experiment_index = 0
+
+    for cycle in range(1, 100):
+        request = apply_portfolio_policy(
+            _original(),
+            run_id="v8-run",
+            cycle=cycle,
+            events=tuple(events),
+            runtime_context=context,
+        )
+        assert request is not None
+        if _stage(request) == "v8-structural-wildcard":
+            break
+        events.append(_planned(cycle, request))
+        for configuration in _simulated_configurations(
+            request, request_index=cycle
+        ):
+            experiment_index += 1
+            experiment_id = f"experiment-v8-{experiment_index:03d}"
+            events.extend(
+                (
+                    _prepared(cycle, request, experiment_id),
+                    _verified(
+                        cycle,
+                        experiment_id,
+                        configuration,
+                        0.70 + experiment_index / 10_000,
+                        request.search_type,
+                    ),
+                )
+            )
+    else:
+        raise AssertionError("V8 controller did not reach the wildcard stage")
+
+    parent_reference = next(
+        reference
+        for reference in request.evidence_references
+        if reference.startswith("tree-parent:")
+    )
+    candidates = _tree_candidates(tuple(events), _evidence(tuple(events)))
+    duplicate = next(
+        item.evidence.configuration
+        for item in candidates
+        if item.stage == "v8-structural-child"
+        and item.evidence.trajectory_identity
+        != parent_reference.removeprefix("tree-parent:")
+    )
+    duplicate_experiment = "experiment-v8-wildcard-duplicate"
+    events.extend(
+        (
+            _planned(cycle, request),
+            _prepared(cycle, request, duplicate_experiment),
+            _verified(
+                cycle,
+                duplicate_experiment,
+                duplicate,
+                0.75,
+                SearchType.OPENEVOLVE,
+            ),
+        )
+    )
+
+    retry = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=cycle + 1,
+        events=tuple(events),
+        runtime_context=context,
+    )
+
+    assert retry is not None
+    assert _stage(retry) == "v8-structural-wildcard"
+    assert parent_reference in retry.evidence_references
+
+
 def test_v8_controller_skips_only_an_inapplicable_frozen_direct_ablation(
     monkeypatch: pytest.MonkeyPatch,
 ):

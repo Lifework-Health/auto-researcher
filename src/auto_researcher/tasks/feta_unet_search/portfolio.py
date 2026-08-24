@@ -2377,8 +2377,9 @@ def apply_v8_portfolio_policy(
         if item.stage == "v8-structural-wildcard"
         and item.action == SearchType.OPENEVOLVE
     )
-    wildcard_identities = {
-        item.evidence.trajectory_identity for item in wildcard_candidates
+    pre_wildcard_identities = {
+        item.evidence.trajectory_identity
+        for item in (*structural, *dynunet, *local, *direct)
     }
     wildcard_parents = _tree_cohort(structural, target=2, wildcard_count=1)
     for parent in wildcard_parents:
@@ -2387,6 +2388,7 @@ def apply_v8_portfolio_policy(
             for item in wildcard_candidates
             if item.parent_trajectory == parent.evidence.trajectory_identity
             and item.evidence.trajectory_identity != parent.evidence.trajectory_identity
+            and item.evidence.trajectory_identity not in pre_wildcard_identities
         }
         if completed:
             continue
@@ -2429,7 +2431,6 @@ def apply_v8_portfolio_policy(
     wildcards = tuple(
         _unique_tree_stage(wildcard_candidates, "v8-structural-wildcard").values()
     )
-    del wildcard_identities
     source = (*structural, *dynunet, *local, *direct, *wildcards)
     source_fidelity = 10
     for target_fidelity in (15, 25, 50, 100, 150):
