@@ -2048,6 +2048,38 @@ def _v8_controlled_direct_ablation(
     raise ValueError(f"feta_unet_v8_direct_design_unavailable:{design}")
 
 
+def _v8_completed_direct_designs(
+    events: tuple[DecisionEvent, ...],
+    candidates: tuple[TreeCandidate, ...],
+) -> set[str]:
+    verified_experiments = {
+        item.evidence.experiment_id for item in candidates
+    }
+    completed_requests = {
+        event.input_references[0]
+        for event in events
+        if event.event_type == EventType.EXPERIMENT_PREPARED
+        and event.input_references
+        and event.output_references
+        and event.output_references[0] in verified_experiments
+    }
+    completed: set[str] = set()
+    prefix = "evidence_reference:direct-design:"
+    for event in events:
+        if (
+            event.event_type != EventType.SEARCH_PLANNED
+            or not event.output_references
+            or event.output_references[0] not in completed_requests
+        ):
+            continue
+        completed.update(
+            reference.removeprefix(prefix)
+            for reference in event.output_references
+            if reference.startswith(prefix)
+        )
+    return completed
+
+
 def _v8_promotion_cohort(
     source: tuple[TreeCandidate, ...],
     *,
@@ -2300,10 +2332,24 @@ def apply_v8_portfolio_policy(
         item.evidence.trajectory_identity
         for item in (*structural, *dynunet, *local, *direct_candidates)
     }
-    for design in policy.direct_designs[len(direct_candidates) :]:
-        configuration, parent = _v8_controlled_direct_ablation(
-            design, structural, existing
-        )
+    completed_direct_designs = _v8_completed_direct_designs(
+        events, direct_candidates
+    )
+    for design in policy.direct_designs:
+        if design in completed_direct_designs:
+            continue
+        try:
+            configuration, parent = _v8_controlled_direct_ablation(
+                design, structural, existing
+            )
+        except ValueError as exc:
+            if str(exc) != f"feta_unet_v8_direct_design_unavailable:{design}":
+                raise
+            # A frozen ablation can be inapplicable when evolution produces no
+            # parent carrying the mechanism that it was intended to remove.
+            # Skip only that impossible design and retain the remaining frozen
+            # ablations instead of failing the campaign controller.
+            continue
         return _request(
             original,
             run_id=run_id,

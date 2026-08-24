@@ -31,6 +31,7 @@ from auto_researcher.tasks.feta_unet_search.v8_preflight import (
     run_v8_cuda_preflight,
 )
 from auto_researcher.tasks.feta_unet_search.continuation import trajectory_identity
+from auto_researcher.tasks.feta_unet_search import portfolio as portfolio_module
 from auto_researcher.tasks.feta_unet_search.portfolio import (
     V8PortfolioPolicy,
     _evidence,
@@ -713,6 +714,40 @@ def test_v8_controller_recovers_verified_duplicate_without_cherry_picking():
     assert second is not None
     assert _stage(second) == "v8-structural-child"
     assert second.experiment_budget == 4
+
+
+def test_v8_controller_skips_only_an_inapplicable_frozen_direct_ablation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_ablation = portfolio_module._v8_controlled_direct_ablation
+    unavailable = "replace_stagewise_blocks_with_uniform_blocks"
+
+    def controlled_ablation(design, parents, existing):
+        if design == unavailable:
+            raise ValueError(f"feta_unet_v8_direct_design_unavailable:{design}")
+        return original_ablation(design, parents, existing)
+
+    monkeypatch.setattr(
+        portfolio_module,
+        "_v8_controlled_direct_ablation",
+        controlled_ablation,
+    )
+
+    _, requests = _replay_v8_portfolio()
+    direct_designs = [
+        reference.removeprefix("direct-design:")
+        for request in requests
+        if _stage(request) == "v8-direct-ablation"
+        for reference in request.evidence_references
+        if reference.startswith("direct-design:")
+    ]
+
+    assert direct_designs == [
+        "remove_deep_supervision_from_selected_parent",
+        "replace_gated_skip_with_concat",
+        "replace_stagewise_residuals_with_uniform_residuals",
+    ]
+    assert _stage(requests[-1]) == "v8-promote-150"
 
 
 def test_v8_local_optuna_replay_fixes_every_architectural_field():
