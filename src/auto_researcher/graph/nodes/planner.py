@@ -160,7 +160,7 @@ def _apply_research_directive(
         except ValueError:
             continue
         safe_evidence_references.append(evidence_reference)
-    projection = {
+    projection_candidates = {
         "directive_id": directive.directive_id,
         "trigger": directive.trigger,
         "mechanism_hypothesis": directive.mechanism_hypothesis,
@@ -171,6 +171,18 @@ def _apply_research_directive(
         "evidence_references": safe_evidence_references,
         "confidence": directive.confidence,
     }
+    projection: dict[str, object] = {}
+    for name, value in projection_candidates.items():
+        try:
+            assert_no_prohibited_dynamic_content(value)
+        except ValueError:
+            # The complete directive remains durably available to the
+            # controller and planner.  OpenEvolve receives only individual
+            # fields that satisfy its stricter metadata-only boundary.
+            continue
+        projection[name] = value
+    if projection.get("directive_id") != directive.directive_id:
+        raise ValueError("research_director_openevolve_context_invalid")
     try:
         assert_no_prohibited_dynamic_content(projection)
     except ValueError as exc:

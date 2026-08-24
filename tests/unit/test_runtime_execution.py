@@ -224,6 +224,39 @@ def test_v8_duplicate_portfolio_failure_is_narrowly_recoverable():
     )
 
 
+def test_v8_cumulative_directive_projection_failure_is_narrowly_recoverable():
+    historical = [
+        "research_director_openevolve_context_invalid",
+        "maximum_agent_calls_per_cycle_reached",
+        "planner_agent_failed",
+    ]
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "research_director_openevolve_context_invalid",
+        "errors": [*historical, "planner_agent_failed", historical[0]],
+        "planner_failure_stage": "research_directive_projection",
+        "recovered_error_codes": historical,
+        "active_research_directive": object(),
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "recovered_error_codes": historical[:-1]}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "errors": [*values["errors"], "unexpected_error"]}
+        )
+        is False
+    )
+
+
 @pytest.mark.parametrize(
     ("changed", "code"),
     [

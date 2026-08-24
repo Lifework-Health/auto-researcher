@@ -484,7 +484,10 @@ def test_research_directive_projection_preserves_safe_metadata_only_context():
         selected_operators=(SearchType.OPENEVOLVE,),
         experiment_allocation={"OPENEVOLVE": 1},
         targeted_dimensions=("feature_width",),
-        expected_observation="objective score improves at the screening rung",
+        expected_observation=(
+            "objective score improves across 14 validation subjects at the "
+            "screening rung"
+        ),
         falsification_condition="objective score does not improve",
         alternative_explanations=(),
         evidence_references=(
@@ -514,6 +517,7 @@ def test_research_directive_projection_preserves_safe_metadata_only_context():
     context = projected.search_space["campaign_context"]["research_directive"]
     assert context["mechanism_hypothesis"] == directive.mechanism_hypothesis
     assert context["evidence_references"] == ["artifact:req11-panel:abc123"]
+    assert "expected_observation" not in context
     assert "rationale" not in context
     assert f"research-directive:{directive.directive_id}" in (
         projected.evidence_references
