@@ -793,6 +793,63 @@ def test_v8_wildcard_duplicate_of_screened_candidate_is_retried():
     assert _stage(retry) == "v8-structural-wildcard"
     assert parent_reference in retry.evidence_references
 
+    experiment_index += 1
+    retry_experiment = f"experiment-v8-{experiment_index:03d}"
+    retry_configuration = _simulated_configurations(
+        retry, request_index=cycle + 1
+    )[0]
+    events.extend(
+        (
+            _planned(cycle + 1, retry),
+            _prepared(cycle + 1, retry, retry_experiment),
+            _verified(
+                cycle + 1,
+                retry_experiment,
+                retry_configuration,
+                0.76,
+                SearchType.OPENEVOLVE,
+            ),
+        )
+    )
+
+    second_wildcard = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=cycle + 2,
+        events=tuple(events),
+        runtime_context=context,
+    )
+    assert second_wildcard is not None
+    assert _stage(second_wildcard) == "v8-structural-wildcard"
+    experiment_index += 1
+    second_experiment = f"experiment-v8-{experiment_index:03d}"
+    second_configuration = _simulated_configurations(
+        second_wildcard, request_index=cycle + 2
+    )[0]
+    events.extend(
+        (
+            _planned(cycle + 2, second_wildcard),
+            _prepared(cycle + 2, second_wildcard, second_experiment),
+            _verified(
+                cycle + 2,
+                second_experiment,
+                second_configuration,
+                0.77,
+                SearchType.OPENEVOLVE,
+            ),
+        )
+    )
+
+    promotion = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=cycle + 3,
+        events=tuple(events),
+        runtime_context=context,
+    )
+    assert promotion is not None
+    assert _stage(promotion) == "v8-promote-15"
+
 
 def test_v8_controller_skips_only_an_inapplicable_frozen_direct_ablation(
     monkeypatch: pytest.MonkeyPatch,

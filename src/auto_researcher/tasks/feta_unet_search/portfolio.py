@@ -2429,7 +2429,11 @@ def apply_v8_portfolio_policy(
         )
 
     wildcards = tuple(
-        _unique_tree_stage(wildcard_candidates, "v8-structural-wildcard").values()
+        item
+        for item in _unique_tree_stage(
+            wildcard_candidates, "v8-structural-wildcard"
+        ).values()
+        if item.evidence.trajectory_identity not in pre_wildcard_identities
     )
     source = (*structural, *dynunet, *local, *direct, *wildcards)
     source_fidelity = 10
