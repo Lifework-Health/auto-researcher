@@ -7,22 +7,31 @@ import pytest
 import yaml
 
 from auto_researcher.agents.models import AgentBudgetPolicy
+from auto_researcher.contracts.enums import SearchType
+from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.research_intelligence import LiteratureScoutMode
 from auto_researcher.tasks.feta_unet_search.configuration import (
+    CANDIDATE_CONFIGURATION_FIELDS,
     V9_CONFIGURATION_SCHEMA_VERSION,
     FeTAUNetSearchConfiguration,
 )
-from auto_researcher.tasks.feta_unet_search.v9_preflight import static_v9_preflight
+from auto_researcher.tasks.feta_unet_search.v9_preflight import (
+    run_v9_cuda_calibration,
+    static_v9_preflight,
+)
 from auto_researcher.tasks.feta_unet_search.v9_research_intelligence import (
     build_v9_knowledge_library,
     build_v9_literature_brief,
     reviewed_v9_materials,
     v9_director_evidence,
 )
+from auto_researcher.tasks.feta_unet_search.task import FeTAUNetSearchTask
+from auto_researcher.tasks.models import TaskRuntimeContext
 
 ROOT = Path(__file__).parents[2]
 CONFIG = ROOT / "examples/tasks/feta_unet_search/campaign-36h-v9-template.yaml"
 EVIDENCE = ROOT / "examples/tasks/feta_unet_search/v9-bound-evidence.json"
+CONTRACT = ROOT / "examples/tasks/feta_unet_search/contract-36h-v9.yaml"
 
 
 def _root(feature_width: str) -> dict:
@@ -140,3 +149,126 @@ def test_valid_decision_budget_is_separate_from_raw_director_call_cap():
     assert policy.maximum_research_director_calls_total == 64
     assert policy.maximum_research_director_valid_decisions_total == 16
     assert policy.maximum_total_model_calls == 768
+
+
+def test_v9_contract_and_agent_context_keep_evolution_inside_dynunet():
+    contract = ResearchContract.model_validate(
+        yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    )
+    task = FeTAUNetSearchTask()
+    task.validate_contract(contract)
+    context = task.create_agent_context(
+        contract,
+        TaskRuntimeContext(task_options={"openevolve_fidelity": 15}),
+        {},
+    )
+
+    assert context.direct_configuration_schema["model_variant"] == [
+        "dynunet",
+        "attention_unet",
+        "unetr",
+        "swin_unetr",
+    ]
+    assert context.openevolve_space_summary["mutable_policy"]["model_variant"] == [
+        "dynunet"
+    ]
+    assert context.openevolve_space_summary["mutable_policy"][
+        "architecture_budget"
+    ] == ["dynunet-15m-150m-v1"]
+    assert 30 in context.direct_configuration_schema["maximum_epochs"]
+
+
+def test_v9_branch_local_optuna_fixes_attention_architecture():
+    contract = ResearchContract.model_validate(
+        yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    )
+    configuration = FeTAUNetSearchConfiguration.model_validate(
+        _root("v9_attn_compact_5")
+    ).model_dump(mode="json")
+    tuned = {"learning_rate", "weight_decay", "dropout", "dice_weight"}
+    request = SearchRequest(
+        request_id="v9-attention-local",
+        hypothesis_id="v9-hypothesis",
+        search_type=SearchType.OPTUNA,
+        target="mean_subject_macro_dice",
+        search_space={
+            "fixed": {
+                key: value
+                for key, value in configuration.items()
+                if key in CANDIDATE_CONFIGURATION_FIELDS and key not in tuned
+            },
+            "parameters": {name: {} for name in tuned},
+        },
+        experiment_budget=4,
+        rationale="Tune training policy while freezing the attention architecture.",
+    )
+
+    study = FeTAUNetSearchTask().create_optuna_study_spec(contract, request)
+
+    assert study.fixed_configuration["model_variant"] == "attention_unet"
+    assert study.fixed_configuration["feature_width"] == "v9_attn_compact_5"
+    assert study.fixed_configuration["features"] == [40, 80, 160, 320, 640]
+    assert {item.name for item in study.parameters} == {
+        "learning_rate",
+        "weight_decay",
+        "dropout",
+        "dice_weight",
+    }
+
+
+def test_v9_30_epoch_fidelity_is_valid_but_not_a_default_root():
+    promoted = FeTAUNetSearchConfiguration.model_validate(
+        {**_root("v9_attn_compact_5"), "maximum_epochs": 30}
+    )
+
+    assert promoted.maximum_epochs == 30
+    assert all(
+        item["maximum_epochs"] == 15
+        for item in yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["runtime"][
+            "options"
+        ]["v9_fixed_roots"]
+    )
+
+
+def test_v9_cuda_calibration_covers_each_new_architecture_without_holdout():
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 1
+
+        @staticmethod
+        def mem_get_info(index):
+            assert index == 0
+            return (47 * 1024**3, 48 * 1024**3)
+
+        @staticmethod
+        def get_device_name(index):
+            assert index == 0
+            return "NVIDIA RTX A6000"
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    result = run_v9_cuda_calibration(
+        config_path=CONFIG,
+        torch_module=FakeTorch(),
+        step_runner=lambda configuration: {
+            "peak_gpu_memory_bytes": 8 * 1024**3,
+            "amp_step_seconds": 1.0
+            + (0.1 if configuration.model_variant == "swin_unetr" else 0.0),
+        },
+    )
+
+    assert result["passed"] is True
+    assert result["holdout_subjects_evaluated"] == 0
+    assert result["model_calls_performed"] == 0
+    assert {item["model_variant"] for item in result["pilots"]} == {
+        "attention_unet",
+        "unetr",
+        "swin_unetr",
+    }
+    assert len(result["pilots"]) == 4

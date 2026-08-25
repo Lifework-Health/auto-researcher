@@ -19,6 +19,7 @@ constraints:
   architecture_identity: feta-unet-v9-mixed-attention-transformer-family-v1
   architecture_search_mode: feta-unet-v9-bounded-mechanism-search-v1
   architecture_model_variants: [dynunet, attention_unet, unetr, swin_unetr]
+  architecture_feature_width_profiles: [v8_dyn_compact_5, v8_dyn_balanced_5, v8_dyn_context_5, v8_dyn_deep_6, v9_attn_compact_5, v9_attn_balanced_5, v9_unetr_base_16, v9_swin_tiny_24]
   architecture_trainable_parameter_minimum: 15000000
   architecture_trainable_parameter_maximum: 150000000
   maximum_peak_gpu_memory_bytes: 47244640256

@@ -91,6 +91,16 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V8_MINIMUM_TRAINABLE_PARAMETERS,
     V8_RESIDUAL_PROFILES,
     V8_STAGE_BLOCK_PROFILES,
+    V9_ARCHITECTURE_FAMILY_ID,
+    V9_ATTENTION_ARCHITECTURE_BUDGET,
+    V9_ATTENTION_FEATURE_PROFILES,
+    V9_CAMPAIGN_ARCHITECTURE_MODE,
+    V9_CONFIGURATION_SCHEMA_VERSION,
+    V9_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+    V9_MAXIMUM_TRAINABLE_PARAMETERS,
+    V9_MINIMUM_TRAINABLE_PARAMETERS,
+    V9_TRANSFORMER_ARCHITECTURE_BUDGET,
+    V9_TRANSFORMER_FEATURE_PROFILES,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
     baseline_search_configuration,
@@ -149,6 +159,7 @@ LEGACY_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v4"
 LEGACY_SCIENTIFIC_ID = "feta-unet-fold0-bounded-family-tree-search-macro-dice-v4"
 LEGACY_ARCHITECTURE_FAMILY_ID = "monai-unet-3d-bounded-family-v4"
 V8_SCIENTIFIC_ID = "feta-unet-fold0-v8-branch-exploitation-macro-dice-v1"
+V9_SCIENTIFIC_ID = "feta-unet-fold0-v9-macro-dice-v1"
 
 
 class FeTAUNetSearchTask(FeTAUNetDirectTask):
@@ -187,18 +198,26 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             contract.constraints.get("architecture_search_mode")
             == V8_CAMPAIGN_ARCHITECTURE_MODE
         )
+        v9_mode = (
+            contract.constraints.get("architecture_search_mode")
+            == V9_CAMPAIGN_ARCHITECTURE_MODE
+        )
         if (
             contract.evaluator_id != EVALUATOR_ID
             or contract.primary_metric != "mean_subject_macro_dice"
             or contract.objective_version
             != (
-                V8_SCIENTIFIC_ID
+                V9_SCIENTIFIC_ID
+                if v9_mode
+                else V8_SCIENTIFIC_ID
                 if v8_mode
                 else (SCIENTIFIC_ID if v7_mode else LEGACY_SCIENTIFIC_ID)
             )
             or contract.task_constraints_version
             != (
-                CONFIGURATION_SCHEMA_VERSION
+                V9_CONFIGURATION_SCHEMA_VERSION
+                if v9_mode
+                else CONFIGURATION_SCHEMA_VERSION
                 if v8_mode
                 else (
                     V7_CONFIGURATION_SCHEMA_VERSION
@@ -221,7 +240,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             "split_hash": EXPECTED_SPLIT_HASH,
             "fold_hash": EXPECTED_FOLD_HASH,
             "architecture_identity": (
-                V8_ARCHITECTURE_FAMILY_ID
+                V9_ARCHITECTURE_FAMILY_ID
+                if v9_mode
+                else V8_ARCHITECTURE_FAMILY_ID
                 if v8_mode
                 else (
                     SEARCH_ARCHITECTURE_FAMILY_ID
@@ -230,7 +251,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 )
             ),
             "architecture_model_variants": (
-                ["structural_basic_unet", "dynunet"]
+                ["dynunet", "attention_unet", "unetr", "swin_unetr"]
+                if v9_mode
+                else ["structural_basic_unet", "dynunet"]
                 if v8_mode
                 else (
                     ["structural_basic_unet"]
@@ -240,6 +263,12 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             ),
             "architecture_feature_width_profiles": list(
                 (
+                    *V8_DYNUNET_FEATURE_PROFILES,
+                    *V9_ATTENTION_FEATURE_PROFILES,
+                    *V9_TRANSFORMER_FEATURE_PROFILES,
+                )
+                if v9_mode
+                else (
                     *V7_MECHANISM_FEATURE_PROFILES,
                     *V8_DYNUNET_FEATURE_PROFILES,
                 )
@@ -284,6 +313,16 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             != V8_MAXIMUM_TRAINABLE_PARAMETERS
             or contract.constraints.get("maximum_peak_gpu_memory_bytes")
             != V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES
+        ):
+            raise ValueError("feta_unet_search_scientific_identity_mismatch")
+        if v9_mode and (
+            contract.constraints.get("architecture_trainable_parameter_minimum")
+            != V9_MINIMUM_TRAINABLE_PARAMETERS
+            or contract.constraints.get("architecture_trainable_parameter_maximum")
+            != V9_MAXIMUM_TRAINABLE_PARAMETERS
+            or contract.constraints.get("maximum_peak_gpu_memory_bytes")
+            != V9_MAXIMUM_PEAK_GPU_MEMORY_BYTES
+            or contract.constraints.get("external_pretraining") != "prohibited"
         ):
             raise ValueError("feta_unet_search_scientific_identity_mismatch")
 
@@ -334,6 +373,12 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         v8_dynunet = (
             raw_fixed.get("architecture_budget") == V8_DYNUNET_ARCHITECTURE_BUDGET
         )
+        v9_attention = (
+            raw_fixed.get("architecture_budget") == V9_ATTENTION_ARCHITECTURE_BUDGET
+        )
+        v9_transformer = (
+            raw_fixed.get("architecture_budget") == V9_TRANSFORMER_ARCHITECTURE_BUDGET
+        )
         registered_fixed_configuration = {
             key: value
             for key, value in fixed.items()
@@ -371,7 +416,24 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 model_variant="dynunet",
                 upsample="deconv",
             )
+        if v9_attention:
+            registered_fixed_configuration.update(
+                architecture_budget=V9_ATTENTION_ARCHITECTURE_BUDGET,
+                model_variant="attention_unet",
+                upsample="deconv",
+            )
+        if v9_transformer:
+            transformer_variant = raw_fixed.get("model_variant")
+            if transformer_variant not in {"unetr", "swin_unetr"}:
+                raise ValueError("feta_unet_v9_transformer_variant_invalid")
+            registered_fixed_configuration.update(
+                architecture_budget=V9_TRANSFORMER_ARCHITECTURE_BUDGET,
+                model_variant=transformer_variant,
+                upsample="deconv",
+            )
         fixed_feature_vector = "features" in raw_fixed
+        if (v9_attention or v9_transformer) and not fixed_feature_vector:
+            raise ValueError("feta_unet_v9_optuna_requires_fixed_architecture")
         if fixed_feature_vector:
             # A resumed or cross-method V6 branch can bind an exact architecture
             # vector produced by OpenEvolve. It is task-owned fixed context for
@@ -400,7 +462,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 feature_width=validated_architecture["feature_width"],
                 features=validated_architecture["features"],
             )
-            if v8_dynunet:
+            if v8_dynunet or v9_attention or v9_transformer:
                 # DynUNet local studies may tune kernel/deep-supervision choices,
                 # but the remaining structural fields are task-owned invariants.
                 # Register those validated values so a portfolio request can bind
@@ -411,13 +473,18 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     convolutions_per_stage=validated_architecture[
                         "convolutions_per_stage"
                     ],
-                    stage_block_profile=validated_architecture[
-                        "stage_block_profile"
-                    ],
+                    stage_block_profile=validated_architecture["stage_block_profile"],
                     residual_profile=validated_architecture["residual_profile"],
                     dilation_profile=validated_architecture["dilation_profile"],
                     skip_fusion=validated_architecture["skip_fusion"],
                     downsample=validated_architecture["downsample"],
+                )
+            if v9_attention or v9_transformer:
+                registered_fixed_configuration.update(
+                    kernel_profile=validated_architecture["kernel_profile"],
+                    deep_supervision_heads=validated_architecture[
+                        "deep_supervision_heads"
+                    ],
                 )
         feature_width_parameters = (
             ()
@@ -426,7 +493,11 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 CategoricalParameterSpec(
                     name="feature_width",
                     choices=tuple(
-                        V8_DYNUNET_FEATURE_PROFILES
+                        V9_ATTENTION_FEATURE_PROFILES
+                        if v9_attention
+                        else V9_TRANSFORMER_FEATURE_PROFILES
+                        if v9_transformer
+                        else V8_DYNUNET_FEATURE_PROFILES
                         if v8_dynunet
                         else (
                             V7_OPTUNA_FEATURE_PROFILES
@@ -525,7 +596,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 ),
                 *(
                     ()
-                    if v7_architecture or v8_dynunet
+                    if v7_architecture or v8_dynunet or v9_attention or v9_transformer
                     else (
                         CategoricalParameterSpec(
                             name="model_variant",
@@ -906,7 +977,31 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             contract.constraints.get("architecture_search_mode")
             == V8_CAMPAIGN_ARCHITECTURE_MODE
         )
-        if v8_mode:
+        v9_mode = (
+            contract.constraints.get("architecture_search_mode")
+            == V9_CAMPAIGN_ARCHITECTURE_MODE
+        )
+        if v9_mode:
+            agent_model_variants = (
+                "dynunet",
+                "attention_unet",
+                "unetr",
+                "swin_unetr",
+            )
+            direct_feature_profiles = (
+                *V8_DYNUNET_FEATURE_PROFILES,
+                *V9_ATTENTION_FEATURE_PROFILES,
+                *V9_TRANSFORMER_FEATURE_PROFILES,
+            )
+            all_agent_feature_profiles = tuple(V8_DYNUNET_FEATURE_PROFILES)
+            architecture_budgets = (
+                V8_DYNUNET_ARCHITECTURE_BUDGET,
+                V9_ATTENTION_ARCHITECTURE_BUDGET,
+                V9_TRANSFORMER_ARCHITECTURE_BUDGET,
+            )
+            openevolve_model_variants = ("dynunet",)
+            architecture_identity_value = V9_ARCHITECTURE_FAMILY_ID
+        elif v8_mode:
             agent_model_variants = ("structural_basic_unet", "dynunet")
             direct_feature_profiles = (
                 *V7_OPTUNA_FEATURE_PROFILES,
@@ -998,7 +1093,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                         "residual_blocks": [False, True],
                         "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS),
                     }
-                    if v7_mode or v8_mode
+                    if v7_mode or v8_mode or v9_mode
                     else {}
                 ),
                 "activation": list(ACTIVATIONS),
@@ -1023,11 +1118,13 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "model_variant": list(agent_model_variants),
                 "feature_width": list(direct_feature_profiles),
                 "kernel_profile": list(V7_KERNEL_PROFILES)
-                if v7_mode or v8_mode
+                if v7_mode or v8_mode or v9_mode
                 else ["basic"],
-                "residual_blocks": [False, True] if v7_mode or v8_mode else [False],
+                "residual_blocks": [False, True]
+                if v7_mode or v8_mode or v9_mode
+                else [False],
                 "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS)
-                if v7_mode or v8_mode
+                if v7_mode or v8_mode or v9_mode
                 else [0],
                 "stage_block_profile": list(V8_STAGE_BLOCK_PROFILES)
                 if v8_mode
@@ -1054,18 +1151,22 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     "model_variant": list(openevolve_model_variants),
                     "feature_width": list(all_agent_feature_profiles),
                     "features": "five or six integer stage widths"
-                    if v7_mode or v8_mode
+                    if v7_mode or v8_mode or v9_mode
                     else "six integer channel widths",
-                    "architecture_budget": [V7_ARCHITECTURE_BUDGET]
+                    "architecture_budget": [V8_DYNUNET_ARCHITECTURE_BUDGET]
+                    if v9_mode
+                    else [V7_ARCHITECTURE_BUDGET]
                     if v8_mode
                     else list(architecture_budgets),
                     "upsample": ["deconv"] if v7_mode else list(V6_UPSAMPLE_MODES),
                     "kernel_profile": list(V7_KERNEL_PROFILES)
-                    if v7_mode or v8_mode
+                    if v7_mode or v8_mode or v9_mode
                     else ["basic"],
-                    "residual_blocks": [False, True] if v7_mode or v8_mode else [False],
+                    "residual_blocks": [False, True]
+                    if v7_mode or v8_mode or v9_mode
+                    else [False],
                     "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS)
-                    if v7_mode or v8_mode
+                    if v7_mode or v8_mode or v9_mode
                     else [0],
                     "stage_block_profile": list(V8_STAGE_BLOCK_PROFILES)
                     if v8_mode
