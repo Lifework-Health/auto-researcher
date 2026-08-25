@@ -42,8 +42,8 @@ openevolve_development_mutation:
   protocol_version: development-live-openevolve-runtime-v1
   mode: local_development
   acknowledgement: public-data-non-production-development
-  maximum_model_calls: 120
-  maximum_total_cost_usd: 75.0
+  maximum_model_calls: 100
+  maximum_total_cost_usd: 50.0
   usage_log_file: /absolute/path/to/runtime/openevolve-model-usage.jsonl
   credential: {logical_name: anthropic_api_key, provider: linux_kernel_keyring, provider_identifier: auto-researcher/anthropic-api-key, version: null, required: true}
   model:
