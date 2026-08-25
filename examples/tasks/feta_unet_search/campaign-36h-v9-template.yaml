@@ -135,4 +135,4 @@ runtime:
       local_optuna_parent_count: 4
       local_optuna_trials_per_parent: 2
       openevolve_novel_children: 6
-      fidelity_targets: {15: 24, 30: 12, 50: 7, 100: 4, 150: 3}
+      fidelity_targets: {"15": 24, "30": 12, "50": 7, "100": 4, "150": 3}
