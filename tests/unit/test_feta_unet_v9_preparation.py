@@ -9,6 +9,7 @@ import yaml
 from auto_researcher.cli import _load_development_openevolve_runtime
 
 from auto_researcher.agents.models import AgentBudgetPolicy
+from auto_researcher.agents.prompts import load_prompt
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.research_intelligence import LiteratureScoutMode
@@ -143,6 +144,16 @@ def test_v9_openevolve_runtime_stays_within_enforced_safety_caps():
     assert runtime is not None
     assert runtime.maximum_model_calls == 100
     assert runtime.maximum_total_cost_usd == 50.0
+
+
+def test_v9_all_agent_prompt_identities_are_registered():
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    agents = raw["agents"]
+
+    for role in ("hypothesis", "planner", "research_director"):
+        prompt = load_prompt(role, agents[role]["prompt_version"])
+        assert prompt.name == role
+        assert prompt.version == "2.0.0"
 
 
 def test_v9_static_preflight_rejects_evidence_tampering(tmp_path):
