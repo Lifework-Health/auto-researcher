@@ -189,6 +189,7 @@ def _configurations(request: SearchRequest, request_index: int) -> tuple[dict, .
             **{
                 **parent,
                 **change,
+                "maximum_epochs": 15,
                 "learning_rate": parent["learning_rate"] * (1.01 + index / 100),
             }
         ).model_dump(mode="json")
