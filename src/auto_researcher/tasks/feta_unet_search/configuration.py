@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v6"
 V7_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v5"
 V9_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v7"
-FIDELITY_LEVELS = (5, 10, 15, 25, 50, 100, 150)
+FIDELITY_LEVELS = (5, 10, 15, 25, 30, 50, 100, 150)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
 DROPOUT_BOUNDS = (0.0, 0.3)
@@ -133,6 +133,8 @@ ALL_FEATURE_WIDTH_PROFILES.update(V9_ATTENTION_FEATURE_PROFILES)
 ALL_FEATURE_WIDTH_PROFILES.update(V9_TRANSFORMER_FEATURE_PROFILES)
 V9_ATTENTION_ARCHITECTURE_BUDGET = "attention-unet-15m-150m-v1"
 V9_TRANSFORMER_ARCHITECTURE_BUDGET = "transformer-pilot-15m-150m-v1"
+V9_CAMPAIGN_ARCHITECTURE_MODE = "feta-unet-v9-bounded-mechanism-search-v1"
+V9_ARCHITECTURE_FAMILY_ID = "feta-unet-v9-mixed-attention-transformer-family-v1"
 V9_MINIMUM_TRAINABLE_PARAMETERS = 15_000_000
 V9_MAXIMUM_TRAINABLE_PARAMETERS = 150_000_000
 V9_MAXIMUM_PEAK_GPU_MEMORY_BYTES = 44 * 1024**3
@@ -246,7 +248,7 @@ class FeTAUNetSearchConfiguration(BaseModel):
     patch_size: tuple[int, int, int] = (128, 128, 128)
     batch_size: Literal[1] = 1
     samples_per_volume: Literal[2] = 2
-    maximum_epochs: Literal[5, 10, 15, 25, 50, 100, 150] = 25
+    maximum_epochs: Literal[5, 10, 15, 25, 30, 50, 100, 150] = 25
     validation_every: Literal[5] = 5
     fold_count: Literal[1] = 1
     learning_rate: float = 1e-4
@@ -307,10 +309,14 @@ class FeTAUNetSearchConfiguration(BaseModel):
             payload.setdefault("architecture_budget", V9_ATTENTION_ARCHITECTURE_BUDGET)
             payload.setdefault("model_variant", "attention_unet")
         if profile == "v9_unetr_base_16":
-            payload.setdefault("architecture_budget", V9_TRANSFORMER_ARCHITECTURE_BUDGET)
+            payload.setdefault(
+                "architecture_budget", V9_TRANSFORMER_ARCHITECTURE_BUDGET
+            )
             payload.setdefault("model_variant", "unetr")
         if profile == "v9_swin_tiny_24":
-            payload.setdefault("architecture_budget", V9_TRANSFORMER_ARCHITECTURE_BUDGET)
+            payload.setdefault(
+                "architecture_budget", V9_TRANSFORMER_ARCHITECTURE_BUDGET
+            )
             payload.setdefault("model_variant", "swin_unetr")
         profile = payload.get("feature_width", "baseline")
         expected = ALL_FEATURE_WIDTH_PROFILES.get(profile)

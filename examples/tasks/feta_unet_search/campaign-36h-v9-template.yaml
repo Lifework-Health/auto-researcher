@@ -105,7 +105,16 @@ runtime:
     v9_continuation_ladder_implemented: false
     v9_checkpoint_imports_bound: false
     v9_research_intelligence_bound: false
-    v9_cuda_calibration: null
+    v9_cuda_calibration:
+      schema_version: feta-unet-v9-cuda-calibration-v1
+      calibration_sha256: fc1e9dbe57e423e308674d81d32e72a9ecafcb5dceee0816f6654ab7ff384d73
+      calibration_file_sha256: 0fb60cf98dd14f9202f331bdd7f4d2fe88a7e70522ecb50c6891e305368ecd38
+      gpu: NVIDIA RTX A6000
+      pilot_count: 4
+      maximum_peak_gpu_memory_bytes: 9176368640
+      holdout_subjects_evaluated: 0
+      model_calls_performed: 0
+      passed: true
     v9_bound_evidence_file: /absolute/path/to/v9-bound-evidence.json
     v9_family_budget_fraction: {dynunet: 0.7, attention_unet: 0.2, transformer_pilots: 0.1}
     v9_fidelity_ladder: [15, 30, 50, 100, 150]
@@ -120,4 +129,3 @@ runtime:
       - {maximum_epochs: 15, model_variant: attention_unet, feature_width: v9_attn_balanced_5, architecture_budget: attention-unet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, skip_fusion: gated_concat, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
       - {maximum_epochs: 15, model_variant: unetr, feature_width: v9_unetr_base_16, architecture_budget: transformer-pilot-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
       - {maximum_epochs: 15, model_variant: swin_unetr, feature_width: v9_swin_tiny_24, architecture_budget: transformer-pilot-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
-
