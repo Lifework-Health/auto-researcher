@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from auto_researcher.cli import _load_development_openevolve_runtime
+
 from auto_researcher.agents.models import AgentBudgetPolicy
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
@@ -134,10 +136,13 @@ def test_v9_static_preflight_is_evidence_bound_and_launch_blocked():
 
 def test_v9_openevolve_runtime_stays_within_enforced_safety_caps():
     raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    runtime = raw["openevolve_development_mutation"]
+    configured = raw["openevolve_development_mutation"]
+    runtime = _load_development_openevolve_runtime(raw)
 
-    assert runtime["maximum_model_calls"] == 100
-    assert runtime["maximum_total_cost_usd"] == 50.0
+    assert configured["model"]["prompt_version"] == "openevolve-mutation-prompt-v2"
+    assert runtime is not None
+    assert runtime.maximum_model_calls == 100
+    assert runtime.maximum_total_cost_usd == 50.0
 
 
 def test_v9_static_preflight_rejects_evidence_tampering(tmp_path):

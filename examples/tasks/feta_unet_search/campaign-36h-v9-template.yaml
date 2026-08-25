@@ -54,7 +54,7 @@ openevolve_development_mutation:
     timeout_seconds: 180
     maximum_attempts: 1
     maximum_cost_per_call: 0.50
-    prompt_version: openevolve-mutation-prompt-v3
+    prompt_version: openevolve-mutation-prompt-v2
     structured_output_strategy: pydantic
     pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
 
