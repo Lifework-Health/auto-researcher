@@ -47,6 +47,8 @@ TREE_PORTFOLIO_VERSION = "feta-unet-family-lineage-tree-24-18-6-8-4-2-v3"
 V6_TREE_PORTFOLIO_VERSION = "feta-basicunet-architecture-tree-12-18-6-10-5-3-v1"
 V7_MECHANISM_PORTFOLIO_VERSION = "feta-basicunet-structural-tree-4-12-8-2-8-4-2-v2"
 V8_PORTFOLIO_VERSION = "feta-unet-v8-exploitation-44-30-18-8-4-3-v1"
+V9_PORTFOLIO_VERSION = "feta-unet-v9-mixed-24-12-7-4-3-v1"
+V9_FIDELITY_TARGETS = {15: 24, 30: 12, 50: 7, 100: 4, 150: 3}
 V8_FIDELITY_TARGETS = {10: 44, 15: 30, 25: 18, 50: 8, 100: 4, 150: 3}
 V8_OPERATOR_LIMITS = {
     SearchType.OPTUNA: 26,
@@ -571,6 +573,65 @@ class V8PortfolioPolicy:
             fidelity_targets=targets,
             operator_limits=limits,
             local_optuna_allocation=local_optuna_allocation,
+        )
+
+
+@dataclass(frozen=True)
+class V9PortfolioPolicy:
+    roots: tuple[dict[str, Any], ...]
+    local_optuna_parent_count: int
+    local_optuna_trials_per_parent: int
+    openevolve_novel_children: int
+    fidelity_targets: dict[int, int]
+
+    @classmethod
+    def from_runtime(cls, context: TaskRuntimeContext) -> "V9PortfolioPolicy":
+        raw = context.task_options.get("campaign_portfolio")
+        if not isinstance(raw, dict) or raw.get("version") != V9_PORTFOLIO_VERSION:
+            raise ValueError("feta_unet_v9_portfolio_invalid")
+        try:
+            roots = tuple(dict(item) for item in raw["roots"])
+            parent_count = int(raw["local_optuna_parent_count"])
+            trials_per_parent = int(raw["local_optuna_trials_per_parent"])
+            children = int(raw["openevolve_novel_children"])
+            targets = {
+                int(name): int(value)
+                for name, value in dict(raw["fidelity_targets"]).items()
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("feta_unet_v9_portfolio_invalid") from exc
+        if (
+            len(roots) != 10
+            or parent_count != 4
+            or trials_per_parent != 2
+            or children != 6
+            or targets != V9_FIDELITY_TARGETS
+        ):
+            raise ValueError("feta_unet_v9_portfolio_invalid")
+        validated = []
+        identities: set[str] = set()
+        counts: dict[str, int] = {}
+        for raw_root in roots:
+            candidate = FeTAUNetSearchConfiguration.model_validate(raw_root)
+            identity = trajectory_identity(candidate)
+            counts[candidate.model_variant] = counts.get(candidate.model_variant, 0) + 1
+            if candidate.maximum_epochs != 15 or identity in identities:
+                raise ValueError("feta_unet_v9_root_invalid")
+            identities.add(identity)
+            validated.append(candidate.model_dump(mode="json"))
+        if counts != {
+            "dynunet": 6,
+            "attention_unet": 2,
+            "unetr": 1,
+            "swin_unetr": 1,
+        }:
+            raise ValueError("feta_unet_v9_root_invalid")
+        return cls(
+            roots=tuple(validated),
+            local_optuna_parent_count=parent_count,
+            local_optuna_trials_per_parent=trials_per_parent,
+            openevolve_novel_children=children,
+            fidelity_targets=targets,
         )
 
 
@@ -2143,6 +2204,177 @@ def _v8_promotion_cohort(
     return _tree_cohort(eligible, target=target, wildcard_count=min(2, target // 4))
 
 
+def apply_v9_portfolio_policy(
+    original: SearchRequest,
+    *,
+    run_id: str,
+    cycle: int,
+    events: tuple[DecisionEvent, ...],
+    runtime_context: TaskRuntimeContext,
+) -> SearchRequest | None:
+    """Execute the frozen mixed-family 24-to-3 V9 envelope."""
+
+    policy = V9PortfolioPolicy.from_runtime(runtime_context)
+    rows = _evidence(events)
+    rung15 = _unique_at_fidelity(rows, 15)
+    direct = {
+        item.trajectory_identity: item
+        for item in rung15.values()
+        if item.search_type == SearchType.DIRECT
+    }
+    for configuration in policy.roots:
+        candidate = FeTAUNetSearchConfiguration.model_validate(configuration)
+        identity = trajectory_identity(candidate)
+        if identity in direct:
+            continue
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v9-root",
+            search_type=SearchType.DIRECT,
+            search_space={
+                name: candidate.model_dump(mode="json")[name]
+                for name in CANDIDATE_CONFIGURATION_FIELDS
+            },
+            experiment_budget=1,
+            rationale=f"{V9_PORTFOLIO_VERSION}: execute one frozen 15-epoch mixed-family root.",
+        )
+
+    ranked_roots = sorted(
+        direct.values(),
+        key=lambda item: (item.rung_score, item.trajectory_identity),
+        reverse=True,
+    )
+    if len(ranked_roots) != 10:
+        raise ValueError("feta_unet_v9_root_cohort_incomplete")
+    local = {
+        item.trajectory_identity: item
+        for item in rung15.values()
+        if item.search_type == SearchType.OPTUNA
+    }
+    local_target = (
+        policy.local_optuna_parent_count * policy.local_optuna_trials_per_parent
+    )
+    if len(local) < local_target:
+        parent_index = len(local) // policy.local_optuna_trials_per_parent
+        parent = ranked_roots[parent_index]
+        remaining_for_parent = min(
+            policy.local_optuna_trials_per_parent,
+            local_target - len(local),
+        )
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v9-local-optuna",
+            search_type=SearchType.OPTUNA,
+            search_space=_local_optuna_space(
+                parent,
+                seed=_tree_seed(
+                    parent.trajectory_identity, SearchType.OPTUNA, len(local)
+                ),
+                trial_budget=remaining_for_parent,
+                fidelity=15,
+            ),
+            experiment_budget=remaining_for_parent,
+            rationale=(
+                f"{V9_PORTFOLIO_VERSION}: tune {remaining_for_parent} local policies around fixed root {parent.trajectory_identity[:12]}."
+            ),
+            evidence_references=(parent.experiment_id, "v9-parent:verified-root"),
+        )
+
+    non_evolved = set(direct) | set(local)
+    evolved = {
+        item.trajectory_identity: item
+        for item in rung15.values()
+        if item.search_type == SearchType.OPENEVOLVE
+        and item.trajectory_identity not in non_evolved
+    }
+    if len(evolved) < policy.openevolve_novel_children:
+        dynunet_roots = [
+            item
+            for item in ranked_roots
+            if item.configuration["model_variant"] == "dynunet"
+        ]
+        if not dynunet_roots:
+            raise ValueError("feta_unet_v9_openevolve_parent_missing")
+        parent = dynunet_roots[0]
+        remaining = policy.openevolve_novel_children - len(evolved)
+        evaluations = remaining + 1
+        search_space = default_openevolve_configuration(
+            candidate_evaluations=evaluations
+        )
+        search_space["openevolve"].update(
+            {
+                "maximum_failed_candidates": evaluations,
+                "maximum_consecutive_failures": evaluations,
+            }
+        )
+        search_space["campaign_context"] = {
+            "incumbent_training_policy": policy_from_configuration(
+                parent.configuration
+            ).model_dump(mode="json"),
+            "incumbent_primary_score": parent.rung_score,
+            "incumbent_search_type": parent.search_type.value,
+            "incumbent_experiment_id": parent.experiment_id,
+            "required_model_variant": "dynunet",
+            "required_architecture_budget": V8_DYNUNET_ARCHITECTURE_BUDGET,
+            "mutation_objective": (
+                "Generate novel bounded DynUNet children informed by verified V8, tissue-level and ensemble evidence. Do not mutate attention or transformer pilots."
+            ),
+        }
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v9-openevolve",
+            search_type=SearchType.OPENEVOLVE,
+            search_space=search_space,
+            experiment_budget=evaluations,
+            rationale=f"{V9_PORTFOLIO_VERSION}: generate {remaining} novel DynUNet children.",
+            evidence_references=(parent.experiment_id, "v9-parent:verified-dynunet"),
+        )
+
+    if len(rung15) < policy.fidelity_targets[15]:
+        raise ValueError("feta_unet_v9_screening_cohort_incomplete")
+    source_fidelity = 15
+    for target_fidelity in (30, 50, 100, 150):
+        source = _unique_at_fidelity(rows, source_fidelity)
+        completed = _unique_at_fidelity(rows, target_fidelity)
+        cohort = _promotion_cohort(
+            source,
+            target=policy.fidelity_targets[target_fidelity],
+            wildcard_count=1 if target_fidelity in {30, 50} else 0,
+        )
+        pending = next(
+            (item for item in cohort if item.trajectory_identity not in completed),
+            None,
+        )
+        if pending is not None:
+            configuration = dict(pending.configuration)
+            configuration["maximum_epochs"] = target_fidelity
+            return _request(
+                original,
+                run_id=run_id,
+                cycle=cycle,
+                stage=f"v9-promote-{source_fidelity}-{target_fidelity}",
+                search_type=SearchType.DIRECT,
+                search_space=configuration,
+                experiment_budget=1,
+                rationale=(
+                    f"{V9_PORTFOLIO_VERSION}: resume lineage {pending.trajectory_identity[:12]} from {source_fidelity} to {target_fidelity} epochs."
+                ),
+                evidence_references=(
+                    pending.experiment_id,
+                    f"promotion-from-epoch:{source_fidelity}",
+                    f"origin-search-type:{pending.search_type.value}",
+                ),
+            )
+        source_fidelity = target_fidelity
+    return None
+
+
 def apply_v8_portfolio_policy(
     original: SearchRequest,
     *,
@@ -2556,6 +2788,17 @@ def apply_portfolio_policy(
     runtime_context: TaskRuntimeContext,
 ) -> SearchRequest | None:
     raw_policy = runtime_context.task_options.get("campaign_portfolio")
+    if (
+        isinstance(raw_policy, dict)
+        and raw_policy.get("version") == V9_PORTFOLIO_VERSION
+    ):
+        return apply_v9_portfolio_policy(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            events=events,
+            runtime_context=runtime_context,
+        )
     if (
         isinstance(raw_policy, dict)
         and raw_policy.get("version") == V8_PORTFOLIO_VERSION
