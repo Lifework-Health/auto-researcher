@@ -202,6 +202,10 @@ def _architecture_parameter_bounds(configuration) -> tuple[int, int] | None:
         V8_DYNUNET_ARCHITECTURE_BUDGET,
         V8_MAXIMUM_TRAINABLE_PARAMETERS,
         V8_MINIMUM_TRAINABLE_PARAMETERS,
+        V9_ATTENTION_ARCHITECTURE_BUDGET,
+        V9_MAXIMUM_TRAINABLE_PARAMETERS,
+        V9_MINIMUM_TRAINABLE_PARAMETERS,
+        V9_TRANSFORMER_ARCHITECTURE_BUDGET,
     )
 
     return {
@@ -216,6 +220,14 @@ def _architecture_parameter_bounds(configuration) -> tuple[int, int] | None:
         V8_DYNUNET_ARCHITECTURE_BUDGET: (
             V8_MINIMUM_TRAINABLE_PARAMETERS,
             V8_MAXIMUM_TRAINABLE_PARAMETERS,
+        ),
+        V9_ATTENTION_ARCHITECTURE_BUDGET: (
+            V9_MINIMUM_TRAINABLE_PARAMETERS,
+            V9_MAXIMUM_TRAINABLE_PARAMETERS,
+        ),
+        V9_TRANSFORMER_ARCHITECTURE_BUDGET: (
+            V9_MINIMUM_TRAINABLE_PARAMETERS,
+            V9_MAXIMUM_TRAINABLE_PARAMETERS,
         ),
     }.get(budget)
 

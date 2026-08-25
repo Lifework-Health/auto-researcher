@@ -15,6 +15,8 @@ from auto_researcher.contracts.models import ResearchContract, SearchRequest
 from auto_researcher.research_intelligence import LiteratureScoutMode
 from auto_researcher.tasks.feta_unet_search.configuration import (
     CANDIDATE_CONFIGURATION_FIELDS,
+    V9_MAXIMUM_TRAINABLE_PARAMETERS,
+    V9_MINIMUM_TRAINABLE_PARAMETERS,
     V9_CONFIGURATION_SCHEMA_VERSION,
     FeTAUNetSearchConfiguration,
 )
@@ -71,6 +73,30 @@ def test_v9_architecture_profiles_fail_closed_on_cross_family_relabel():
 
     with pytest.raises(ValueError, match="v9_transformer_architecture_invalid"):
         FeTAUNetSearchConfiguration.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "feature_width",
+    (
+        "v9_attn_compact_5",
+        "v9_attn_balanced_5",
+        "v9_unetr_base_16",
+        "v9_swin_tiny_24",
+    ),
+)
+def test_v9_architecture_parameter_budgets_are_registered_by_trusted_runner(
+    feature_width: str,
+):
+    from auto_researcher.tasks.feta_unet_direct.runner import (
+        _architecture_parameter_bounds,
+    )
+
+    candidate = FeTAUNetSearchConfiguration.model_validate(_root(feature_width))
+
+    assert _architecture_parameter_bounds(candidate) == (
+        V9_MINIMUM_TRAINABLE_PARAMETERS,
+        V9_MAXIMUM_TRAINABLE_PARAMETERS,
+    )
 
 
 def test_v9_primary_source_material_preserves_transfer_limitations():
