@@ -1,6 +1,7 @@
 """Planner agent invocation with structural output reconciliation."""
 
 import hashlib
+from collections.abc import Mapping
 
 from auto_researcher.agents.context import AgentContextAssemblyError
 from auto_researcher.agents.live.base import LiveAgentExecutionError
@@ -86,6 +87,57 @@ def _deterministic_direct_fallback(
         requires_human_approval=(
             SearchType.DIRECT in state["contract"].requires_approval_for
         ),
+        proposal_source=ProposalSource.DETERMINISTIC,
+        grounding_status=hypothesis.grounding_status,
+    )
+
+
+def _deterministic_portfolio_placeholder(
+    state: ResearchState,
+    dependencies: RuntimeDependencies,
+    *,
+    failure_code: str,
+) -> SearchRequest | None:
+    """Give a deterministic campaign controller a valid request to replace."""
+
+    hypothesis = state["active_hypothesis"]
+    if (
+        hypothesis is None
+        or not isinstance(dependencies.task, CampaignPortfolioCapableTask)
+        or not isinstance(
+            dependencies.runtime_context.task_options.get("campaign_portfolio"),
+            Mapping,
+        )
+        or SearchType.DIRECT not in state["contract"].allowed_search_types
+        or dependencies.search_capabilities.get(SearchType.DIRECT) is None
+        or not dependencies.search_capabilities[SearchType.DIRECT].available
+        or state["budget"].experiments_used >= state["budget"].maximum_experiments
+    ):
+        return None
+    digest = hashlib.sha256(
+        (
+            state["run_id"]
+            + "\x1f"
+            + str(state["cycle"])
+            + "\x1f"
+            + hypothesis.hypothesis_id
+            + "\x1fportfolio\x1f"
+            + failure_code
+        ).encode()
+    ).hexdigest()[:20]
+    return SearchRequest(
+        request_id=f"search-portfolio-placeholder-{digest}",
+        hypothesis_id=hypothesis.hypothesis_id,
+        search_type=SearchType.DIRECT,
+        target=state["contract"].primary_metric,
+        search_space={},
+        experiment_budget=1,
+        rationale=(
+            "Deterministic placeholder for the task-owned campaign portfolio "
+            f"after the planner boundary returned {failure_code}."
+        ),
+        evidence_references=hypothesis.evidence_references,
+        requires_human_approval=False,
         proposal_source=ProposalSource.DETERMINISTIC,
         grounding_status=hypothesis.grounding_status,
     )
@@ -239,6 +291,14 @@ def plan_search(
             if isinstance(exc, (LiveAgentExecutionError, AgentContextAssemblyError))
             else None
         )
+        if fallback is None and isinstance(
+            exc, (LiveAgentExecutionError, AgentContextAssemblyError)
+        ):
+            fallback = _deterministic_portfolio_placeholder(
+                state,
+                dependencies,
+                failure_code=code,
+            )
         if fallback is not None:
             request = fallback
             fallback_code = code

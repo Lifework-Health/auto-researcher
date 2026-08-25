@@ -193,6 +193,33 @@ def test_research_directive_projection_failure_is_narrowly_recoverable():
     )
 
 
+def test_invalid_structured_planner_failure_is_narrowly_recoverable():
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "INVALID_STRUCTURED_OUTPUT",
+        "errors": ["INVALID_STRUCTURED_OUTPUT"],
+        "planner_failure_code": "INVALID_STRUCTURED_OUTPUT",
+        "planner_failure_stage": "model_call",
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "planner_failure_stage": "portfolio_policy"}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "errors": [*values["errors"], "unexpected_error"]}
+        )
+        is False
+    )
+
+
 def test_v8_duplicate_portfolio_failure_is_narrowly_recoverable():
     values = {
         "status": RunStatus.FAILED,

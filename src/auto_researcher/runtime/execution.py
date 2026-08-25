@@ -176,6 +176,12 @@ def can_resume_recoverable_planner_failure(values: Mapping[str, Any]) -> bool:
             {"planner_agent_failed", "agent_context_too_large"}
         )
     )
+    invalid_structured_planner_failure = (
+        stop_reason == "INVALID_STRUCTURED_OUTPUT"
+        and errors == ("INVALID_STRUCTURED_OUTPUT",)
+        and values.get("planner_failure_code") == "INVALID_STRUCTURED_OUTPUT"
+        and values.get("planner_failure_stage") == "model_call"
+    )
     directive_projection_failure = (
         stop_reason == "research_director_openevolve_context_invalid"
         and errors == ("research_director_openevolve_context_invalid",)
@@ -228,6 +234,7 @@ def can_resume_recoverable_planner_failure(values: Mapping[str, Any]) -> bool:
         status == RunStatus.FAILED
         and (
             legacy_agent_failure
+            or invalid_structured_planner_failure
             or directive_projection_failure
             or v8_cumulative_directive_projection_recovery
             or projection_recovery_call_limit

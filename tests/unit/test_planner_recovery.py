@@ -271,6 +271,9 @@ def test_campaign_portfolio_overrides_direct_fallback_after_planner_exhaustion(
         agent_context_assembler=_OversizedPlannerContext(),
         planner_agent=_PlannerMustNotRun(),
         task=_PortfolioRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
     )
 
     update = plan_search(state, dependencies)
@@ -283,6 +286,64 @@ def test_campaign_portfolio_overrides_direct_fallback_after_planner_exhaustion(
     assert update["search_request"].rationale == (
         "Controller-owned portfolio recovery request."
     )
+    assert update["errors"] == []
+
+
+def test_campaign_portfolio_recovers_when_hypothesis_subspace_cannot_form_direct(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-portfolio-placeholder",
+        statement="The controller owns the next executable configuration.",
+        rationale="Exercise portfolio recovery without a valid Direct subspace.",
+        predicted_subspace={"unknown_parameter": 1},
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-portfolio-placeholder",
+        "thread_id": "thread-portfolio-placeholder",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_PortfolioRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["planner_fallback_code"] == "agent_context_too_large"
+    assert update["search_request"].request_id == "search-controller-recovery"
+    assert update["search_request"].search_type == SearchType.OPTUNA
     assert update["errors"] == []
 
 
