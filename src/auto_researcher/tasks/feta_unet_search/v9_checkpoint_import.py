@@ -71,7 +71,8 @@ def bind_v9_parent_checkpoints(
                     raise ValueError("feta_unet_v9_parent_manifest_invalid")
                 base = (
                     source_result_root
-                    if relative_name in {"experiment_spec.json", "evaluation_result.json"}
+                    if relative_name
+                    in {"experiment_spec.json", "evaluation_result.json"}
                     else source_workspace
                 )
                 source = base / experiment_id / relative_name

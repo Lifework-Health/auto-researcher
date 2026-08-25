@@ -398,8 +398,7 @@ class UNetTrainingPolicy(BaseModel):
             or tuple(sorted(self.features)) != self.features
             or self.upsample != "deconv"
             or self.kernel_profile not in V8_DYNUNET_KERNEL_PROFILES
-            or self.deep_supervision_heads
-            not in V8_DYNUNET_DEEP_SUPERVISION_HEADS
+            or self.deep_supervision_heads not in V8_DYNUNET_DEEP_SUPERVISION_HEADS
             or self.deep_supervision_heads >= len(self.features) - 1
             or self.convolutions_per_stage != 2
             or self.stage_block_profile != "uniform"

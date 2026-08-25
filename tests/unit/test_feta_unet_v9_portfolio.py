@@ -119,9 +119,9 @@ def _verified(
 def _configurations(request: SearchRequest, request_index: int) -> tuple[dict, ...]:
     if request.search_type == SearchType.DIRECT:
         return (
-            FeTAUNetSearchConfiguration.model_validate(
-                request.search_space
-            ).model_dump(mode="json"),
+            FeTAUNetSearchConfiguration.model_validate(request.search_space).model_dump(
+                mode="json"
+            ),
         )
     if request.search_type == SearchType.OPTUNA:
         rows = []
@@ -138,17 +138,51 @@ def _configurations(request: SearchRequest, request_index: int) -> tuple[dict, .
                 ).model_dump(mode="json")
             )
         return tuple(rows)
-    parent = dict(
-        request.search_space["campaign_context"]["incumbent_training_policy"]
-    )
+    parent = dict(request.search_space["campaign_context"]["incumbent_training_policy"])
     parent.pop("policy_version", None)
     changes = (
-        {"kernel_profile": "standard"},
-        {"deep_supervision_heads": 2},
-        {"convolutions_per_stage": 3},
-        {"stage_block_profile": "bottleneck_heavy"},
-        {"residual_profile": "encoder_only"},
-        {"dilation_profile": "bottleneck"},
+        {
+            "feature_width": "v8_dyn_compact_5",
+            "features": [48, 96, 192, 384, 768],
+            "kernel_profile": "standard",
+            "residual_blocks": False,
+            "deep_supervision_heads": 0,
+        },
+        {
+            "feature_width": "v8_dyn_compact_5",
+            "features": [48, 96, 192, 384, 768],
+            "kernel_profile": "large_front",
+            "residual_blocks": True,
+            "deep_supervision_heads": 1,
+        },
+        {
+            "feature_width": "v8_dyn_balanced_5",
+            "features": [64, 128, 256, 512, 768],
+            "kernel_profile": "standard",
+            "residual_blocks": False,
+            "deep_supervision_heads": 0,
+        },
+        {
+            "feature_width": "v8_dyn_balanced_5",
+            "features": [64, 128, 256, 512, 768],
+            "kernel_profile": "large_front",
+            "residual_blocks": True,
+            "deep_supervision_heads": 1,
+        },
+        {
+            "feature_width": "v8_dyn_context_5",
+            "features": [64, 96, 192, 480, 960],
+            "kernel_profile": "standard",
+            "residual_blocks": False,
+            "deep_supervision_heads": 0,
+        },
+        {
+            "feature_width": "v8_dyn_deep_6",
+            "features": [40, 80, 160, 320, 640, 960],
+            "kernel_profile": "standard",
+            "residual_blocks": True,
+            "deep_supervision_heads": 1,
+        },
     )
     return tuple(
         FeTAUNetSearchConfiguration(**{**parent, **change}).model_dump(mode="json")

@@ -2113,9 +2113,7 @@ def _v8_completed_direct_designs(
     events: tuple[DecisionEvent, ...],
     candidates: tuple[TreeCandidate, ...],
 ) -> set[str]:
-    verified_experiments = {
-        item.evidence.experiment_id for item in candidates
-    }
+    verified_experiments = {item.evidence.experiment_id for item in candidates}
     completed_requests = {
         event.input_references[0]
         for event in events
@@ -2564,9 +2562,7 @@ def apply_v8_portfolio_policy(
         item.evidence.trajectory_identity
         for item in (*structural, *dynunet, *local, *direct_candidates)
     }
-    completed_direct_designs = _v8_completed_direct_designs(
-        events, direct_candidates
-    )
+    completed_direct_designs = _v8_completed_direct_designs(events, direct_candidates)
     for design in policy.direct_designs:
         if design in completed_direct_designs:
             continue
