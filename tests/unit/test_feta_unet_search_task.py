@@ -57,6 +57,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     CANDIDATE_CONFIGURATION_FIELDS,
     V6_ARCHITECTURE_BUDGET,
     V6_BASIC_UNET_FEATURE_PROFILES,
+    V8_DYNUNET_ARCHITECTURE_BUDGET,
 )
 from auto_researcher.tasks.feta_unet_search.evaluator import (
     AUGMENTATION_ID,
@@ -579,6 +580,63 @@ def test_v6_optuna_rejects_invalid_fixed_feature_vectors(
         )
 
 
+def test_v8_dynunet_optuna_accepts_complete_fixed_parent_architecture():
+    task = FeTAUNetSearchTask()
+    configuration = FeTAUNetSearchConfiguration(
+        maximum_epochs=10,
+        model_variant="dynunet",
+        feature_width="v8_dyn_balanced_5",
+        architecture_budget=V8_DYNUNET_ARCHITECTURE_BUDGET,
+        kernel_profile="large_front",
+        deep_supervision_heads=1,
+        activation="ReLU",
+        norm="instance",
+        optimizer="AdamW",
+    ).model_dump(mode="json")
+    fixed_names = (
+        "maximum_epochs",
+        "model_variant",
+        "feature_width",
+        "features",
+        "architecture_budget",
+        "upsample",
+        "kernel_profile",
+        "residual_blocks",
+        "deep_supervision_heads",
+        "convolutions_per_stage",
+        "stage_block_profile",
+        "residual_profile",
+        "dilation_profile",
+        "skip_fusion",
+        "downsample",
+        "activation",
+        "norm",
+        "optimizer",
+    )
+
+    specification = task.create_optuna_study_spec(
+        default_feta_unet_search_contract(),
+        _request(
+            SearchType.OPTUNA,
+            {"fixed": {name: configuration[name] for name in fixed_names}},
+            budget=1,
+        ),
+    )
+
+    invariant_names = {
+        "residual_blocks",
+        "convolutions_per_stage",
+        "stage_block_profile",
+        "residual_profile",
+        "dilation_profile",
+        "skip_fusion",
+        "downsample",
+    }
+    assert {
+        name: specification.fixed_configuration[name] for name in invariant_names
+    } == {name: configuration[name] for name in invariant_names}
+
+
 def test_v6_direct_replay_preserves_registered_feature_vector():
     task = FeTAUNetSearchTask()
     configuration = FeTAUNetSearchConfiguration(
@@ -662,7 +720,7 @@ def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path
         runtime_context=TaskRuntimeContext(run_id="run", output_dir=tmp_path),
         task=task,
     )
-    candidate = SimpleNamespace(generation=0)
+    candidate = SimpleNamespace(generation=0, candidate_id="candidate-seed")
 
     reused = _canonical_generation_zero_experiment(
         {"run_id": "run"}, dependencies, candidate, proposed
@@ -680,6 +738,50 @@ def test_generation_zero_reuses_exact_published_cross_method_experiment(tmp_path
     with pytest.raises(ValueError, match="openevolve_incumbent_configuration_conflict"):
         _canonical_generation_zero_experiment(
             {"run_id": "run"}, dependencies, candidate, conflicting
+        )
+
+    reanchored = _canonical_generation_zero_experiment(
+        {"run_id": "run"},
+        dependencies,
+        candidate,
+        proposed.model_copy(update={"code_version": "current-evaluator-version"}),
+    )
+    assert reanchored.experiment_id.startswith("experiment-")
+    assert reanchored.experiment_id != published.experiment_id
+    assert reanchored.configuration == proposed.configuration
+    assert reanchored.code_version == "current-evaluator-version"
+    assert (
+        _canonical_generation_zero_experiment(
+            {"run_id": "run"},
+            dependencies,
+            candidate,
+            proposed.model_copy(update={"code_version": "current-evaluator-version"}),
+        )
+        == reanchored
+    )
+
+    lower_fidelity = _canonical_generation_zero_experiment(
+        {"run_id": "run"},
+        dependencies,
+        candidate,
+        proposed.model_copy(
+            update={
+                "configuration": {
+                    **configuration,
+                    "maximum_epochs": 5,
+                }
+            }
+        ),
+    )
+    assert lower_fidelity.experiment_id != published.experiment_id
+    assert lower_fidelity.configuration["maximum_epochs"] == 5
+
+    with pytest.raises(ValueError, match="openevolve_incumbent_metadata_conflict"):
+        _canonical_generation_zero_experiment(
+            {"run_id": "run"},
+            dependencies,
+            candidate,
+            proposed.model_copy(update={"dataset_version": "different-dataset"}),
         )
 
 

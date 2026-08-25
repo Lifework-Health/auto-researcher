@@ -168,15 +168,70 @@ def can_resume_recoverable_planner_failure(values: Mapping[str, Any]) -> bool:
     except (KeyError, ValueError):
         return False
     errors = tuple(values.get("errors", ()))
-    return (
-        status == RunStatus.FAILED
-        and values.get("stop_reason") in {
-            "planner_agent_failed",
-            "agent_context_too_large",
-        }
+    stop_reason = values.get("stop_reason")
+    legacy_agent_failure = (
+        stop_reason in {"planner_agent_failed", "agent_context_too_large"}
         and errors
         and set(errors).issubset(
             {"planner_agent_failed", "agent_context_too_large"}
+        )
+    )
+    directive_projection_failure = (
+        stop_reason == "research_director_openevolve_context_invalid"
+        and errors == ("research_director_openevolve_context_invalid",)
+        and values.get("planner_failure_stage")
+        == "research_directive_projection"
+        and values.get("active_research_directive") is not None
+    )
+    v8_cumulative_directive_projection_recovery = (
+        stop_reason == "research_director_openevolve_context_invalid"
+        and set(errors)
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        }
+        and values.get("planner_failure_stage")
+        == "research_directive_projection"
+        and set(values.get("recovered_error_codes", ()))
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        }
+        and values.get("active_research_directive") is not None
+    )
+    projection_recovery_call_limit = (
+        stop_reason == "maximum_agent_calls_per_cycle_reached"
+        and set(errors)
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+        }
+        and values.get("planner_failure_stage") == "model_call"
+        and set(values.get("recovered_error_codes", ()))
+        == {"research_director_openevolve_context_invalid"}
+        and values.get("active_research_directive") is not None
+    )
+    v8_duplicate_portfolio_recovery = (
+        stop_reason == "planner_agent_failed"
+        and set(errors)
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        }
+        and values.get("planner_failure_stage") == "portfolio_policy"
+        and values.get("active_research_directive") is not None
+    )
+    return (
+        status == RunStatus.FAILED
+        and (
+            legacy_agent_failure
+            or directive_projection_failure
+            or v8_cumulative_directive_projection_recovery
+            or projection_recovery_call_limit
+            or v8_duplicate_portfolio_recovery
         )
         and values.get("active_hypothesis") is not None
         and values.get("search_request") is None

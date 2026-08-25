@@ -890,17 +890,33 @@ def _tree_candidates(
                 root_trajectory=root,
             )
         )
-    seen: dict[tuple[str, SearchType, str], str] = {}
+    selected: list[TreeCandidate] = []
+    seen: dict[tuple[str, SearchType, str], TreeCandidate] = {}
     for candidate in candidates:
         key = (
             candidate.stage,
             candidate.action,
             candidate.evidence.trajectory_identity,
         )
-        previous = seen.setdefault(key, candidate.evidence.experiment_id)
-        if previous != candidate.evidence.experiment_id:
+        previous = seen.get(key)
+        if previous is None:
+            seen[key] = candidate
+            selected.append(candidate)
+            continue
+        if previous.evidence.experiment_id == candidate.evidence.experiment_id:
+            continue
+        recoverable_v8_duplicate = (
+            candidate.stage.startswith("v8-")
+            and previous.evidence.fidelity == candidate.evidence.fidelity
+            and previous.evidence.configuration == candidate.evidence.configuration
+        )
+        if not recoverable_v8_duplicate:
             raise ValueError("feta_unet_campaign_tree_duplicate_execution")
-    return tuple(candidates)
+        # V8 explicitly binds duplicate scientific identities to reuse.  A
+        # completed duplicate can still be present after an interrupted or
+        # upgraded run, so preserve its evidence but count only the first
+        # durable observation when advancing the deterministic controller.
+    return tuple(selected)
 
 
 def _unique_tree_stage(
@@ -2032,6 +2048,38 @@ def _v8_controlled_direct_ablation(
     raise ValueError(f"feta_unet_v8_direct_design_unavailable:{design}")
 
 
+def _v8_completed_direct_designs(
+    events: tuple[DecisionEvent, ...],
+    candidates: tuple[TreeCandidate, ...],
+) -> set[str]:
+    verified_experiments = {
+        item.evidence.experiment_id for item in candidates
+    }
+    completed_requests = {
+        event.input_references[0]
+        for event in events
+        if event.event_type == EventType.EXPERIMENT_PREPARED
+        and event.input_references
+        and event.output_references
+        and event.output_references[0] in verified_experiments
+    }
+    completed: set[str] = set()
+    prefix = "evidence_reference:direct-design:"
+    for event in events:
+        if (
+            event.event_type != EventType.SEARCH_PLANNED
+            or not event.output_references
+            or event.output_references[0] not in completed_requests
+        ):
+            continue
+        completed.update(
+            reference.removeprefix(prefix)
+            for reference in event.output_references
+            if reference.startswith(prefix)
+        )
+    return completed
+
+
 def _v8_promotion_cohort(
     source: tuple[TreeCandidate, ...],
     *,
@@ -2284,10 +2332,24 @@ def apply_v8_portfolio_policy(
         item.evidence.trajectory_identity
         for item in (*structural, *dynunet, *local, *direct_candidates)
     }
-    for design in policy.direct_designs[len(direct_candidates) :]:
-        configuration, parent = _v8_controlled_direct_ablation(
-            design, structural, existing
-        )
+    completed_direct_designs = _v8_completed_direct_designs(
+        events, direct_candidates
+    )
+    for design in policy.direct_designs:
+        if design in completed_direct_designs:
+            continue
+        try:
+            configuration, parent = _v8_controlled_direct_ablation(
+                design, structural, existing
+            )
+        except ValueError as exc:
+            if str(exc) != f"feta_unet_v8_direct_design_unavailable:{design}":
+                raise
+            # A frozen ablation can be inapplicable when evolution produces no
+            # parent carrying the mechanism that it was intended to remove.
+            # Skip only that impossible design and retain the remaining frozen
+            # ablations instead of failing the campaign controller.
+            continue
         return _request(
             original,
             run_id=run_id,
@@ -2315,8 +2377,9 @@ def apply_v8_portfolio_policy(
         if item.stage == "v8-structural-wildcard"
         and item.action == SearchType.OPENEVOLVE
     )
-    wildcard_identities = {
-        item.evidence.trajectory_identity for item in wildcard_candidates
+    pre_wildcard_identities = {
+        item.evidence.trajectory_identity
+        for item in (*structural, *dynunet, *local, *direct)
     }
     wildcard_parents = _tree_cohort(structural, target=2, wildcard_count=1)
     for parent in wildcard_parents:
@@ -2325,6 +2388,7 @@ def apply_v8_portfolio_policy(
             for item in wildcard_candidates
             if item.parent_trajectory == parent.evidence.trajectory_identity
             and item.evidence.trajectory_identity != parent.evidence.trajectory_identity
+            and item.evidence.trajectory_identity not in pre_wildcard_identities
         }
         if completed:
             continue
@@ -2365,9 +2429,12 @@ def apply_v8_portfolio_policy(
         )
 
     wildcards = tuple(
-        _unique_tree_stage(wildcard_candidates, "v8-structural-wildcard").values()
+        item
+        for item in _unique_tree_stage(
+            wildcard_candidates, "v8-structural-wildcard"
+        ).values()
+        if item.evidence.trajectory_identity not in pre_wildcard_identities
     )
-    del wildcard_identities
     source = (*structural, *dynunet, *local, *direct, *wildcards)
     source_fidelity = 10
     for target_fidelity in (15, 25, 50, 100, 150):

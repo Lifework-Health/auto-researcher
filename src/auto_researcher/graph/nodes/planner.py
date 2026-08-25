@@ -4,6 +4,7 @@ import hashlib
 
 from auto_researcher.agents.context import AgentContextAssemblyError
 from auto_researcher.agents.live.base import LiveAgentExecutionError
+from auto_researcher.agents.models import ResearchDirective
 from auto_researcher.agents.telemetry import (
     apply_agent_telemetry,
     consume_agent_telemetry,
@@ -134,6 +135,11 @@ def _apply_research_directive(
     directive = state.get("active_research_directive")
     if directive is None:
         return request
+    if not isinstance(directive, ResearchDirective):
+        try:
+            directive = ResearchDirective.model_validate(directive)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("research_director_openevolve_context_invalid") from exc
     reference = f"research-directive:{directive.directive_id}"
     evidence_references = tuple(dict.fromkeys((*request.evidence_references, reference)))
     if request.search_type != SearchType.OPENEVOLVE:
@@ -147,18 +153,36 @@ def _apply_research_directive(
     raw_context = search_space.get("campaign_context", {})
     if not isinstance(raw_context, dict):
         raise ValueError("research_director_openevolve_context_invalid")
-    projection = {
+    safe_evidence_references: list[str] = []
+    for evidence_reference in directive.evidence_references:
+        try:
+            assert_no_prohibited_dynamic_content(evidence_reference)
+        except ValueError:
+            continue
+        safe_evidence_references.append(evidence_reference)
+    projection_candidates = {
         "directive_id": directive.directive_id,
         "trigger": directive.trigger,
         "mechanism_hypothesis": directive.mechanism_hypothesis,
-        "rationale": directive.rationale,
         "selected_operators": [item.value for item in directive.selected_operators],
         "targeted_dimensions": list(directive.targeted_dimensions),
         "expected_observation": directive.expected_observation,
         "falsification_condition": directive.falsification_condition,
-        "evidence_references": list(directive.evidence_references),
+        "evidence_references": safe_evidence_references,
         "confidence": directive.confidence,
     }
+    projection: dict[str, object] = {}
+    for name, value in projection_candidates.items():
+        try:
+            assert_no_prohibited_dynamic_content(value)
+        except ValueError:
+            # The complete directive remains durably available to the
+            # controller and planner.  OpenEvolve receives only individual
+            # fields that satisfy its stricter metadata-only boundary.
+            continue
+        projection[name] = value
+    if projection.get("directive_id") != directive.directive_id:
+        raise ValueError("research_director_openevolve_context_invalid")
     try:
         assert_no_prohibited_dynamic_content(projection)
     except ValueError as exc:

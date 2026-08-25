@@ -346,6 +346,7 @@ class PlannerAgentContext(AgentModel):
     permitted_optuna_maximum_space: FrozenJsonDict
     optuna_narrowing_rules: tuple[str, ...] = ()
     research_directive: ResearchDirective | None = None
+    recovered_error_codes: tuple[str, ...] = ()
     context_hash: str = Field(min_length=1)
 
 

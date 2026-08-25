@@ -31,6 +31,7 @@ from auto_researcher.tasks.feta_unet_search.v8_preflight import (
     run_v8_cuda_preflight,
 )
 from auto_researcher.tasks.feta_unet_search.continuation import trajectory_identity
+from auto_researcher.tasks.feta_unet_search import portfolio as portfolio_module
 from auto_researcher.tasks.feta_unet_search.portfolio import (
     V8PortfolioPolicy,
     _evidence,
@@ -664,6 +665,224 @@ def test_v8_controller_replays_exact_44_to_3_envelope():
         _options()["campaign_portfolio"]["independent_confirmation_execution"]
         == "l4_sidecar_after_champion_freeze"
     )
+
+
+def test_v8_controller_recovers_verified_duplicate_without_cherry_picking():
+    context = TaskRuntimeContext(task_options=_options())
+    first = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=1,
+        events=(),
+        runtime_context=context,
+    )
+    assert first is not None
+    configuration = _simulated_configurations(first, request_index=1)[0]
+    events = (
+        _planned(1, first),
+        _prepared(1, first, "experiment-v8-original"),
+        _verified(
+            1,
+            "experiment-v8-original",
+            configuration,
+            0.70,
+            SearchType.OPENEVOLVE,
+        ),
+        _prepared(1, first, "experiment-v8-duplicate"),
+        _verified(
+            1,
+            "experiment-v8-duplicate",
+            configuration,
+            0.71,
+            SearchType.OPENEVOLVE,
+        ),
+    )
+
+    candidates = _tree_candidates(events, _evidence(events))
+    second = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=2,
+        events=events,
+        runtime_context=context,
+    )
+
+    assert [item.evidence.experiment_id for item in candidates] == [
+        "experiment-v8-original"
+    ]
+    assert candidates[0].evidence.best_score == 0.70
+    assert second is not None
+    assert _stage(second) == "v8-structural-child"
+    assert second.experiment_budget == 4
+
+
+def test_v8_wildcard_duplicate_of_screened_candidate_is_retried():
+    context = TaskRuntimeContext(task_options=_options())
+    events: list[DecisionEvent] = []
+    experiment_index = 0
+
+    for cycle in range(1, 100):
+        request = apply_portfolio_policy(
+            _original(),
+            run_id="v8-run",
+            cycle=cycle,
+            events=tuple(events),
+            runtime_context=context,
+        )
+        assert request is not None
+        if _stage(request) == "v8-structural-wildcard":
+            break
+        events.append(_planned(cycle, request))
+        for configuration in _simulated_configurations(
+            request, request_index=cycle
+        ):
+            experiment_index += 1
+            experiment_id = f"experiment-v8-{experiment_index:03d}"
+            events.extend(
+                (
+                    _prepared(cycle, request, experiment_id),
+                    _verified(
+                        cycle,
+                        experiment_id,
+                        configuration,
+                        0.70 + experiment_index / 10_000,
+                        request.search_type,
+                    ),
+                )
+            )
+    else:
+        raise AssertionError("V8 controller did not reach the wildcard stage")
+
+    parent_reference = next(
+        reference
+        for reference in request.evidence_references
+        if reference.startswith("tree-parent:")
+    )
+    candidates = _tree_candidates(tuple(events), _evidence(tuple(events)))
+    duplicate = next(
+        item.evidence.configuration
+        for item in candidates
+        if item.stage == "v8-structural-child"
+        and item.evidence.trajectory_identity
+        != parent_reference.removeprefix("tree-parent:")
+    )
+    duplicate_experiment = "experiment-v8-wildcard-duplicate"
+    events.extend(
+        (
+            _planned(cycle, request),
+            _prepared(cycle, request, duplicate_experiment),
+            _verified(
+                cycle,
+                duplicate_experiment,
+                duplicate,
+                0.75,
+                SearchType.OPENEVOLVE,
+            ),
+        )
+    )
+
+    retry = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=cycle + 1,
+        events=tuple(events),
+        runtime_context=context,
+    )
+
+    assert retry is not None
+    assert _stage(retry) == "v8-structural-wildcard"
+    assert parent_reference in retry.evidence_references
+
+    experiment_index += 1
+    retry_experiment = f"experiment-v8-{experiment_index:03d}"
+    retry_configuration = _simulated_configurations(
+        retry, request_index=cycle + 1
+    )[0]
+    events.extend(
+        (
+            _planned(cycle + 1, retry),
+            _prepared(cycle + 1, retry, retry_experiment),
+            _verified(
+                cycle + 1,
+                retry_experiment,
+                retry_configuration,
+                0.76,
+                SearchType.OPENEVOLVE,
+            ),
+        )
+    )
+
+    second_wildcard = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=cycle + 2,
+        events=tuple(events),
+        runtime_context=context,
+    )
+    assert second_wildcard is not None
+    assert _stage(second_wildcard) == "v8-structural-wildcard"
+    experiment_index += 1
+    second_experiment = f"experiment-v8-{experiment_index:03d}"
+    second_configuration = _simulated_configurations(
+        second_wildcard, request_index=cycle + 2
+    )[0]
+    events.extend(
+        (
+            _planned(cycle + 2, second_wildcard),
+            _prepared(cycle + 2, second_wildcard, second_experiment),
+            _verified(
+                cycle + 2,
+                second_experiment,
+                second_configuration,
+                0.77,
+                SearchType.OPENEVOLVE,
+            ),
+        )
+    )
+
+    promotion = apply_portfolio_policy(
+        _original(),
+        run_id="v8-run",
+        cycle=cycle + 3,
+        events=tuple(events),
+        runtime_context=context,
+    )
+    assert promotion is not None
+    assert _stage(promotion) == "v8-promote-15"
+
+
+def test_v8_controller_skips_only_an_inapplicable_frozen_direct_ablation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_ablation = portfolio_module._v8_controlled_direct_ablation
+    unavailable = "replace_stagewise_blocks_with_uniform_blocks"
+
+    def controlled_ablation(design, parents, existing):
+        if design == unavailable:
+            raise ValueError(f"feta_unet_v8_direct_design_unavailable:{design}")
+        return original_ablation(design, parents, existing)
+
+    monkeypatch.setattr(
+        portfolio_module,
+        "_v8_controlled_direct_ablation",
+        controlled_ablation,
+    )
+
+    _, requests = _replay_v8_portfolio()
+    direct_designs = [
+        reference.removeprefix("direct-design:")
+        for request in requests
+        if _stage(request) == "v8-direct-ablation"
+        for reference in request.evidence_references
+        if reference.startswith("direct-design:")
+    ]
+
+    assert direct_designs == [
+        "remove_deep_supervision_from_selected_parent",
+        "replace_gated_skip_with_concat",
+        "replace_stagewise_residuals_with_uniform_residuals",
+    ]
+    assert _stage(requests[-1]) == "v8-promote-150"
 
 
 def test_v8_local_optuna_replay_fixes_every_architectural_field():

@@ -2,6 +2,7 @@
 
 from auto_researcher.agents.context import AgentContextAssemblyError
 from auto_researcher.agents.live.base import LiveAgentExecutionError
+from auto_researcher.agents.models import ResearchDirective
 from auto_researcher.agents.telemetry import (
     apply_agent_telemetry,
     consume_agent_telemetry,
@@ -22,6 +23,20 @@ def research_director_decide(
     active = state.get("active_research_directive")
     if agent is None:
         return {"executed_nodes": ["research_director_decide"]}
+    if active is not None and not isinstance(active, ResearchDirective):
+        try:
+            active = ResearchDirective.model_validate(active)
+        except (TypeError, ValueError):
+            return {
+                "status": RunStatus.FAILED,
+                "errors": ["research_director_checkpoint_invalid"],
+                "stop_reason": "research_director_checkpoint_invalid",
+                "research_director_failure_code": (
+                    "research_director_checkpoint_invalid"
+                ),
+                "research_director_failure_stage": "checkpoint_restore",
+                "executed_nodes": ["research_director_decide"],
+            }
     history = tuple(state.get("research_director_trigger_history", ()))
     trigger = next_research_director_trigger(
         dependencies.provenance_store.list_events(state["run_id"]),
