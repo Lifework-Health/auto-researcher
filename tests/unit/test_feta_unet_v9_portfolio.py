@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,11 @@ from auto_researcher.contracts.enums import EventType, ProvenanceKind, SearchTyp
 from auto_researcher.contracts.models import DecisionEvent, SearchRequest
 from auto_researcher.tasks.feta_unet_search.configuration import (
     FeTAUNetSearchConfiguration,
+)
+from auto_researcher.tasks.feta_unet_search.continuation import (
+    CONTINUATION_VERSION,
+    find_resume_source,
+    trajectory_identity,
 )
 from auto_researcher.tasks.feta_unet_search.portfolio import (
     V9_FIDELITY_TARGETS,
@@ -271,3 +277,34 @@ def test_v9_controller_replays_the_complete_24_to_3_ladder():
         if item.search_type == SearchType.OPENEVOLVE
     )
     assert requests[0].rationale.startswith(V9_PORTFOLIO_VERSION)
+
+
+def test_v9_continuation_selects_each_highest_completed_lower_rung(tmp_path):
+    root = _options()["v9_fixed_roots"][2]
+    namespace = tmp_path / "v9"
+    current = namespace / "experiment-current"
+    for completed in (15, 30, 50, 100):
+        candidate = namespace / f"experiment-{completed}"
+        checkpoint_root = candidate / "checkpoints/fold-0"
+        checkpoint_root.mkdir(parents=True)
+        configuration = FeTAUNetSearchConfiguration.model_validate(
+            {**root, "maximum_epochs": completed}
+        )
+        (checkpoint_root / "continuation.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": CONTINUATION_VERSION,
+                    "trajectory_identity": trajectory_identity(configuration),
+                    "completed_epoch": completed,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    requested = FeTAUNetSearchConfiguration.model_validate(
+        {**root, "maximum_epochs": 150}
+    )
+
+    assert find_resume_source(namespace, current, requested) == (
+        namespace / "experiment-100"
+    )
