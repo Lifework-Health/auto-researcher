@@ -11,7 +11,6 @@ from auto_researcher.contracts.enums import (
 )
 from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
-from auto_researcher.tasks.feta_unet_search.continuation import trajectory_identity
 from auto_researcher.tasks.feta_unet_search.configuration import (
     FeTAUNetSearchConfiguration,
 )
@@ -174,3 +173,36 @@ def test_report_writer_and_champion_snapshot_are_checksum_verified(tmp_path):
         (tmp_path / "champion" / "snapshot-manifest.json").read_text()
     )
     assert persisted == manifest
+
+
+def test_rank_correlations_follow_the_fidelities_actually_observed(tmp_path):
+    root = tmp_path / "runtime"
+    (root / "control").mkdir(parents=True)
+    store = SQLiteProvenanceStore(root / "control" / "provenance.sqlite")
+    index = 0
+    for learning_rate in (0.0001, 0.0002):
+        for fidelity in (10, 15, 150):
+            store.append_event(
+                _event(
+                    index,
+                    search_type=SearchType.OPTUNA,
+                    configuration=_configuration(
+                        fidelity=fidelity, learning_rate=learning_rate
+                    ),
+                    endpoint=0.7 + fidelity / 1_000 + index / 10_000,
+                    best=0.7 + fidelity / 1_000 + index / 10_000,
+                )
+            )
+            index += 1
+
+    report, _ = campaign_report(runtime_root=root, run_id="campaign-run")
+
+    assert tuple(report["rank_correlations"]) == (
+        "10_to_15",
+        "15_to_150",
+        "10_to_150",
+    )
+    assert all(
+        item["common_trajectories"] == 2
+        for item in report["rank_correlations"].values()
+    )

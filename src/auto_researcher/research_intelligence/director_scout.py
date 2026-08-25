@@ -277,6 +277,7 @@ def literature_brief_as_landscape_evidence(
             "schema_version": brief.schema_version,
             "request_hash": brief.request_hash,
             "evidence_cutoff": brief.evidence_cutoff.isoformat(),
+            "experiment_authority_exercised": False,
             "items": [
                 {
                     "evidence_id": item.evidence_id,

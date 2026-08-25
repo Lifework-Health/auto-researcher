@@ -95,7 +95,14 @@ def create_unet_model(configuration: FeTAUNetDirectConfiguration):
 
         return create_structural_basic_unet(configuration)
     try:
-        from monai.networks.nets import BasicUNet, DynUNet, UNet
+        from monai.networks.nets import (
+            AttentionUnet,
+            BasicUNet,
+            DynUNet,
+            SwinUNETR,
+            UNETR,
+            UNet,
+        )
     except ImportError as exc:
         raise RuntimeError("feta_ml_dependencies_unavailable") from exc
     common = {
@@ -149,6 +156,57 @@ def create_unet_model(configuration: FeTAUNetDirectConfiguration):
             deep_supr_num=max(1, deep_supervision_heads),
             res_block=bool(getattr(configuration, "residual_blocks", False)),
             trans_bias=False,
+        )
+    if model_variant == "attention_unet":
+        channels = tuple(int(value) for value in configuration.features)
+        return AttentionUnet(
+            spatial_dims=configuration.spatial_dims,
+            in_channels=configuration.in_channels,
+            out_channels=configuration.out_channels,
+            channels=channels,
+            strides=(2,) * (len(channels) - 1),
+            kernel_size=3,
+            up_kernel_size=3,
+            dropout=configuration.dropout,
+        )
+    if model_variant == "unetr":
+        if str(getattr(configuration, "feature_width", "")) != "v9_unetr_base_16":
+            raise ValueError("feta_unet_unetr_profile_invalid")
+        return UNETR(
+            in_channels=configuration.in_channels,
+            out_channels=configuration.out_channels,
+            img_size=tuple(configuration.patch_size),
+            feature_size=16,
+            hidden_size=768,
+            mlp_dim=3072,
+            num_heads=12,
+            proj_type="conv",
+            norm_name="instance",
+            conv_block=True,
+            res_block=True,
+            dropout_rate=configuration.dropout,
+            spatial_dims=configuration.spatial_dims,
+            qkv_bias=False,
+            save_attn=False,
+        )
+    if model_variant == "swin_unetr":
+        if str(getattr(configuration, "feature_width", "")) != "v9_swin_tiny_24":
+            raise ValueError("feta_unet_swin_unetr_profile_invalid")
+        return SwinUNETR(
+            in_channels=configuration.in_channels,
+            out_channels=configuration.out_channels,
+            patch_size=2,
+            depths=(2, 2, 2, 2),
+            num_heads=(3, 6, 12, 24),
+            window_size=7,
+            feature_size=24,
+            norm_name="instance",
+            drop_rate=configuration.dropout,
+            attn_drop_rate=0.0,
+            dropout_path_rate=0.0,
+            normalize=True,
+            use_checkpoint=False,
+            spatial_dims=configuration.spatial_dims,
         )
     raise ValueError("feta_unet_model_variant_invalid")
 

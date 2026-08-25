@@ -150,7 +150,11 @@ def campaign_report(
         }
 
     correlations: dict[str, Any] = {}
-    for source, target in ((25, 50), (50, 100), (100, 150), (25, 150)):
+    observed_fidelities = sorted(unique_stage_rows)
+    correlation_pairs = list(zip(observed_fidelities, observed_fidelities[1:]))
+    if len(observed_fidelities) > 2:
+        correlation_pairs.append((observed_fidelities[0], observed_fidelities[-1]))
+    for source, target in dict.fromkeys(correlation_pairs):
         source_scores = {
             item.trajectory_identity: item.rung_score
             for item in unique_stage_rows.get(source, ())
