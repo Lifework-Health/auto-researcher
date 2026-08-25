@@ -1,0 +1,167 @@
+{
+  "schema_version": "feta-unet-v9-bound-evidence-v1",
+  "evidence_cutoff": "2026-08-24",
+  "development_fold": 0,
+  "sealed_holdout_evaluations": 0,
+  "dataset_manifest_hash": "6d6f375fda99512a93bbaaa715d6edb5031c4d4f2356584b578f2ebd9631eacf",
+  "split_hash": "3ee6e9f02b4d35f7611bb70cdf19aea3ebc12f81ef89b57291eac9983df66561",
+  "fold_hash": "45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e",
+  "source_artifacts": {
+    "v8_campaign_report_sha256": "21b676af66aeead073c6839e4c9fd926c111697992edef9c92bcd37094dbb878",
+    "v8_best_ensemble_report_sha256": "e47f76eec7a6dda697cbff3ae697427d423d5a8393bdcfcb8a3c4deea7f15f4e"
+  },
+  "v8_campaign": {
+    "run_id": "feta-unet-campaign-32h-v8-20260823",
+    "verified_execution_count": 86,
+    "screened_10_epoch_executions": 55,
+    "screened_10_epoch_unique_trajectories": 45,
+    "promoted_15_epoch_trajectories": 29,
+    "promoted_150_epoch_trajectories": 2,
+    "champion": {
+      "experiment_id": "experiment-fd7420c452e1982d",
+      "origin_search_type": "OPTUNA",
+      "best_score": 0.8260410594691577,
+      "rung_score": 0.8256099055173812,
+      "trajectory_identity": "a100793b1706ae89bb8e7c6c923847551be3c899cc25761d12ca3c7940dfb337",
+      "model_variant": "dynunet",
+      "feature_width": "v8_dyn_balanced_5",
+      "features": [64, 128, 256, 512, 768],
+      "residual_blocks": true,
+      "deep_supervision_heads": 1,
+      "kernel_profile": "large_front",
+      "activation": "ReLU",
+      "norm": "instance",
+      "optimizer": "AdamW",
+      "lr_schedule": "cosine",
+      "loss_variant": "dice_focal",
+      "positive_negative_ratio": "2:1",
+      "augmentation_policy": "combined",
+      "learning_rate": 0.0001129297960052267,
+      "weight_decay": 0.00001516410659573061,
+      "dropout": 0.022853564045494074,
+      "dice_weight": 1.3287448814674725
+    },
+    "alternate": {
+      "experiment_id": "experiment-2cfeba2972f24ed4",
+      "best_score": 0.8236621034966902,
+      "model_variant": "dynunet",
+      "feature_width": "v8_dyn_deep_6",
+      "features": [40, 80, 160, 320, 640, 960]
+    },
+    "observed_limitations": [
+      "Only two trajectories reached 150 epochs.",
+      "The frozen postmortem correlation labels did not cover the actual 10-to-15-to-150 ladder.",
+      "Cycles 2 through 25 performed no evaluation before recovery, reducing usable search time.",
+      "Ten 10-epoch result records were duplicate executions; 45 scientific trajectories were unique."
+    ]
+  },
+  "v8_ensemble": {
+    "ensemble_id": "d66fe1b652c7b3d08ceba7b7918faea092977e9a8ac5d2effc532f79cbdcb445",
+    "mean_subject_macro_dice": 0.8303179703378446,
+    "best_single_score": 0.8260410594691577,
+    "delta_vs_best_single": 0.004276910868686867,
+    "member_experiment_ids": [
+      "experiment-643b2c5f65b4bc25",
+      "experiment-52cd44ef6ffd1335",
+      "experiment-fd7420c452e1982d",
+      "experiment-2cfeba2972f24ed4"
+    ],
+    "weakest_tissues": {
+      "grey_matter": 0.7198869025451001,
+      "external_cerebrospinal_fluid": 0.7367983094708922
+    },
+    "reconstruction_macro_dice": {
+      "irtk": 0.8848761543261225,
+      "mial": 0.7757597863495665
+    },
+    "reconstruction_gap": 0.109116367976556,
+    "development_subject_count": 14,
+    "sealed_holdout_evaluations": 0
+  },
+  "research_intelligence": {
+    "knowledge_library_id": "knowledge-library-945255689e5f80fd1be9e906",
+    "knowledge_library_hash": "945255689e5f80fd1be9e906fb2a76e2515bfd5cfa362796dae22782539208c1",
+    "literature_brief_id": "literature-brief-8e8245d8f987fafc15d130bf",
+    "literature_brief_hash": "8e8245d8f987fafc15d130bfda8d617fc32c3ac76b89a3e38a639f2f4efcb725",
+    "source_count": 4,
+    "experiment_authority_exercised": false
+  },
+  "v9_architecture_pilots": {
+    "environment": "SBIGPUServer1 V8 FeTA Python environment with temporary pinned einops 0.8.1",
+    "full_cuda_step_performed": false,
+    "profiles": [
+      {
+        "feature_width": "v9_attn_compact_5",
+        "model_variant": "attention_unet",
+        "trainable_parameters": 36912564,
+        "architecture_identity": "monai-unet-3d-bounded-v4-ceeda1c712b6ef02"
+      },
+      {
+        "feature_width": "v9_attn_balanced_5",
+        "model_variant": "attention_unet",
+        "trainable_parameters": 53150880,
+        "architecture_identity": "monai-unet-3d-bounded-v4-3aa0869c9b7ae905"
+      },
+      {
+        "feature_width": "v9_unetr_base_16",
+        "model_variant": "unetr",
+        "trainable_parameters": 121350472,
+        "architecture_identity": "monai-unet-3d-bounded-v4-015a090c6e7399b9"
+      },
+      {
+        "feature_width": "v9_swin_tiny_24",
+        "model_variant": "swin_unetr",
+        "trainable_parameters": 15703154,
+        "architecture_identity": "monai-unet-3d-bounded-v4-cd24ca621496b417"
+      }
+    ]
+  },
+  "provisional_campaign_design": {
+    "duration_hours": 36,
+    "protected_finalisation_hours": 8,
+    "family_budget_fraction": {
+      "dynunet": 0.7,
+      "attention_unet": 0.2,
+      "transformer_pilots": 0.1
+    },
+    "fixed_root_count": {
+      "dynunet": 6,
+      "attention_unet": 2,
+      "unetr": 1,
+      "swin_unetr": 1
+    },
+    "fidelity_ladder": [15, 30, 50, 100, 150],
+    "minimum_100_epoch_finalists": 3,
+    "target_150_epoch_finalists": 3,
+    "research_director": {
+      "role": "strategy_and_course_correction",
+      "model": "claude-opus-5",
+      "effort": "xhigh",
+      "maximum_valid_decisions": 16,
+      "invalid_structured_retries_do_not_consume_valid_decisions": true
+    },
+    "planner": {
+      "role": "compile_strategy_into_exact_typed_allocations",
+      "deterministic": true
+    },
+    "supervisor": {
+      "role": "hard_budget_evidence_identity_and_safety_gate"
+    },
+    "selection_dimensions": [
+      "macro_dice",
+      "external_csf_dice",
+      "grey_matter_dice",
+      "reconstruction_gap",
+      "lineage_diversity",
+      "ensemble_marginal_gain"
+    ]
+  },
+  "launch_ready": false,
+  "launch_blockers": [
+    "V9 adaptive portfolio controller is not yet implemented and replay-tested.",
+    "AttentionUnet, UNETR and SwinUNETR require real-CUDA memory and throughput calibration.",
+    "The 15-to-30-to-50-to-100-to-150 continuation ladder requires end-to-end verification.",
+    "V8 champion and alternate checkpoint imports are not yet bound into a fresh V9 runtime.",
+    "The production contract, runtime paths and final deadline have not yet been frozen."
+  ]
+}

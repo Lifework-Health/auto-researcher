@@ -206,12 +206,33 @@ class BoundedStructuredCall:
                 for record in self.store.list_records(run_id)
                 if record.role == role and record.retry_of_call_id is None
             }
-            if (
-                base_call_id not in total_director_calls
-                and len(total_director_calls)
-                >= self.budget_policy.maximum_research_director_calls_total
-            ):
-                raise LiveAgentExecutionError("maximum_research_director_calls_reached")
+            valid_decision_limit = (
+                self.budget_policy.maximum_research_director_valid_decisions_total
+            )
+            if valid_decision_limit is None:
+                if (
+                    base_call_id not in total_director_calls
+                    and len(total_director_calls)
+                    >= self.budget_policy.maximum_research_director_calls_total
+                ):
+                    raise LiveAgentExecutionError(
+                        "maximum_research_director_calls_reached"
+                    )
+            else:
+                valid_director_decisions = {
+                    record.retry_of_call_id or record.call_id
+                    for record in self.store.list_records(run_id)
+                    if record.role == role
+                    and record.status == AgentCallStatus.COMPLETED
+                    and record.structured_output is not None
+                }
+                if (
+                    base_call_id not in valid_director_decisions
+                    and len(valid_director_decisions) >= valid_decision_limit
+                ):
+                    raise LiveAgentExecutionError(
+                        "maximum_research_director_valid_decisions_reached"
+                    )
         recovery_codes = set(recovered_error_codes)
         planner_projection_recovery = (
             role == AgentRole.PLANNER

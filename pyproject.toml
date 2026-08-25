@@ -61,6 +61,7 @@ openevolve = [
     "openevolve==0.3.2",
 ]
 feta = [
+    "einops==0.8.1",
     "numpy==2.0.2",
     "nibabel==5.3.3",
     "scipy==1.18.0",

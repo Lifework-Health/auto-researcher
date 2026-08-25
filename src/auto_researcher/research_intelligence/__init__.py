@@ -1,6 +1,28 @@
 """Offline-first, task-agnostic Research Intelligence contracts."""
 
 from auto_researcher.research_intelligence.brief import DeterministicBriefBuilder
+
+from auto_researcher.research_intelligence.director_scout import (
+    LiteratureEvidenceCandidate,
+    LiteratureEvidenceItem,
+    LiteratureScoutBrief,
+    LiteratureScoutMode,
+    LiteratureScoutPolicy,
+    LiteratureScoutProvider,
+    LiteratureScoutRequest,
+    LiteratureScoutShadowReport,
+    LiteratureSourceType,
+    build_literature_scout_brief,
+    evaluate_literature_scout_shadow,
+    literature_brief_as_landscape_evidence,
+)
+from auto_researcher.research_intelligence.director_knowledge import (
+    KNOWLEDGE_LIBRARY_SCHEMA_VERSION,
+    ResearchDirectorKnowledgeCard,
+    ResearchDirectorKnowledgeLibrary,
+    build_research_director_knowledge_library,
+    knowledge_library_as_landscape_evidence,
+)
 from auto_researcher.research_intelligence.models import (
     ApplicabilityAssessment,
     ApplicabilityLevel,
@@ -50,11 +72,23 @@ __all__ = [
     "EvidenceStore",
     "FindingCandidate",
     "FindingStance",
+    "LiteratureEvidenceCandidate",
+    "LiteratureEvidenceItem",
+    "LiteratureScoutBrief",
+    "LiteratureScoutMode",
+    "LiteratureScoutPolicy",
+    "LiteratureScoutProvider",
+    "LiteratureScoutRequest",
+    "LiteratureScoutShadowReport",
+    "LiteratureSourceType",
+    "KNOWLEDGE_LIBRARY_SCHEMA_VERSION",
     "OfflineResearchScout",
     "QuantitativeResult",
     "ResearchIntelligenceBrief",
     "ResearchIntelligenceRefreshRecord",
     "ResearchProgrammeContext",
+    "ResearchDirectorKnowledgeCard",
+    "ResearchDirectorKnowledgeLibrary",
     "ResearchScout",
     "RetrievedSourceMaterial",
     "SQLiteEvidenceStore",
@@ -65,4 +99,9 @@ __all__ = [
     "SourceType",
     "SynthesisResult",
     "TrustClassification",
+    "build_literature_scout_brief",
+    "build_research_director_knowledge_library",
+    "evaluate_literature_scout_shadow",
+    "literature_brief_as_landscape_evidence",
+    "knowledge_library_as_landscape_evidence",
 ]

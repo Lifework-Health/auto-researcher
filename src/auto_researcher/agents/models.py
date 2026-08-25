@@ -120,7 +120,15 @@ class ResearchDirective(AgentModel):
 
 class ResearchLandscapeEvidence(AgentModel):
     evidence_id: str = Field(min_length=1)
-    evidence_type: Literal["V7", "REQ11", "ENSEMBLE", "RUNTIME", "FAILURE"]
+    evidence_type: Literal[
+        "V7",
+        "REQ11",
+        "ENSEMBLE",
+        "RUNTIME",
+        "FAILURE",
+        "LITERATURE",
+        "KNOWLEDGE_CARD_LIBRARY",
+    ]
     evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_reference: str = Field(min_length=1)
     summary: str = Field(min_length=1, max_length=1_000)
@@ -228,6 +236,15 @@ class PlannerProposal(AgentModel):
 class AgentBudgetPolicy(AgentModel):
     maximum_research_director_calls_per_cycle: int = Field(default=1, ge=1)
     maximum_research_director_calls_total: int = Field(default=8, ge=1)
+    maximum_research_director_valid_decisions_total: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional cap on successfully validated Research Director decisions. "
+            "When set, failed structured-output calls remain bounded by attempts, "
+            "cost and maximum_total_model_calls but do not consume this decision cap."
+        ),
+    )
     maximum_hypothesis_calls_per_cycle: int = Field(default=1, ge=1)
     maximum_planner_calls_per_cycle: int = Field(default=1, ge=1)
     maximum_attempts_per_agent_call: int = Field(default=2, ge=1)

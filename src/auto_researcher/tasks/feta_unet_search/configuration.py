@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v6"
 V7_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v5"
+V9_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v7"
 FIDELITY_LEVELS = (5, 10, 15, 25, 50, 100, 150)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
@@ -22,6 +23,9 @@ MODEL_VARIANT_CONTEXT = {
     "unet_residual": ("UNet", 2),
     "structural_basic_unet": ("BasicUNet", 0),
     "dynunet": ("DynUNet", 0),
+    "attention_unet": ("AttentionUnet", 0),
+    "unetr": ("UNETR", 0),
+    "swin_unetr": ("SwinUNETR", 0),
 }
 FEATURE_WIDTH_PROFILES = {
     "narrow": (24, 24, 48, 96, 192, 24),
@@ -115,6 +119,23 @@ V8_RESIDUAL_PROFILES = (
     "decoder_only",
     "deep_only",
 )
+V9_ATTENTION_FEATURE_PROFILES = {
+    "v9_attn_compact_5": (40, 80, 160, 320, 640),
+    "v9_attn_balanced_5": (48, 96, 192, 384, 768),
+}
+V9_TRANSFORMER_FEATURE_PROFILES = {
+    # The tuple remains part of the common scientific configuration identity.
+    # Transformer internals are fixed by the named profile in model.py.
+    "v9_unetr_base_16": (32, 64, 128, 256, 512),
+    "v9_swin_tiny_24": (24, 48, 96, 192, 384),
+}
+ALL_FEATURE_WIDTH_PROFILES.update(V9_ATTENTION_FEATURE_PROFILES)
+ALL_FEATURE_WIDTH_PROFILES.update(V9_TRANSFORMER_FEATURE_PROFILES)
+V9_ATTENTION_ARCHITECTURE_BUDGET = "attention-unet-15m-150m-v1"
+V9_TRANSFORMER_ARCHITECTURE_BUDGET = "transformer-pilot-15m-150m-v1"
+V9_MINIMUM_TRAINABLE_PARAMETERS = 15_000_000
+V9_MAXIMUM_TRAINABLE_PARAMETERS = 150_000_000
+V9_MAXIMUM_PEAK_GPU_MEMORY_BYTES = 44 * 1024**3
 RESIDUAL_CHANNEL_PROFILES = {
     "narrow": (24, 48, 96, 192, 384),
     "baseline": (32, 64, 128, 256, 512),
@@ -177,8 +198,13 @@ class FeTAUNetSearchConfiguration(BaseModel):
         "unet_residual",
         "structural_basic_unet",
         "dynunet",
+        "attention_unet",
+        "unetr",
+        "swin_unetr",
     ] = "basic_unet"
-    network_family: Literal["BasicUNet", "UNet", "DynUNet"] = "BasicUNet"
+    network_family: Literal[
+        "BasicUNet", "UNet", "DynUNet", "AttentionUnet", "UNETR", "SwinUNETR"
+    ] = "BasicUNet"
     residual_units: Literal[0, 2] = 0
     feature_width: str = "baseline"
     features: tuple[int, int, int, int, int] | tuple[int, int, int, int, int, int] = (
@@ -197,6 +223,8 @@ class FeTAUNetSearchConfiguration(BaseModel):
         "basicunet-15m-150m-v1",
         "basicunet-structural-15m-150m-v1",
         "dynunet-15m-150m-v1",
+        "attention-unet-15m-150m-v1",
+        "transformer-pilot-15m-150m-v1",
     ] = "legacy"
     upsample: Literal["deconv", "pixelshuffle", "nontrainable"] = "deconv"
     kernel_profile: Literal["basic", "standard", "large_front", "context_deep"] = (
@@ -275,6 +303,15 @@ class FeTAUNetSearchConfiguration(BaseModel):
         if profile in V8_DYNUNET_FEATURE_PROFILES:
             payload.setdefault("architecture_budget", V8_DYNUNET_ARCHITECTURE_BUDGET)
             payload.setdefault("model_variant", "dynunet")
+        if profile in V9_ATTENTION_FEATURE_PROFILES:
+            payload.setdefault("architecture_budget", V9_ATTENTION_ARCHITECTURE_BUDGET)
+            payload.setdefault("model_variant", "attention_unet")
+        if profile == "v9_unetr_base_16":
+            payload.setdefault("architecture_budget", V9_TRANSFORMER_ARCHITECTURE_BUDGET)
+            payload.setdefault("model_variant", "unetr")
+        if profile == "v9_swin_tiny_24":
+            payload.setdefault("architecture_budget", V9_TRANSFORMER_ARCHITECTURE_BUDGET)
+            payload.setdefault("model_variant", "swin_unetr")
         profile = payload.get("feature_width", "baseline")
         expected = ALL_FEATURE_WIDTH_PROFILES.get(profile)
         if expected is not None and "features" not in payload:
@@ -411,6 +448,48 @@ class FeTAUNetSearchConfiguration(BaseModel):
             or self.downsample != "max_pool"
         ):
             raise ValueError("feta_unet_search_v8_dynunet_architecture_invalid")
+        if self.architecture_budget == V9_ATTENTION_ARCHITECTURE_BUDGET and (
+            self.model_variant != "attention_unet"
+            or self.feature_width not in V9_ATTENTION_FEATURE_PROFILES
+            or self.features != expected_features
+            or len(self.features) != 5
+            or tuple(sorted(self.features)) != self.features
+            or self.upsample != "deconv"
+            or self.kernel_profile != "standard"
+            or self.residual_blocks
+            or self.deep_supervision_heads != 0
+            or self.convolutions_per_stage != 2
+            or self.stage_block_profile != "uniform"
+            or self.residual_profile != "uniform"
+            or self.dilation_profile != "none"
+            or self.skip_fusion != "gated_concat"
+            or self.downsample != "max_pool"
+        ):
+            raise ValueError("feta_unet_search_v9_attention_architecture_invalid")
+        if self.architecture_budget == V9_TRANSFORMER_ARCHITECTURE_BUDGET and (
+            self.feature_width not in V9_TRANSFORMER_FEATURE_PROFILES
+            or self.features != expected_features
+            or (
+                self.feature_width == "v9_unetr_base_16"
+                and self.model_variant != "unetr"
+            )
+            or (
+                self.feature_width == "v9_swin_tiny_24"
+                and self.model_variant != "swin_unetr"
+            )
+            or self.upsample != "deconv"
+            or self.kernel_profile != "standard"
+            or not self.residual_blocks
+            or self.deep_supervision_heads != 0
+            or self.convolutions_per_stage != 2
+            or self.stage_block_profile != "uniform"
+            or self.residual_profile != "uniform"
+            or self.dilation_profile != "none"
+            or self.skip_fusion != "concat"
+            or self.downsample != "max_pool"
+            or self.norm != "instance"
+        ):
+            raise ValueError("feta_unet_search_v9_transformer_architecture_invalid")
         expected_channels = RESIDUAL_CHANNEL_PROFILES.get(self.feature_width)
         if (
             (
