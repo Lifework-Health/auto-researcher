@@ -14,10 +14,16 @@ from auto_researcher.secrets.providers import (
     SecretProvider,
     provider_for_reference,
 )
+from auto_researcher.secrets.linux_keyring import (
+    LinuxKernelKeyringSecretProvider,
+    LinuxUserKeyring,
+)
 
 __all__ = [
     "EnvironmentSecretProvider",
     "GoogleSecretManagerProvider",
+    "LinuxKernelKeyringSecretProvider",
+    "LinuxUserKeyring",
     "ResolvedSecret",
     "SecretProvider",
     "SecretProviderKind",

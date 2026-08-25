@@ -110,9 +110,19 @@ class BoundedStructuredCall:
             raise LiveAgentExecutionError("prompt_version_configuration_mismatch")
         if len(context_json) > self.budget_policy.maximum_input_context_size:
             raise LiveAgentExecutionError("agent_context_too_large")
-        if self.config.maximum_output_tokens > self.budget_policy.maximum_output_tokens:
+        output_limit = (
+            self.budget_policy.maximum_research_director_output_tokens
+            if role == AgentRole.RESEARCH_DIRECTOR
+            else self.budget_policy.maximum_output_tokens
+        )
+        cost_limit = (
+            self.budget_policy.maximum_research_director_cost_per_call
+            if role == AgentRole.RESEARCH_DIRECTOR
+            else self.budget_policy.maximum_cost_per_call
+        )
+        if self.config.maximum_output_tokens > output_limit:
             raise LiveAgentExecutionError("maximum_output_tokens_exceeds_agent_policy")
-        if self.config.maximum_cost_per_call > self.budget_policy.maximum_cost_per_call:
+        if self.config.maximum_cost_per_call > cost_limit:
             raise LiveAgentExecutionError("maximum_call_cost_exceeds_agent_policy")
         if remaining_cost_budget < self.config.maximum_cost_per_call:
             raise LiveAgentExecutionError("insufficient_remaining_cost_budget")
@@ -135,11 +145,13 @@ class BoundedStructuredCall:
             provider=self.config.provider,
             model_id=self.config.model_id,
         )
-        role_limit = (
-            self.budget_policy.maximum_hypothesis_calls_per_cycle
-            if role == AgentRole.HYPOTHESIS
-            else self.budget_policy.maximum_planner_calls_per_cycle
-        )
+        role_limit = {
+            AgentRole.HYPOTHESIS: self.budget_policy.maximum_hypothesis_calls_per_cycle,
+            AgentRole.PLANNER: self.budget_policy.maximum_planner_calls_per_cycle,
+            AgentRole.RESEARCH_DIRECTOR: (
+                self.budget_policy.maximum_research_director_calls_per_cycle
+            ),
+        }.get(role, self.budget_policy.maximum_planner_calls_per_cycle)
         existing_role_calls = {
             record.call_id
             for record in self.store.list_records(run_id)
@@ -147,7 +159,22 @@ class BoundedStructuredCall:
             and record.role == role
             and record.retry_of_call_id is None
         }
-        if base_call_id not in existing_role_calls and len(existing_role_calls) >= role_limit:
+        if role == AgentRole.RESEARCH_DIRECTOR:
+            total_director_calls = {
+                record.call_id
+                for record in self.store.list_records(run_id)
+                if record.role == role and record.retry_of_call_id is None
+            }
+            if (
+                base_call_id not in total_director_calls
+                and len(total_director_calls)
+                >= self.budget_policy.maximum_research_director_calls_total
+            ):
+                raise LiveAgentExecutionError("maximum_research_director_calls_reached")
+        if (
+            base_call_id not in existing_role_calls
+            and len(existing_role_calls) >= role_limit
+        ):
             raise LiveAgentExecutionError("maximum_agent_calls_per_cycle_reached")
         completed = self._completed_record(base_call_id)
         selected_call_id = (
@@ -162,7 +189,9 @@ class BoundedStructuredCall:
                 proposal = response_model.model_validate(completed.structured_output)
                 result = reconcile(proposal, selected_call_id)
             except (ValidationError, ReconciliationError) as exc:
-                raise LiveAgentExecutionError("completed_call_reconciliation_conflict") from exc
+                raise LiveAgentExecutionError(
+                    "completed_call_reconciliation_conflict"
+                ) from exc
             return result, _telemetry_from_record(
                 completed,
                 replayed=True,
@@ -224,9 +253,7 @@ class BoundedStructuredCall:
                 total_cost += self.config.pricing.estimate(
                     input_tokens=response.input_tokens,
                     output_tokens=response.output_tokens,
-                    cache_creation_input_tokens=(
-                        response.cache_creation_input_tokens
-                    ),
+                    cache_creation_input_tokens=(response.cache_creation_input_tokens),
                     cache_read_input_tokens=response.cache_read_input_tokens,
                 )
                 total_latency += response.latency_ms
@@ -359,7 +386,10 @@ class BoundedStructuredCall:
             return base_call_id
         if latest.status == AgentCallStatus.COMPLETED:
             return base_call_id
-        if latest.status == AgentCallStatus.RESERVED and latest.provider_request_started:
+        if (
+            latest.status == AgentCallStatus.RESERVED
+            and latest.provider_request_started
+        ):
             indeterminate = latest.model_copy(
                 update={
                     "record_id": stable_record_id(
@@ -437,9 +467,7 @@ class BoundedStructuredCall:
         if unused_children:
             return unused_children[0].call_id
         indeterminate_children = [
-            child
-            for child in children
-            if child.status == AgentCallStatus.INDETERMINATE
+            child for child in children if child.status == AgentCallStatus.INDETERMINATE
         ]
         if len(indeterminate_children) > 1:
             raise LiveAgentExecutionError("multiple_indeterminate_model_call_retries")
@@ -461,9 +489,7 @@ class BoundedStructuredCall:
                     "structured_output": record.structured_output,
                     "input_tokens": record.input_tokens,
                     "output_tokens": record.output_tokens,
-                    "cache_creation_input_tokens": (
-                        record.cache_creation_input_tokens
-                    ),
+                    "cache_creation_input_tokens": (record.cache_creation_input_tokens),
                     "cache_read_input_tokens": record.cache_read_input_tokens,
                     "estimated_cost": record.estimated_cost,
                     "response_hash": record.response_hash,
@@ -537,6 +563,8 @@ class BoundedStructuredCall:
             retry_of_call_id=retry_of,
             provider_request_started=provider_request_started,
         )
+
+
 def _telemetry_from_record(
     record: AgentCallRecord,
     *,

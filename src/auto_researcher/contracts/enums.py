@@ -46,6 +46,7 @@ class KnowledgeRetrievalStatus(StrEnum):
 
 
 class AgentRole(StrEnum):
+    RESEARCH_DIRECTOR = "RESEARCH_DIRECTOR"
     HYPOTHESIS = "HYPOTHESIS"
     PLANNER = "PLANNER"
     OPENEVOLVE_MUTATION = "OPENEVOLVE_MUTATION"

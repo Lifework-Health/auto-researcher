@@ -32,8 +32,10 @@ from auto_researcher.tasks.feta_unet_search.openevolve import (
 )
 from auto_researcher.tasks.feta_unet_search.portfolio import (
     V7_MECHANISM_PORTFOLIO_VERSION,
+    V8_PORTFOLIO_VERSION,
     apply_portfolio_policy,
     apply_v7_deadline_graduation_policy,
+    apply_v8_deadline_graduation_policy,
 )
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
@@ -70,6 +72,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V6_OPTUNA_FEATURE_PROFILES,
     V6_UPSAMPLE_MODES,
     V7_ARCHITECTURE_BUDGET,
+    V7_CONFIGURATION_SCHEMA_VERSION,
     V7_DEEP_SUPERVISION_HEADS,
     V7_KERNEL_PROFILES,
     V7_MECHANISM_FEATURE_PROFILES,
@@ -77,6 +80,17 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
     V7_MINIMUM_TRAINABLE_PARAMETERS,
     V7_OPTUNA_FEATURE_PROFILES,
+    V8_ARCHITECTURE_FAMILY_ID,
+    V8_CAMPAIGN_ARCHITECTURE_MODE,
+    V8_DYNUNET_ARCHITECTURE_BUDGET,
+    V8_DYNUNET_DEEP_SUPERVISION_HEADS,
+    V8_DYNUNET_FEATURE_PROFILES,
+    V8_DYNUNET_KERNEL_PROFILES,
+    V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+    V8_MAXIMUM_TRAINABLE_PARAMETERS,
+    V8_MINIMUM_TRAINABLE_PARAMETERS,
+    V8_RESIDUAL_PROFILES,
+    V8_STAGE_BLOCK_PROFILES,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
     baseline_search_configuration,
@@ -134,6 +148,7 @@ def _safe_initial_campaign_observations(raw: object) -> tuple[str, ...]:
 LEGACY_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v4"
 LEGACY_SCIENTIFIC_ID = "feta-unet-fold0-bounded-family-tree-search-macro-dice-v4"
 LEGACY_ARCHITECTURE_FAMILY_ID = "monai-unet-3d-bounded-family-v4"
+V8_SCIENTIFIC_ID = "feta-unet-fold0-v8-branch-exploitation-macro-dice-v1"
 
 
 class FeTAUNetSearchTask(FeTAUNetDirectTask):
@@ -168,16 +183,28 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             contract.constraints.get("architecture_search_mode")
             == V7_ARCHITECTURE_BUDGET
         )
+        v8_mode = (
+            contract.constraints.get("architecture_search_mode")
+            == V8_CAMPAIGN_ARCHITECTURE_MODE
+        )
         if (
             contract.evaluator_id != EVALUATOR_ID
             or contract.primary_metric != "mean_subject_macro_dice"
             or contract.objective_version
-            != (SCIENTIFIC_ID if v7_mode else LEGACY_SCIENTIFIC_ID)
+            != (
+                V8_SCIENTIFIC_ID
+                if v8_mode
+                else (SCIENTIFIC_ID if v7_mode else LEGACY_SCIENTIFIC_ID)
+            )
             or contract.task_constraints_version
             != (
                 CONFIGURATION_SCHEMA_VERSION
-                if v7_mode
-                else LEGACY_CONFIGURATION_SCHEMA_VERSION
+                if v8_mode
+                else (
+                    V7_CONFIGURATION_SCHEMA_VERSION
+                    if v7_mode
+                    else LEGACY_CONFIGURATION_SCHEMA_VERSION
+                )
             )
         ):
             raise ValueError("feta_unet_search_contract_identity_mismatch")
@@ -194,22 +221,37 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             "split_hash": EXPECTED_SPLIT_HASH,
             "fold_hash": EXPECTED_FOLD_HASH,
             "architecture_identity": (
-                SEARCH_ARCHITECTURE_FAMILY_ID
-                if v7_mode
-                else LEGACY_ARCHITECTURE_FAMILY_ID
+                V8_ARCHITECTURE_FAMILY_ID
+                if v8_mode
+                else (
+                    SEARCH_ARCHITECTURE_FAMILY_ID
+                    if v7_mode
+                    else LEGACY_ARCHITECTURE_FAMILY_ID
+                )
             ),
             "architecture_model_variants": (
-                ["structural_basic_unet"]
-                if v7_mode
-                else (["basic_unet"] if v6_mode else list(MODEL_VARIANTS))
+                ["structural_basic_unet", "dynunet"]
+                if v8_mode
+                else (
+                    ["structural_basic_unet"]
+                    if v7_mode
+                    else (["basic_unet"] if v6_mode else list(MODEL_VARIANTS))
+                )
             ),
             "architecture_feature_width_profiles": list(
-                V7_MECHANISM_FEATURE_PROFILES
-                if v7_mode
+                (
+                    *V7_MECHANISM_FEATURE_PROFILES,
+                    *V8_DYNUNET_FEATURE_PROFILES,
+                )
+                if v8_mode
                 else (
-                    V6_BASIC_UNET_FEATURE_PROFILES
-                    if v6_mode
-                    else FEATURE_WIDTH_PROFILES
+                    V7_MECHANISM_FEATURE_PROFILES
+                    if v7_mode
+                    else (
+                        V6_BASIC_UNET_FEATURE_PROFILES
+                        if v6_mode
+                        else FEATURE_WIDTH_PROFILES
+                    )
                 )
             ),
             "holdout_policy": "sealed-no-evaluation",
@@ -233,6 +275,15 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             != V7_MAXIMUM_TRAINABLE_PARAMETERS
             or contract.constraints.get("maximum_peak_gpu_memory_bytes")
             != V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES
+        ):
+            raise ValueError("feta_unet_search_scientific_identity_mismatch")
+        if v8_mode and (
+            contract.constraints.get("architecture_trainable_parameter_minimum")
+            != V8_MINIMUM_TRAINABLE_PARAMETERS
+            or contract.constraints.get("architecture_trainable_parameter_maximum")
+            != V8_MAXIMUM_TRAINABLE_PARAMETERS
+            or contract.constraints.get("maximum_peak_gpu_memory_bytes")
+            != V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES
         ):
             raise ValueError("feta_unet_search_scientific_identity_mismatch")
 
@@ -280,6 +331,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         fixed = baseline_search_configuration(fidelity)
         v6_architecture = raw_fixed.get("architecture_budget") == V6_ARCHITECTURE_BUDGET
         v7_architecture = raw_fixed.get("architecture_budget") == V7_ARCHITECTURE_BUDGET
+        v8_dynunet = (
+            raw_fixed.get("architecture_budget") == V8_DYNUNET_ARCHITECTURE_BUDGET
+        )
         registered_fixed_configuration = {
             key: value
             for key, value in fixed.items()
@@ -310,6 +364,12 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             registered_fixed_configuration.update(
                 architecture_budget=V7_ARCHITECTURE_BUDGET,
                 model_variant="structural_basic_unet",
+            )
+        if v8_dynunet:
+            registered_fixed_configuration.update(
+                architecture_budget=V8_DYNUNET_ARCHITECTURE_BUDGET,
+                model_variant="dynunet",
+                upsample="deconv",
             )
         fixed_feature_vector = "features" in raw_fixed
         if fixed_feature_vector:
@@ -347,12 +407,16 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 CategoricalParameterSpec(
                     name="feature_width",
                     choices=tuple(
-                        V7_OPTUNA_FEATURE_PROFILES
-                        if v7_architecture
+                        V8_DYNUNET_FEATURE_PROFILES
+                        if v8_dynunet
                         else (
-                            V6_OPTUNA_FEATURE_PROFILES
-                            if v6_architecture
-                            else FEATURE_WIDTH_PROFILES
+                            V7_OPTUNA_FEATURE_PROFILES
+                            if v7_architecture
+                            else (
+                                V6_OPTUNA_FEATURE_PROFILES
+                                if v6_architecture
+                                else FEATURE_WIDTH_PROFILES
+                            )
                         )
                     ),
                 ),
@@ -372,6 +436,12 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     name="convolutions_per_stage", choices=(1, 2, 3)
                 ),
                 CategoricalParameterSpec(
+                    name="stage_block_profile", choices=V8_STAGE_BLOCK_PROFILES
+                ),
+                CategoricalParameterSpec(
+                    name="residual_profile", choices=V8_RESIDUAL_PROFILES
+                ),
+                CategoricalParameterSpec(
                     name="dilation_profile",
                     choices=("none", "deep", "multiscale"),
                 ),
@@ -385,7 +455,19 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 CategoricalParameterSpec(name="upsample", choices=V6_UPSAMPLE_MODES),
             )
             if v7_architecture
-            else ()
+            else (
+                (
+                    CategoricalParameterSpec(
+                        name="kernel_profile", choices=V8_DYNUNET_KERNEL_PROFILES
+                    ),
+                    CategoricalParameterSpec(
+                        name="deep_supervision_heads",
+                        choices=V8_DYNUNET_DEEP_SUPERVISION_HEADS,
+                    ),
+                )
+                if v8_dynunet
+                else ()
+            )
         )
         registered = OptunaStudySpec(
             schema_version="1.0",
@@ -424,7 +506,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 ),
                 *(
                     ()
-                    if v7_architecture
+                    if v7_architecture or v8_dynunet
                     else (
                         CategoricalParameterSpec(
                             name="model_variant",
@@ -593,10 +675,17 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
     ) -> SearchRequest | None:
         del remaining_seconds
         raw = runtime_context.task_options.get("campaign_portfolio")
-        if (
-            not isinstance(raw, dict)
-            or raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION
-        ):
+        if not isinstance(raw, dict):
+            return None
+        if raw.get("version") == V8_PORTFOLIO_VERSION:
+            return apply_v8_deadline_graduation_policy(
+                request,
+                run_id=run_id,
+                cycle=cycle,
+                events=events,
+                runtime_context=runtime_context,
+            )
+        if raw.get("version") != V7_MECHANISM_PORTFOLIO_VERSION:
             return None
         return apply_v7_deadline_graduation_policy(
             request,
@@ -656,7 +745,11 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             "campaign_seconds_per_epoch_by_model_variant"
         )
         if raw_family_rates is not None:
-            valid_variants = {*MODEL_VARIANTS, "structural_basic_unet"}
+            valid_variants = {
+                *MODEL_VARIANTS,
+                "structural_basic_unet",
+                "dynunet",
+            }
             if (
                 not isinstance(raw_family_rates, dict)
                 or not set(MODEL_VARIANTS).issubset(raw_family_rates)
@@ -675,16 +768,20 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 family_rates[name] = float(value)
 
             model_variant = None
+            feature_width = None
             if request.search_type == SearchType.DIRECT:
                 model_variant = request.search_space.get("model_variant")
+                feature_width = request.search_space.get("feature_width")
             elif request.search_type == SearchType.OPTUNA:
                 fixed = request.search_space.get("fixed", {})
                 if isinstance(fixed, dict):
                     model_variant = fixed.get("model_variant")
+                    feature_width = fixed.get("feature_width")
             else:
                 campaign_context = request.search_space.get("campaign_context", {})
                 if isinstance(campaign_context, dict):
                     model_variant = campaign_context.get("required_model_variant")
+                    feature_width = campaign_context.get("required_feature_width")
             if model_variant is None:
                 # A mutable or mixed-family block must reserve for the slowest
                 # registered family so the wall-time deadline remains real.
@@ -695,6 +792,24 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 raise ValueError("feta_unet_campaign_model_variant_invalid")
             else:
                 seconds_per_epoch = family_rates[model_variant]
+            raw_width_rates = runtime_context.task_options.get(
+                "campaign_seconds_per_epoch_by_feature_width"
+            )
+            if raw_width_rates is not None:
+                if not isinstance(raw_width_rates, dict) or any(
+                    not isinstance(name, str)
+                    or isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or value <= 0
+                    for name, value in raw_width_rates.items()
+                ):
+                    raise ValueError(
+                        "feta_unet_campaign_feature_width_durations_invalid"
+                    )
+                if feature_width is not None and not isinstance(feature_width, str):
+                    raise ValueError("feta_unet_campaign_feature_width_invalid")
+                if feature_width in raw_width_rates:
+                    seconds_per_epoch = float(raw_width_rates[feature_width])
         if request.search_type == SearchType.OPENEVOLVE:
             fidelity = runtime_context.task_options.get("openevolve_fidelity", 25)
             candidates = request.experiment_budget
@@ -768,21 +883,44 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             contract.constraints.get("architecture_search_mode")
             == V7_ARCHITECTURE_BUDGET
         )
-        if v7_mode:
+        v8_mode = (
+            contract.constraints.get("architecture_search_mode")
+            == V8_CAMPAIGN_ARCHITECTURE_MODE
+        )
+        if v8_mode:
+            agent_model_variants = ("structural_basic_unet", "dynunet")
+            direct_feature_profiles = (
+                *V7_OPTUNA_FEATURE_PROFILES,
+                *V8_DYNUNET_FEATURE_PROFILES,
+            )
+            all_agent_feature_profiles = direct_feature_profiles
+            architecture_budgets = (
+                V7_ARCHITECTURE_BUDGET,
+                V8_DYNUNET_ARCHITECTURE_BUDGET,
+            )
+            openevolve_model_variants = ("structural_basic_unet",)
+            architecture_identity_value = V8_ARCHITECTURE_FAMILY_ID
+        elif v7_mode:
             agent_model_variants = ("structural_basic_unet",)
             direct_feature_profiles = V7_OPTUNA_FEATURE_PROFILES
             all_agent_feature_profiles = tuple(V7_MECHANISM_FEATURE_PROFILES)
-            architecture_budget = V7_ARCHITECTURE_BUDGET
+            architecture_budgets = (V7_ARCHITECTURE_BUDGET,)
+            openevolve_model_variants = agent_model_variants
+            architecture_identity_value = SEARCH_ARCHITECTURE_FAMILY_ID
         elif v6_mode:
             agent_model_variants = ("basic_unet",)
             direct_feature_profiles = V6_OPTUNA_FEATURE_PROFILES
             all_agent_feature_profiles = tuple(V6_BASIC_UNET_FEATURE_PROFILES)
-            architecture_budget = V6_ARCHITECTURE_BUDGET
+            architecture_budgets = (V6_ARCHITECTURE_BUDGET,)
+            openevolve_model_variants = agent_model_variants
+            architecture_identity_value = LEGACY_ARCHITECTURE_FAMILY_ID
         else:
             agent_model_variants = MODEL_VARIANTS
             direct_feature_profiles = tuple(FEATURE_WIDTH_PROFILES)
             all_agent_feature_profiles = tuple(FEATURE_WIDTH_PROFILES)
-            architecture_budget = "legacy"
+            architecture_budgets = ("legacy",)
+            openevolve_model_variants = agent_model_variants
+            architecture_identity_value = LEGACY_ARCHITECTURE_FAMILY_ID
         return TaskAgentContext(
             task_id=self.task_id,
             task_version=self.task_version,
@@ -833,15 +971,15 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "maximum_epochs": [25] if v6_mode or v7_mode else list(FIDELITY_LEVELS),
                 "model_variant": list(agent_model_variants),
                 "feature_width": list(direct_feature_profiles),
-                "architecture_budget": [architecture_budget],
-                "upsample": ["deconv"],
+                "architecture_budget": list(architecture_budgets),
+                "upsample": list(V6_UPSAMPLE_MODES) if v8_mode else ["deconv"],
                 **(
                     {
                         "kernel_profile": list(V7_KERNEL_PROFILES),
                         "residual_blocks": [False, True],
                         "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS),
                     }
-                    if v7_mode
+                    if v7_mode or v8_mode
                     else {}
                 ),
                 "activation": list(ACTIVATIONS),
@@ -865,11 +1003,19 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "augmentation_policy": list(AUGMENTATION_POLICIES),
                 "model_variant": list(agent_model_variants),
                 "feature_width": list(direct_feature_profiles),
-                "kernel_profile": list(V7_KERNEL_PROFILES) if v7_mode else ["basic"],
-                "residual_blocks": [False, True] if v7_mode else [False],
+                "kernel_profile": list(V7_KERNEL_PROFILES)
+                if v7_mode or v8_mode
+                else ["basic"],
+                "residual_blocks": [False, True] if v7_mode or v8_mode else [False],
                 "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS)
-                if v7_mode
+                if v7_mode or v8_mode
                 else [0],
+                "stage_block_profile": list(V8_STAGE_BLOCK_PROFILES)
+                if v8_mode
+                else ["uniform"],
+                "residual_profile": list(V8_RESIDUAL_PROFILES)
+                if v8_mode
+                else ["uniform"],
                 "activation": list(ACTIVATIONS),
                 "norm": list(NORMALISATIONS),
                 "optimizer": list(OPTIMISERS),
@@ -886,20 +1032,28 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     "dice_weight": list(DICE_WEIGHT_BOUNDS),
                     "positive_negative_ratio": list(POSITIVE_NEGATIVE_RATIOS),
                     "augmentation_policy": list(AUGMENTATION_POLICIES),
-                    "model_variant": list(agent_model_variants),
+                    "model_variant": list(openevolve_model_variants),
                     "feature_width": list(all_agent_feature_profiles),
                     "features": "five or six integer stage widths"
-                    if v7_mode
+                    if v7_mode or v8_mode
                     else "six integer channel widths",
-                    "architecture_budget": [architecture_budget],
+                    "architecture_budget": [V7_ARCHITECTURE_BUDGET]
+                    if v8_mode
+                    else list(architecture_budgets),
                     "upsample": ["deconv"] if v7_mode else list(V6_UPSAMPLE_MODES),
                     "kernel_profile": list(V7_KERNEL_PROFILES)
-                    if v7_mode
+                    if v7_mode or v8_mode
                     else ["basic"],
-                    "residual_blocks": [False, True] if v7_mode else [False],
+                    "residual_blocks": [False, True] if v7_mode or v8_mode else [False],
                     "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS)
-                    if v7_mode
+                    if v7_mode or v8_mode
                     else [0],
+                    "stage_block_profile": list(V8_STAGE_BLOCK_PROFILES)
+                    if v8_mode
+                    else ["uniform"],
+                    "residual_profile": list(V8_RESIDUAL_PROFILES)
+                    if v8_mode
+                    else ["uniform"],
                     "activation": list(ACTIVATIONS),
                     "norm": list(NORMALISATIONS),
                     "optimizer": list(OPTIMISERS),
@@ -909,7 +1063,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "fidelity": runtime_context.task_options.get("openevolve_fidelity", 25),
             },
             fixed_scientific_context={
-                "architecture_identity": SEARCH_ARCHITECTURE_FAMILY_ID,
+                "architecture_identity": architecture_identity_value,
                 "split_identity": SPLIT_ID,
                 "split_hash": EXPECTED_SPLIT_HASH,
                 "fold_identity": FOLD_ID,

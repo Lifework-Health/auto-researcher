@@ -1,0 +1,845 @@
+"""Fail-closed planning and launch-readiness preflight for V8."""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import hashlib
+import json
+import math
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from auto_researcher.agents.models import ResearchLandscapeEvidence
+from auto_researcher.contracts.models import ResearchContract
+from auto_researcher.runtime.identity import payload_hash
+from auto_researcher.tasks.feta_unet_direct.model import (
+    architecture_identity,
+    create_unet_model,
+    trainable_parameter_count,
+)
+from auto_researcher.tasks.feta_unet_direct.trainer import (
+    create_loss,
+    create_optimizer,
+    deep_supervision_training_loss,
+)
+from auto_researcher.tasks.feta_unet_search.configuration import (
+    V8_DYNUNET_ARCHITECTURE_BUDGET,
+    V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+    V8_MAXIMUM_TRAINABLE_PARAMETERS,
+    V8_MINIMUM_TRAINABLE_PARAMETERS,
+    FeTAUNetSearchConfiguration,
+)
+from auto_researcher.tasks.feta_unet_search.portfolio import (
+    V7_REQ11_PANEL_IDENTITY,
+    V8_FIDELITY_TARGETS,
+    V8_INITIAL_ALLOCATION,
+    V8_PORTFOLIO_VERSION,
+    V8PortfolioPolicy,
+)
+from auto_researcher.tasks.feta_unet_search.continuation import (
+    trajectory_identity,
+)
+from auto_researcher.tasks.feta_unet_search.task import FeTAUNetSearchTask
+from auto_researcher.tasks.models import TaskRuntimeContext
+
+V8_PREFLIGHT_SCHEMA_VERSION = "feta-unet-v8-planning-preflight-v1"
+V8_OPERATOR_LIMITS = {"OPTUNA": 26, "OPENEVOLVE": 10, "DIRECT": 8}
+V8_DURATION_SECONDS = 32 * 60 * 60
+V8_FINALISATION_RESERVE_SECONDS = 6 * 60 * 60
+V8_RESEARCH_DIRECTOR_MODEL = "claude-opus-5"
+V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS = 8
+V8_A6000_EPOCH_WORK = {
+    "structural_basic_unet": 1_085,
+    "dynunet_promotable": 225,
+    "v8_dyn_context_5": 10,
+}
+V8_CUDA_PREFLIGHT_SCHEMA_VERSION = "feta-unet-v8-cuda-preflight-v1"
+MAXIMUM_EXISTING_GPU_ALLOCATION_BYTES = 1024**3
+
+
+def _mapping(path: Path, reason: str) -> dict[str, Any]:
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(reason) from exc
+    if not isinstance(value, dict):
+        raise ValueError(reason)
+    return value
+
+
+def _integer_mapping(raw: object, reason: str) -> dict[int, int]:
+    if not isinstance(raw, dict):
+        raise ValueError(reason)
+    try:
+        return {int(key): int(value) for key, value in raw.items()}
+    except (TypeError, ValueError) as exc:
+        raise ValueError(reason) from exc
+
+
+def _sha256_value(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _runtime_calibration_valid(
+    calibration: object,
+    calibration_sha256: object,
+    *,
+    structural_rate: float,
+    dynunet_rate: float,
+    feature_width_rates: object,
+) -> bool:
+    if (
+        not isinstance(calibration, dict)
+        or not _sha256_value(calibration_sha256)
+        or payload_hash(calibration) != calibration_sha256
+        or calibration.get("schema_version") != "feta-unet-v8-runtime-calibration-v1"
+        or calibration.get("holdout_subjects_evaluated") != 0
+    ):
+        return False
+    structural = calibration.get("structural_basic_unet")
+    dynunet = calibration.get("dynunet")
+    if not isinstance(structural, dict) or not isinstance(dynunet, dict):
+        return False
+    if not _sha256_value(dynunet.get("source_log_sha256")):
+        return False
+    roots = dynunet.get("roots")
+    if (
+        not isinstance(roots, list)
+        or len(roots) != 4
+        or not all(isinstance(item, dict) for item in roots)
+        or {item.get("root_index") for item in roots} != {0, 1, 2, 3}
+        or not isinstance(feature_width_rates, dict)
+        or not all(
+            isinstance(name, str)
+            and not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and value > 0
+            for name, value in feature_width_rates.items()
+        )
+    ):
+        return False
+    try:
+        observed_promotable_dynunet_rate = max(
+            float(item["total_seconds_per_epoch"])
+            for item in roots
+            if item["feature_width"] != "v8_dyn_context_5"
+        )
+        observed_peak_memory = max(
+            float(item["peak_gpu_memory_gib"])
+            for item in roots
+            if isinstance(item, dict)
+        )
+        observed_widths = {str(item["feature_width"]) for item in roots}
+        return (
+            float(structural["selected_seconds_per_epoch"]) == structural_rate
+            and float(dynunet["selected_seconds_per_epoch"]) == dynunet_rate
+            and float(structural["observed_p90_total_seconds_per_epoch"])
+            <= structural_rate
+            and observed_promotable_dynunet_rate <= dynunet_rate
+            and dynunet.get("non_promotable_feature_widths") == ["v8_dyn_context_5"]
+            and observed_peak_memory <= 44.0
+            and set(feature_width_rates) == observed_widths
+            and all(
+                float(feature_width_rates[str(item["feature_width"])])
+                >= float(item["total_seconds_per_epoch"])
+                for item in roots
+            )
+            and all(item.get("holdout_subjects_evaluated") == 0 for item in roots)
+            and all(
+                V8_MINIMUM_TRAINABLE_PARAMETERS
+                <= int(item["trainable_parameters"])
+                <= V8_MAXIMUM_TRAINABLE_PARAMETERS
+                for item in roots
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _cuda_preflight_valid(
+    evidence: object,
+    evidence_sha256: object,
+    *,
+    runtime_calibration_sha256: object,
+    selected_parent_ids: set[str],
+) -> bool:
+    if (
+        not isinstance(evidence, dict)
+        or not _sha256_value(evidence_sha256)
+        or payload_hash(evidence) != evidence_sha256
+        or evidence.get("schema_version") != "feta-unet-v8-cuda-preflight-v1"
+        or evidence.get("gpu") != "NVIDIA RTX A6000"
+        or evidence.get("memory_ceiling_gib") != 44.0
+        or evidence.get("holdout_subjects_evaluated") != 0
+        or evidence.get("runtime_calibration_sha256") != runtime_calibration_sha256
+    ):
+        return False
+    parents = evidence.get("parents")
+    if (
+        not isinstance(parents, list)
+        or len(parents) != 2
+        or not all(isinstance(item, dict) for item in parents)
+        or {item.get("experiment_id") for item in parents} != selected_parent_ids
+    ):
+        return False
+    try:
+        return (
+            all(item.get("measured_full_step_passed") is True for item in parents)
+            and max(float(item["peak_gpu_memory_gib"]) for item in parents) <= 44.0
+            and evidence.get("dynunet_root_indexes") == [0, 1, 2, 3]
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _research_director_evidence_bound(options: dict[str, Any]) -> bool:
+    raw = options.get("research_director_evidence")
+    manifest = options.get("research_director_evidence_manifest_sha256")
+    if not isinstance(raw, list) or not raw or not _sha256_value(manifest):
+        return False
+    try:
+        evidence = [ResearchLandscapeEvidence.model_validate(item) for item in raw]
+    except (TypeError, ValueError):
+        return False
+    required = {"V7", "REQ11", "ENSEMBLE", "RUNTIME", "FAILURE"}
+    if {item.evidence_type for item in evidence} != required:
+        return False
+    if any(
+        item.evidence_hash != payload_hash(dict(item.safe_payload)) for item in evidence
+    ):
+        return False
+    by_type = {item.evidence_type: item for item in evidence}
+    v7 = by_type["V7"].safe_payload
+    req11 = by_type["REQ11"].safe_payload
+    ensemble = by_type["ENSEMBLE"].safe_payload
+    runtime = by_type["RUNTIME"].safe_payload
+    failure = by_type["FAILURE"].safe_payload
+    runtime_finalised = options.get("campaign_runtime_rates_finalised") is True
+    if (
+        v7.get("sealed_holdout_evaluations") != 0
+        or req11.get("panel_identity") != V7_REQ11_PANEL_IDENTITY
+        or req11.get("objective_role") != "parent_selection_and_close_tie_evidence_only"
+        or ensemble.get("sealed_holdout_evaluations") != 0
+        or not isinstance(ensemble.get("mean_subject_macro_dice"), (int, float))
+        or not isinstance(ensemble.get("best_single_score"), (int, float))
+        or ensemble["mean_subject_macro_dice"] <= ensemble["best_single_score"]
+        or runtime.get("gpu") != "NVIDIA RTX A6000"
+        or runtime.get("measured_full_step_passed") is not True
+        or runtime.get("runtime_coefficients_finalised") is not runtime_finalised
+        or failure.get("successful_evidence_affected") is not False
+        or not isinstance(failure.get("trainable_parameters"), int)
+        or not isinstance(failure.get("maximum_trainable_parameters"), int)
+        or failure["trainable_parameters"] <= failure["maximum_trainable_parameters"]
+    ):
+        return False
+    if runtime_finalised:
+        raw_rates = options.get("campaign_seconds_per_epoch_by_model_variant")
+        if (
+            not isinstance(raw_rates, dict)
+            or runtime.get("runtime_calibration_sha256")
+            != options.get("campaign_runtime_calibration_sha256")
+            or runtime.get("selected_seconds_per_epoch")
+            != {
+                "structural_basic_unet": raw_rates.get("structural_basic_unet"),
+                "dynunet": raw_rates.get("dynunet"),
+            }
+        ):
+            return False
+    return payload_hash([item.model_dump(mode="json") for item in evidence]) == manifest
+
+
+def _research_director_gate_valid(options: dict[str, Any]) -> bool:
+    report = options.get("research_director_gate")
+    report_sha256 = options.get("research_director_gate_sha256")
+    if (
+        not isinstance(report, dict)
+        or not _sha256_value(report_sha256)
+        or payload_hash(report) != report_sha256
+        or report.get("schema_version") != "feta-unet-v8-research-director-gate-v1"
+        or report.get("research_director_evidence_manifest_sha256")
+        != options.get("research_director_evidence_manifest_sha256")
+    ):
+        return False
+    report_base = dict(report)
+    internal_sha256 = report_base.pop("report_sha256", None)
+    if (
+        not _sha256_value(internal_sha256)
+        or payload_hash(report_base) != internal_sha256
+    ):
+        return False
+    model = report.get("model")
+    shadow = report.get("shadow_report")
+    first = report.get("first_call_telemetry")
+    replay = report.get("replay_telemetry")
+    directive = report.get("directive")
+    records = report.get("durable_call_records")
+    if not all(
+        isinstance(item, dict) for item in (model, shadow, first, replay, directive)
+    ):
+        return False
+    if not isinstance(records, list) or len(records) < 2:
+        return False
+    shadow_base = dict(shadow)
+    shadow_sha256 = shadow_base.pop("report_sha256", None)
+    if not _sha256_value(shadow_sha256) or payload_hash(shadow_base) != shadow_sha256:
+        return False
+    expected_limits = {"DIRECT": 8, "OPTUNA": 26, "OPENEVOLVE": 10}
+    allocation = directive.get("experiment_allocation")
+    if not isinstance(allocation, dict):
+        return False
+    try:
+        allocation_valid = (
+            set(allocation).issubset(expected_limits)
+            and all(
+                type(value) is int and 0 <= value <= expected_limits[key]
+                for key, value in allocation.items()
+            )
+            and sum(allocation.values()) <= 44
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        model.get("provider") == "anthropic"
+        and model.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+        and model.get("thinking") == {"type": "adaptive"}
+        and model.get("effort") == "xhigh"
+        and report.get("operator_limits") == expected_limits
+        and report.get("maximum_total_allocation") == 44
+        and report.get("passed") is True
+        and shadow.get("policy_id") == "feta-unet-v8-operator-envelope-v1"
+        and shadow.get("passed") is True
+        and shadow.get("violations") == []
+        and shadow.get("total_allocation") == sum(allocation.values())
+        and allocation_valid
+        and first.get("provider") == "anthropic"
+        and first.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+        and first.get("role") == "RESEARCH_DIRECTOR"
+        and first.get("replayed") is False
+        and first.get("failed") is False
+        and isinstance(first.get("provider_attempts"), int)
+        and first["provider_attempts"] >= 1
+        and replay.get("provider") == "anthropic"
+        and replay.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+        and replay.get("role") == "RESEARCH_DIRECTOR"
+        and replay.get("replayed") is True
+        and replay.get("failed") is False
+        and replay.get("call_id") == first.get("call_id")
+        and replay.get("context_hash") == first.get("context_hash")
+        and report.get("context_hash") == first.get("context_hash")
+        and report.get("replay_provider_calls") == 0
+        and report.get("directive_replayed_exactly") is True
+        and report.get("experiments_dispatched") == 0
+        and report.get("holdout_subjects_evaluated") == 0
+        and any(item.get("status") == "COMPLETED" for item in records)
+        and all(
+            item.get("provider") == "anthropic"
+            and item.get("model_id") == V8_RESEARCH_DIRECTOR_MODEL
+            for item in records
+        )
+    )
+
+
+def build_v8_preflight_plan(
+    task_config_path: Path,
+    contract_path: Path,
+) -> dict[str, Any]:
+    """Lock the V8 envelope and report every remaining launch blocker."""
+
+    raw_config = _mapping(
+        task_config_path, "feta_unet_v8_preflight_configuration_invalid"
+    )
+    raw_runtime = raw_config.get("runtime")
+    if not isinstance(raw_runtime, dict):
+        raise ValueError("feta_unet_v8_preflight_configuration_invalid")
+    options = raw_runtime.get("options")
+    if not isinstance(options, dict):
+        raise ValueError("feta_unet_v8_preflight_configuration_invalid")
+    portfolio = options.get("campaign_portfolio")
+    if not isinstance(portfolio, dict):
+        raise ValueError("feta_unet_v8_portfolio_invalid")
+
+    contract = ResearchContract.model_validate(
+        _mapping(contract_path, "feta_unet_v8_preflight_contract_invalid")
+    )
+    FeTAUNetSearchTask().validate_contract(contract)
+    agents = raw_config.get("agents")
+    if not isinstance(agents, dict):
+        raise ValueError("feta_unet_v8_research_director_invalid")
+    director = agents.get("research_director")
+    agent_budget = agents.get("budget")
+    if (
+        not isinstance(director, dict)
+        or not isinstance(agent_budget, dict)
+        or director.get("provider") != "anthropic"
+        or director.get("model_id") != V8_RESEARCH_DIRECTOR_MODEL
+        or director.get("temperature") is not None
+        or director.get("thinking") != {"type": "adaptive"}
+        or director.get("effort") != "xhigh"
+        or director.get("maximum_output_tokens") != 64_000
+        or director.get("maximum_attempts") != 2
+        or director.get("maximum_cost_per_call") != 5.0
+        or agent_budget.get("maximum_research_director_calls_total")
+        != V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS
+        or agent_budget.get("maximum_research_director_output_tokens") != 64_000
+        or agent_budget.get("maximum_research_director_cost_per_call") != 5.0
+        or contract.maximum_cost != 150.0
+    ):
+        raise ValueError("feta_unet_v8_research_director_invalid")
+    if (
+        contract.constraints.get("campaign_duration_seconds") != V8_DURATION_SECONDS
+        or contract.constraints.get("campaign_finalisation_reserve_seconds")
+        != V8_FINALISATION_RESERVE_SECONDS
+        or options.get("campaign_finalisation_reserve_seconds")
+        != float(V8_FINALISATION_RESERVE_SECONDS)
+        or options.get("maximum_peak_gpu_memory_bytes")
+        != V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES
+    ):
+        raise ValueError("feta_unet_v8_time_or_memory_envelope_invalid")
+
+    allocation = portfolio.get("initial_candidate_allocation")
+    operator_limits = portfolio.get("operator_limits")
+    if (
+        portfolio.get("version") != V8_PORTFOLIO_VERSION
+        or _integer_mapping(
+            portfolio.get("fidelity_targets"), "feta_unet_v8_fidelity_targets_invalid"
+        )
+        != V8_FIDELITY_TARGETS
+        or operator_limits != V8_OPERATOR_LIMITS
+        or allocation != V8_INITIAL_ALLOCATION
+        or sum(V8_INITIAL_ALLOCATION.values()) != V8_FIDELITY_TARGETS[10]
+        or portfolio.get("architecture_change_target") != 14
+        or portfolio.get("independent_confirmation_count") != 1
+        or portfolio.get("independent_confirmation_execution")
+        != "l4_sidecar_after_champion_freeze"
+        or portfolio.get("local_optuna_allocation")
+        != {"structural_basic_unet": 23, "dynunet": 3}
+    ):
+        raise ValueError("feta_unet_v8_portfolio_invalid")
+
+    lineage = portfolio.get("lineage_rules")
+    if lineage != {
+        "cross_family_mutation": False,
+        "branch_local_optuna": True,
+        "optuna_fixed_architecture": True,
+        "openevolve_generation_zero_reuse": True,
+        "duplicate_scientific_identity_policy": "reuse_verified_result",
+    }:
+        raise ValueError("feta_unet_v8_lineage_rules_invalid")
+    dynunet_gate = portfolio.get("dynunet_gate")
+    if dynunet_gate != {
+        "comparison_fidelity": 25,
+        "absolute_score_gap_maximum": 0.015,
+        "alternative_evidence": [
+            "superior_trajectory_slope",
+            "req11_priority_gain",
+            "ensemble_complementarity",
+        ],
+        "minimum_alternative_evidence_count": 2,
+        "maximum_promotions_to_50": 1,
+        "non_promotable_feature_widths": ["v8_dyn_context_5"],
+        "cross_family_mutation": False,
+    }:
+        raise ValueError("feta_unet_v8_dynunet_gate_invalid")
+
+    raw_roots = portfolio.get("dynunet_root_configurations")
+    if not isinstance(raw_roots, list) or len(raw_roots) != 4:
+        raise ValueError("feta_unet_v8_dynunet_roots_invalid")
+    roots: list[dict[str, Any]] = []
+    identities: set[str] = set()
+    trajectories: set[str] = set()
+    for index, raw_root in enumerate(raw_roots):
+        configuration = FeTAUNetSearchConfiguration.model_validate(raw_root)
+        model = create_unet_model(configuration)
+        parameters = trainable_parameter_count(model)
+        identity = architecture_identity(configuration)
+        trajectory = trajectory_identity(configuration)
+        del model
+        if (
+            configuration.architecture_budget != V8_DYNUNET_ARCHITECTURE_BUDGET
+            or configuration.maximum_epochs != 10
+            or not V8_MINIMUM_TRAINABLE_PARAMETERS
+            <= parameters
+            <= V8_MAXIMUM_TRAINABLE_PARAMETERS
+            or identity in identities
+            or trajectory in trajectories
+        ):
+            raise ValueError("feta_unet_v8_dynunet_roots_invalid")
+        identities.add(identity)
+        trajectories.add(trajectory)
+        roots.append(
+            {
+                "root_index": index,
+                "feature_width": configuration.feature_width,
+                "architecture_identity": identity,
+                "trajectory_identity": trajectory,
+                "trainable_parameters": parameters,
+            }
+        )
+
+    raw_experiment = raw_config.get("experiment")
+    if not isinstance(raw_experiment, dict) or raw_config.get("search") is not None:
+        raise ValueError("feta_unet_v8_direct_launch_shape_invalid")
+    initial = dict(raw_experiment)
+    openevolve = initial.pop("openevolve", None)
+    if not isinstance(openevolve, dict):
+        raise ValueError("feta_unet_v8_openevolve_controls_invalid")
+    initial_configuration = FeTAUNetSearchConfiguration.model_validate(initial)
+    first_root = FeTAUNetSearchConfiguration.model_validate(raw_roots[0])
+    if initial_configuration != first_root:
+        raise ValueError("feta_unet_v8_initial_candidate_invalid")
+
+    parent_selection = portfolio.get("parent_selection")
+    if not isinstance(parent_selection, dict):
+        raise ValueError("feta_unet_v8_parent_selection_invalid")
+    selected = parent_selection.get("selected_parents")
+    required_parent_count = parent_selection.get("required_parent_count")
+    optional_parent_count = parent_selection.get("optional_parent_count")
+    if (
+        not isinstance(selected, list)
+        or not isinstance(required_parent_count, int)
+        or not isinstance(optional_parent_count, int)
+        or len(selected) > required_parent_count + optional_parent_count
+    ):
+        raise ValueError("feta_unet_v8_parent_selection_invalid")
+    parent_ids: set[str] = set()
+    parent_trajectories: set[str] = set()
+    for parent in selected:
+        if (
+            not isinstance(parent, dict)
+            or not isinstance(parent.get("experiment_id"), str)
+            or not parent["experiment_id"].startswith("experiment-")
+            or parent["experiment_id"] in parent_ids
+            or not isinstance(parent.get("configuration"), dict)
+            or not isinstance(parent.get("score"), (int, float))
+            or not math.isfinite(float(parent["score"]))
+            or not isinstance(parent.get("trajectory_identity"), str)
+            or not _sha256_value(parent["trajectory_identity"])
+            or parent["trajectory_identity"] in parent_trajectories
+            or not isinstance(parent.get("v8_seed_trajectory_identity"), str)
+            or parent.get("selection_role") not in {"mandatory", "optional"}
+        ):
+            raise ValueError("feta_unet_v8_parent_selection_invalid")
+        candidate = FeTAUNetSearchConfiguration.model_validate(parent["configuration"])
+        if (
+            candidate.model_variant != "structural_basic_unet"
+            or candidate.maximum_epochs != 150
+            or trajectory_identity(candidate) != parent["v8_seed_trajectory_identity"]
+        ):
+            raise ValueError("feta_unet_v8_parent_selection_invalid")
+        parent_ids.add(parent["experiment_id"])
+        parent_trajectories.add(parent["trajectory_identity"])
+
+    blockers: list[str] = []
+    if len(selected) < required_parent_count:
+        blockers.append("v7_parent_selection_pending")
+    if options.get("v7_parent_manifest_sha256") != payload_hash(selected):
+        blockers.append("v7_parent_manifest_pending")
+    raw_rates = options.get("campaign_seconds_per_epoch_by_model_variant")
+    if not isinstance(raw_rates, dict):
+        raise ValueError("feta_unet_v8_runtime_rates_invalid")
+    raw_structural_rate = raw_rates.get("structural_basic_unet")
+    raw_dynunet_rate = raw_rates.get("dynunet")
+    raw_width_rates = options.get("campaign_seconds_per_epoch_by_feature_width")
+    raw_context_rate = (
+        raw_width_rates.get("v8_dyn_context_5")
+        if isinstance(raw_width_rates, dict)
+        else raw_dynunet_rate
+    )
+    raw_reporting_reserve = options.get("campaign_reporting_reserve_seconds")
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in (
+            raw_structural_rate,
+            raw_dynunet_rate,
+            raw_context_rate,
+            raw_reporting_reserve,
+        )
+    ):
+        raise ValueError("feta_unet_v8_runtime_rates_invalid")
+    try:
+        structural_rate = float(raw_structural_rate)
+        dynunet_rate = float(raw_dynunet_rate)
+        context_rate = float(raw_context_rate)
+        reporting_reserve = float(raw_reporting_reserve)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("feta_unet_v8_runtime_rates_invalid") from exc
+    planned_training_seconds = (
+        V8_A6000_EPOCH_WORK["structural_basic_unet"] * structural_rate
+        + V8_A6000_EPOCH_WORK["dynunet_promotable"] * dynunet_rate
+        + V8_A6000_EPOCH_WORK["v8_dyn_context_5"] * context_rate
+    )
+    graduation_seconds = 100 * structural_rate + 50 * dynunet_rate
+    runtime_envelope_valid = (
+        structural_rate > 0
+        and dynunet_rate > 0
+        and dynunet_rate >= structural_rate
+        and context_rate >= dynunet_rate
+        and reporting_reserve >= 0
+        and planned_training_seconds + reporting_reserve <= V8_DURATION_SECONDS
+        and graduation_seconds <= V8_FINALISATION_RESERVE_SECONDS
+    )
+    runtime_calibration = options.get("campaign_runtime_calibration")
+    runtime_calibration_sha256 = options.get("campaign_runtime_calibration_sha256")
+    runtime_calibration_valid = _runtime_calibration_valid(
+        runtime_calibration,
+        runtime_calibration_sha256,
+        structural_rate=structural_rate,
+        dynunet_rate=dynunet_rate,
+        feature_width_rates=raw_width_rates,
+    )
+    if (
+        options.get("campaign_runtime_rates_finalised") is not True
+        or not runtime_envelope_valid
+        or not runtime_calibration_valid
+    ):
+        blockers.append("runtime_coefficients_pending")
+    if options.get("campaign_portfolio_controller_implemented") is not True:
+        blockers.append("v8_portfolio_controller_pending")
+    else:
+        V8PortfolioPolicy.from_runtime(TaskRuntimeContext(task_options=options))
+    if options.get("v8_parent_reuse_imported") is not True:
+        blockers.append("v8_parent_reuse_import_pending")
+    if options.get("research_director_controller_implemented") is not True:
+        blockers.append("research_director_controller_pending")
+    if not _research_director_evidence_bound(options):
+        blockers.append("research_director_evidence_binding_pending")
+    research_director_gate_valid = _research_director_gate_valid(options)
+    if not research_director_gate_valid:
+        blockers.append("research_director_shadow_evaluation_pending")
+        blockers.append("research_director_live_smoke_pending")
+        blockers.append("research_director_resume_replay_pending")
+    cuda_preflight = options.get("cuda_preflight")
+    cuda_preflight_sha256 = options.get("cuda_preflight_sha256")
+    cuda_preflight_valid = _cuda_preflight_valid(
+        cuda_preflight,
+        cuda_preflight_sha256,
+        runtime_calibration_sha256=runtime_calibration_sha256,
+        selected_parent_ids={str(item.get("experiment_id")) for item in selected},
+    )
+    if not cuda_preflight_valid:
+        blockers.append("real_cuda_preflight_pending")
+    if options.get("launch_gate") != "passed":
+        blockers.append("launch_gate_not_passed")
+
+    plan_payload = {
+        "portfolio_version": V8_PORTFOLIO_VERSION,
+        "fidelity_targets": V8_FIDELITY_TARGETS,
+        "operator_limits": V8_OPERATOR_LIMITS,
+        "initial_candidate_allocation": V8_INITIAL_ALLOCATION,
+        "duration_seconds": V8_DURATION_SECONDS,
+        "finalisation_reserve_seconds": V8_FINALISATION_RESERVE_SECONDS,
+        "maximum_peak_gpu_memory_bytes": V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+        "a6000_epoch_work": V8_A6000_EPOCH_WORK,
+        "planned_training_seconds": planned_training_seconds,
+        "planned_training_hours": planned_training_seconds / 3_600,
+        "graduation_seconds": graduation_seconds,
+        "graduation_hours": graduation_seconds / 3_600,
+        "runtime_envelope_valid": runtime_envelope_valid,
+        "runtime_calibration_valid": runtime_calibration_valid,
+        "runtime_calibration_sha256": runtime_calibration_sha256,
+        "cuda_preflight_valid": cuda_preflight_valid,
+        "cuda_preflight_sha256": cuda_preflight_sha256,
+        "research_director": {
+            "model_id": V8_RESEARCH_DIRECTOR_MODEL,
+            "thinking": "adaptive",
+            "effort": "xhigh",
+            "maximum_calls": V8_RESEARCH_DIRECTOR_MAXIMUM_CALLS,
+            "finalisation_reserve_suppressed": True,
+            "gate_valid": research_director_gate_valid,
+            "gate_sha256": options.get("research_director_gate_sha256"),
+        },
+        "dynunet_gate": dynunet_gate,
+        "lineage_rules": lineage,
+    }
+    return {
+        "schema_version": V8_PREFLIGHT_SCHEMA_VERSION,
+        "contract_id": contract.contract_id,
+        "plan_sha256": hashlib.sha256(
+            json.dumps(plan_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        **plan_payload,
+        "dynunet_roots": roots,
+        "selected_v7_parent_count": len(selected),
+        "planning_locked": True,
+        "launch_ready": not blockers,
+        "blockers": blockers,
+        "model_calls_performed": 0,
+    }
+
+
+def _run_cuda_amp_step(
+    configuration: FeTAUNetSearchConfiguration,
+    torch: Any,
+) -> int:
+    model = None
+    optimizer = None
+    inputs = None
+    target = None
+    output = None
+    loss = None
+    try:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        model = create_unet_model(configuration).to("cuda")
+        model.train()
+        optimizer = create_optimizer(model, configuration)
+        loss_function = create_loss(configuration)
+        inputs = torch.randn(
+            (
+                configuration.batch_size,
+                configuration.in_channels,
+                *configuration.patch_size,
+            ),
+            device="cuda",
+            dtype=torch.float32,
+        )
+        target = torch.randint(
+            0,
+            configuration.out_channels,
+            (configuration.batch_size, 1, *configuration.patch_size),
+            device="cuda",
+            dtype=torch.int64,
+        )
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            output = model(inputs)
+            tensors = output if isinstance(output, (list, tuple)) else (output,)
+            if not all(bool(torch.isfinite(item).all()) for item in tensors):
+                raise ValueError("feta_unet_v8_preflight_prediction_non_finite")
+            loss = deep_supervision_training_loss(
+                output,
+                target,
+                loss_function,
+                configuration,
+            )
+        if not bool(torch.isfinite(loss)):
+            raise ValueError("feta_unet_v8_preflight_loss_non_finite")
+        loss.backward()
+        optimizer.step()
+        torch.cuda.synchronize()
+        peak = int(torch.cuda.max_memory_allocated())
+        if peak > V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
+            raise RuntimeError("feta_unet_v8_preflight_memory_ceiling_exceeded")
+        return peak
+    except torch.OutOfMemoryError as exc:
+        raise RuntimeError("feta_unet_v8_preflight_cuda_out_of_memory") from exc
+    finally:
+        del loss, output, target, inputs, optimizer, model
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+def run_v8_cuda_preflight(
+    task_config_path: Path,
+    contract_path: Path,
+    *,
+    torch_module: Any | None = None,
+    step_runner: Callable[[FeTAUNetSearchConfiguration], int] | None = None,
+) -> dict[str, Any]:
+    """Run one measured AMP training step for both parents and all DynUNet roots."""
+
+    build_v8_preflight_plan(task_config_path, contract_path)
+    raw_config = _mapping(
+        task_config_path, "feta_unet_v8_preflight_configuration_invalid"
+    )
+    options = raw_config["runtime"]["options"]
+    policy = V8PortfolioPolicy.from_runtime(TaskRuntimeContext(task_options=options))
+    if torch_module is None:
+        try:
+            import torch as torch_module
+        except ImportError as exc:
+            raise RuntimeError("feta_unet_v8_preflight_torch_unavailable") from exc
+    torch = torch_module
+    if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+        raise RuntimeError("feta_unet_v8_preflight_single_cuda_required")
+    free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+    if total_bytes < V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
+        raise RuntimeError("feta_unet_v8_preflight_gpu_capacity_insufficient")
+    if total_bytes - free_bytes > MAXIMUM_EXISTING_GPU_ALLOCATION_BYTES:
+        raise RuntimeError("feta_unet_v8_preflight_gpu_not_idle")
+
+    run_step = step_runner or (
+        lambda configuration: _run_cuda_amp_step(configuration, torch)
+    )
+
+    def measure(configuration: FeTAUNetSearchConfiguration) -> dict[str, Any]:
+        model = create_unet_model(configuration)
+        parameters = trainable_parameter_count(model)
+        identity = architecture_identity(configuration)
+        del model
+        if not (
+            V8_MINIMUM_TRAINABLE_PARAMETERS
+            <= parameters
+            <= V8_MAXIMUM_TRAINABLE_PARAMETERS
+        ):
+            raise ValueError("feta_unet_v8_preflight_parameter_envelope_invalid")
+        peak = int(run_step(configuration))
+        if peak < 0 or peak > V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
+            raise RuntimeError("feta_unet_v8_preflight_memory_ceiling_exceeded")
+        return {
+            "architecture_identity": identity,
+            "feature_width": configuration.feature_width,
+            "trainable_parameters": parameters,
+            "peak_gpu_memory_bytes": peak,
+            "peak_gpu_memory_gib": peak / 1024**3,
+            "measured_full_step_passed": True,
+        }
+
+    parent_results = []
+    for parent in policy.selected_parents:
+        configuration = FeTAUNetSearchConfiguration.model_validate(
+            parent["configuration"]
+        )
+        parent_results.append(
+            {
+                "experiment_id": parent["experiment_id"],
+                **measure(configuration),
+            }
+        )
+    root_results = []
+    for index, raw_root in enumerate(policy.dynunet_roots):
+        configuration = FeTAUNetSearchConfiguration.model_validate(raw_root)
+        root_results.append({"root_index": index, **measure(configuration)})
+
+    return {
+        "schema_version": V8_CUDA_PREFLIGHT_SCHEMA_VERSION,
+        "gpu": torch.cuda.get_device_name(0),
+        "gpu_total_memory_bytes": int(total_bytes),
+        "memory_ceiling_gib": V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES / 1024**3,
+        "holdout_subjects_evaluated": 0,
+        "runtime_calibration_sha256": options["campaign_runtime_calibration_sha256"],
+        "parents": parent_results,
+        "dynunet_root_indexes": [item["root_index"] for item in root_results],
+        "dynunet_roots": root_results,
+        "model_calls_performed": 0,
+        "passed": True,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("planning", "cuda"), default="planning")
+    parser.add_argument("--task-config", type=Path, required=True)
+    parser.add_argument("--contract", type=Path, required=True)
+    args = parser.parse_args(argv)
+    value = (
+        run_v8_cuda_preflight(args.task_config, args.contract)
+        if args.mode == "cuda"
+        else build_v8_preflight_plan(args.task_config, args.contract)
+    )
+    print(json.dumps(value, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

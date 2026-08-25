@@ -188,6 +188,38 @@ def _predict_native(
     )
 
 
+def _architecture_parameter_bounds(configuration) -> tuple[int, int] | None:
+    budget = getattr(configuration, "architecture_budget", "legacy")
+    if budget == "legacy":
+        return None
+    from auto_researcher.tasks.feta_unet_search.configuration import (
+        V6_ARCHITECTURE_BUDGET,
+        V6_MAXIMUM_TRAINABLE_PARAMETERS,
+        V6_MINIMUM_TRAINABLE_PARAMETERS,
+        V7_ARCHITECTURE_BUDGET,
+        V7_MAXIMUM_TRAINABLE_PARAMETERS,
+        V7_MINIMUM_TRAINABLE_PARAMETERS,
+        V8_DYNUNET_ARCHITECTURE_BUDGET,
+        V8_MAXIMUM_TRAINABLE_PARAMETERS,
+        V8_MINIMUM_TRAINABLE_PARAMETERS,
+    )
+
+    return {
+        V6_ARCHITECTURE_BUDGET: (
+            V6_MINIMUM_TRAINABLE_PARAMETERS,
+            V6_MAXIMUM_TRAINABLE_PARAMETERS,
+        ),
+        V7_ARCHITECTURE_BUDGET: (
+            V7_MINIMUM_TRAINABLE_PARAMETERS,
+            V7_MAXIMUM_TRAINABLE_PARAMETERS,
+        ),
+        V8_DYNUNET_ARCHITECTURE_BUDGET: (
+            V8_MINIMUM_TRAINABLE_PARAMETERS,
+            V8_MAXIMUM_TRAINABLE_PARAMETERS,
+        ),
+    }.get(budget)
+
+
 def _run_cuda_fold(
     fold: int,
     training_subjects: tuple[FeTASubject, ...],
@@ -228,29 +260,9 @@ def _run_cuda_fold(
     candidate_architecture_identity = architecture_identity(configuration)
     candidate_trainable_parameters = trainable_parameter_count(model)
     if getattr(configuration, "architecture_budget", "legacy") != "legacy":
-        from auto_researcher.tasks.feta_unet_search.configuration import (
-            V6_ARCHITECTURE_BUDGET,
-            V6_MAXIMUM_TRAINABLE_PARAMETERS,
-            V6_MINIMUM_TRAINABLE_PARAMETERS,
-            V7_ARCHITECTURE_BUDGET,
-            V7_MAXIMUM_TRAINABLE_PARAMETERS,
-            V7_MINIMUM_TRAINABLE_PARAMETERS,
-        )
-
-        parameter_bounds = {
-            V6_ARCHITECTURE_BUDGET: (
-                V6_MINIMUM_TRAINABLE_PARAMETERS,
-                V6_MAXIMUM_TRAINABLE_PARAMETERS,
-            ),
-            V7_ARCHITECTURE_BUDGET: (
-                V7_MINIMUM_TRAINABLE_PARAMETERS,
-                V7_MAXIMUM_TRAINABLE_PARAMETERS,
-            ),
-        }.get(configuration.architecture_budget)
+        parameter_bounds = _architecture_parameter_bounds(configuration)
         if parameter_bounds is None or not (
-            parameter_bounds[0]
-            <= candidate_trainable_parameters
-            <= parameter_bounds[1]
+            parameter_bounds[0] <= candidate_trainable_parameters <= parameter_bounds[1]
         ):
             raise ValueError("feta_unet_architecture_parameter_budget_out_of_bounds")
     model = model.to("cuda")

@@ -343,7 +343,7 @@ def _load_live_agents(payload: dict[str, Any]):
         raise ValueError("agents section must be a mapping")
     mode = configured.get("mode", "mock")
     if mode == "mock":
-        return None, None, None, None, AgentBudgetPolicy(), "mock"
+        return (None, None, None, None, None, None, AgentBudgetPolicy(), "mock")
     if mode != "live":
         raise ValueError("agents.mode must be 'mock' or 'live'")
     prohibited_secret_fields = {
@@ -364,25 +364,34 @@ def _load_live_agents(payload: dict[str, Any]):
     pricing_payload = configured.get("pricing")
     if not isinstance(pricing_payload, dict):
         raise ValueError("live agents require an explicit versioned pricing mapping")
-    pricing = ModelPricing.model_validate(pricing_payload)
+    ModelPricing.model_validate(pricing_payload)
     policy_payload = configured.get("budget", {})
     if not isinstance(policy_payload, dict):
         raise ValueError("agents.budget must be a mapping")
     policy = AgentBudgetPolicy.model_validate(policy_payload)
 
-    def call_config(role: str, default_temperature: float) -> ModelCallConfig:
+    def call_config(role: str, default_temperature: float | None) -> ModelCallConfig:
         role_payload = configured.get(role, {})
         if not isinstance(role_payload, dict):
             raise ValueError(f"agents.{role} must be a mapping")
+        role_provider = role_payload.get("provider", provider)
+        role_model_id = role_payload.get("model_id", model_id)
+        role_pricing_payload = role_payload.get("pricing", pricing_payload)
+        if not isinstance(role_provider, str) or not isinstance(role_model_id, str):
+            raise ValueError(f"agents.{role} provider and model_id must be strings")
+        if not isinstance(role_pricing_payload, dict):
+            raise ValueError(f"agents.{role}.pricing must be a mapping")
         return ModelCallConfig(
-            provider=provider,
-            model_id=model_id,
+            provider=role_provider,
+            model_id=role_model_id,
             temperature=role_payload.get("temperature", default_temperature),
+            thinking=role_payload.get("thinking"),
+            effort=role_payload.get("effort"),
             maximum_output_tokens=role_payload.get("maximum_output_tokens"),
             timeout_seconds=role_payload.get("timeout_seconds"),
             maximum_attempts=role_payload.get("maximum_attempts"),
             maximum_cost_per_call=role_payload.get("maximum_cost_per_call"),
-            pricing=pricing,
+            pricing=ModelPricing.model_validate(role_pricing_payload),
             prompt_version=role_payload.get("prompt_version", "2.0.0"),
             structured_output_strategy=role_payload.get(
                 "structured_output_strategy",
@@ -392,6 +401,15 @@ def _load_live_agents(payload: dict[str, Any]):
 
     hypothesis_config = call_config("hypothesis", 0.2)
     planner_config = call_config("planner", 0.0)
+    research_director_payload = configured.get("research_director")
+    research_director_enabled = research_director_payload is not None
+    if research_director_payload is not None and not isinstance(
+        research_director_payload, dict
+    ):
+        raise ValueError("agents.research_director must be a mapping")
+    research_director_config = (
+        call_config("research_director", None) if research_director_enabled else None
+    )
     if provider.casefold() == "anthropic":
         from auto_researcher.providers.anthropic import (
             ANTHROPIC_ENVIRONMENT_SECRET,
@@ -424,6 +442,14 @@ def _load_live_agents(payload: dict[str, Any]):
             planner_config,
             credential=credential,
         )
+        research_director_client = (
+            create_anthropic_client(
+                research_director_config,
+                credential=credential,
+            )
+            if research_director_config is not None
+            else None
+        )
     else:
         raise ValueError(
             f"unsupported live provider {provider!r}; live mode implements 'anthropic'"
@@ -431,8 +457,10 @@ def _load_live_agents(payload: dict[str, Any]):
     return (
         hypothesis_client,
         planner_client,
+        research_director_client,
         hypothesis_config,
         planner_config,
+        research_director_config,
         policy,
         "live",
     )
@@ -671,8 +699,10 @@ def run(
         (
             model_client,
             planner_model_client,
+            research_director_model_client,
             hypothesis_call_config,
             planner_call_config,
+            research_director_call_config,
             agent_budget_policy,
             agent_mode,
         ) = _load_live_agents(raw_config)
@@ -727,17 +757,15 @@ def run(
             experiment,
             checkpoint_db,
             provenance_db,
-            (
-                optuna_db
-                if SearchType.OPTUNA in contract.allowed_search_types
-                else None
-            ),
+            (optuna_db if SearchType.OPTUNA in contract.allowed_search_types else None),
             agent_calls_db,
             knowledge_retrievals_db,
             model_client=model_client,
             planner_model_client=planner_model_client,
+            research_director_model_client=research_director_model_client,
             hypothesis_call_config=hypothesis_call_config,
             planner_call_config=planner_call_config,
+            research_director_call_config=research_director_call_config,
             agent_budget_policy=agent_budget_policy,
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
@@ -804,6 +832,14 @@ def run(
             f"hypothesis@{hypothesis_call_config.prompt_version}, "
             f"planner@{planner_call_config.prompt_version}"
         )
+        if research_director_call_config is not None:
+            typer.echo(
+                "Research Director: "
+                f"{research_director_call_config.provider}/"
+                f"{research_director_call_config.model_id} "
+                f"effort={research_director_call_config.effort or 'default'} "
+                f"thinking={dict(research_director_call_config.thinking or {})}"
+            )
     typer.echo(f"Run: {run_id}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(
@@ -992,8 +1028,10 @@ def resume_cli(
         (
             model_client,
             planner_model_client,
+            research_director_model_client,
             hypothesis_call_config,
             planner_call_config,
+            research_director_call_config,
             agent_budget_policy,
             _,
         ) = _load_live_agents(raw_config)
@@ -1044,17 +1082,15 @@ def resume_cli(
             experiment,
             checkpoint_db,
             provenance_db,
-            (
-                optuna_db
-                if SearchType.OPTUNA in contract.allowed_search_types
-                else None
-            ),
+            (optuna_db if SearchType.OPTUNA in contract.allowed_search_types else None),
             agent_calls_db,
             knowledge_retrievals_db,
             model_client=model_client,
             planner_model_client=planner_model_client,
+            research_director_model_client=research_director_model_client,
             hypothesis_call_config=hypothesis_call_config,
             planner_call_config=planner_call_config,
+            research_director_call_config=research_director_call_config,
             agent_budget_policy=agent_budget_policy,
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,

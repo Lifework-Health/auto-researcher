@@ -49,13 +49,21 @@ def create_anthropic_client(
         ) from exc
     initialisation_failed = False
     try:
+        model_kwargs = {
+            "api_key": SecretStr(credential.reveal()),
+            "model": config.model_id,
+            "max_tokens": config.maximum_output_tokens,
+            "timeout": config.timeout_seconds,
+            "max_retries": 0,
+        }
+        if config.temperature is not None:
+            model_kwargs["temperature"] = config.temperature
+        if config.thinking is not None:
+            model_kwargs["thinking"] = dict(config.thinking)
+        if config.effort is not None:
+            model_kwargs["effort"] = config.effort
         model = ChatAnthropic(
-            api_key=SecretStr(credential.reveal()),
-            model=config.model_id,
-            temperature=config.temperature,
-            max_tokens=config.maximum_output_tokens,
-            timeout=config.timeout_seconds,
-            max_retries=0,
+            **model_kwargs,
         )
     except Exception:
         initialisation_failed = True

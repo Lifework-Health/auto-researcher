@@ -17,6 +17,9 @@ from auto_researcher.contracts.enums import (
 from auto_researcher.contracts.models import SearchRequest
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
+from auto_researcher.search.openevolve.live_boundary import (
+    assert_no_prohibited_dynamic_content,
+)
 from auto_researcher.tasks.protocols import (
     CampaignDurationCapableTask,
     CampaignDeadlinePortfolioCapableTask,
@@ -122,6 +125,57 @@ def _duplicates_verified_direct_configuration(
     return False
 
 
+def _apply_research_directive(
+    request: SearchRequest,
+    state: ResearchState,
+) -> SearchRequest:
+    """Bind the active directive to planning and metadata-only mutation context."""
+
+    directive = state.get("active_research_directive")
+    if directive is None:
+        return request
+    reference = f"research-directive:{directive.directive_id}"
+    evidence_references = tuple(dict.fromkeys((*request.evidence_references, reference)))
+    if request.search_type != SearchType.OPENEVOLVE:
+        return SearchRequest.model_validate(
+            {
+                **request.model_dump(mode="python"),
+                "evidence_references": evidence_references,
+            }
+        )
+    search_space = dict(request.search_space)
+    raw_context = search_space.get("campaign_context", {})
+    if not isinstance(raw_context, dict):
+        raise ValueError("research_director_openevolve_context_invalid")
+    projection = {
+        "directive_id": directive.directive_id,
+        "trigger": directive.trigger,
+        "mechanism_hypothesis": directive.mechanism_hypothesis,
+        "rationale": directive.rationale,
+        "selected_operators": [item.value for item in directive.selected_operators],
+        "targeted_dimensions": list(directive.targeted_dimensions),
+        "expected_observation": directive.expected_observation,
+        "falsification_condition": directive.falsification_condition,
+        "evidence_references": list(directive.evidence_references),
+        "confidence": directive.confidence,
+    }
+    try:
+        assert_no_prohibited_dynamic_content(projection)
+    except ValueError as exc:
+        raise ValueError("research_director_openevolve_context_invalid") from exc
+    search_space["campaign_context"] = {
+        **raw_context,
+        "research_directive": projection,
+    }
+    return SearchRequest.model_validate(
+        {
+            **request.model_dump(mode="python"),
+            "search_space": search_space,
+            "evidence_references": evidence_references,
+        }
+    )
+
+
 def plan_search(
     state: ResearchState,
     dependencies: RuntimeDependencies,
@@ -211,6 +265,20 @@ def plan_search(
                 "stop_reason": "campaign_portfolio_complete",
                 "executed_nodes": ["plan_search"],
             }
+    try:
+        request = _apply_research_directive(request, state)
+    except ValueError as exc:
+        code = str(exc)
+        return {
+            "status": RunStatus.FAILED,
+            "budget": apply_agent_telemetry(state["budget"], telemetry),
+            "search_request": None,
+            "errors": [code],
+            "stop_reason": code,
+            "planner_failure_code": code,
+            "planner_failure_stage": "research_directive_projection",
+            "executed_nodes": ["plan_search"],
+        }
     if fallback_code is not None and _duplicates_verified_direct_configuration(
         state, dependencies, request
     ):

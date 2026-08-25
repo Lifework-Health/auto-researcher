@@ -1,0 +1,50 @@
+schema_version: feta-unet-v8-bound-evidence-v1
+run_id: feta-unet-campaign-22h-v7-v2-20260822
+development_fold: 0
+sealed_holdout_evaluations: 0
+dataset_manifest_hash: 6d6f375fda99512a93bbaaa715d6edb5031c4d4f2356584b578f2ebd9631eacf
+split_hash: 3ee6e9f02b4d35f7611bb70cdf19aea3ebc12f81ef89b57291eac9983df66561
+fold_hash: 45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e
+source_artifacts:
+  v7_campaign_report_sha256: 7073471a39109144859e7e10c78ded580a70a26359b8c7f98a780997a43ec683
+  v7_candidate_trajectories_sha256: 267c44a47f484ba882f5e522853828a5e90ad008e7818db2e6de9b7e6ec9dc22
+  v7_champion_snapshot_manifest_sha256: c51f36b1cda432fade8a0b3b69d195d97926dfbd5124ee108d1690777917fb07
+  ensemble_report_sha256: db7b948273e1bfcb9b7c020597d9c9dd6a2994adb682c23c2e6b798fe39e4a92
+  v8_runtime_calibration_sha256: 34c94d0eb7736de23549cf57023071b282b92ae555f8708b761750c7b421725f
+v7_parent_manifest_sha256: f19e808c05bc2780892f16a4c7e18d8bf665b990e745c36441631935b43303b4
+selected_parents:
+  - experiment_id: experiment-52cd44ef6ffd1335
+    selection_role: mandatory
+    origin_search_type: DIRECT
+    trajectory_identity: 430d478824b9b5899f6a149ebdb0791765f5702019ca710a970ad71b06b56c53
+    v8_seed_trajectory_identity: 430f5e3c9b31707d2977652c3365127d626b0042ab45e0b12709be3d15baea11
+    best_score: 0.8238575030304831
+    rung_score: 0.8230719541966351
+    best_epoch: 135
+    checkpoint_sha256: 763a397ac029d6d3efffe2d0e77b0c7bc9f61ee8baef937689a975677239c811
+    configuration_identity: 4f54e31068460954770a6387a91f82c2950202b1e2412bec834c177546b70f42
+    architecture_identity: monai-unet-3d-bounded-v4-a35020685efd0431
+  - experiment_id: experiment-01c8e668f0f9a588
+    selection_role: mandatory
+    origin_search_type: OPENEVOLVE
+    trajectory_identity: 7427be63a6ba98874e797e89940d82754bc9be34ff7e5b0a64da624f369e2ee1
+    v8_seed_trajectory_identity: 27780f532e91fd5c576fe9fed43305d8f50aa431fe1c7ebb8bfec18bd64410c1
+    best_score: 0.8202516462120728
+    rung_score: 0.8202516462120728
+    best_epoch: 150
+    checkpoint_sha256: ba6fbe28b9aaa37e6d884e04b2e8b02c087323e1b6d14b4d41556b33dbce6b89
+    configuration_identity: 8888b52c2a3720df527c06b7672e4940dbc8cfb9f4c4d5271bf6d1870e26e7d7
+    architecture_identity: monai-unet-3d-bounded-v4-912c4d9c9242b04e
+research_director_evidence_manifest_sha256: 1b921f2c150317d597c04acf098437d3459005bceb5e5406fffd5984b655671c
+research_director_evidence_hashes:
+  V7: 5e29677843a1fdacabc9e2913f1fce37b0cf9a2d22a10c0ac6498ff44f958126
+  REQ11: 215f9df55aaa3e75bdd2814e861b7ef4da15a5a5d5178884001f1c0c88454514
+  ENSEMBLE: 9a2760e0e3993c5be17ea0e8148902e7c38b55b3b5ed6b92353a00fffd0b2c04
+  RUNTIME: 7c8c9ecafc6dd121a1a99d9609dd00f29a3d4d11cbaccefac07e0893a66aaacc
+  FAILURE: 64134d0fb9c0c473980c71d7ba50bd497a79828491fafe0e27d430ee744cd877
+failure_diagnosis:
+  scientific_identity: 5218b3497be0f214e401cb4a0db748da82f25723c57e9e46eb00da47c7fd79ef
+  repeated_failed_executions: 23
+  trainable_parameters: 152621240
+  maximum_trainable_parameters: 150000000
+  successful_evidence_affected: false

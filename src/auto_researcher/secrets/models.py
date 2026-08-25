@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class SecretProviderKind(StrEnum):
     ENVIRONMENT = "environment"
     GOOGLE_SECRET_MANAGER = "google_secret_manager"
+    LINUX_KERNEL_KEYRING = "linux_kernel_keyring"
 
 
 class SecretReference(BaseModel):
@@ -69,6 +70,20 @@ class SecretReference(BaseModel):
                 self.provider_identifier,
             ):
                 raise ValueError("Google secret identifier must be fully qualified")
+        if self.provider is SecretProviderKind.LINUX_KERNEL_KEYRING:
+            if self.provider_identifier is None:
+                raise ValueError(
+                    "Linux keyring secret references require an explicit identifier"
+                )
+            if self.version is not None:
+                raise ValueError(
+                    "Linux keyring secret references do not support versions"
+                )
+            if not re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}",
+                self.provider_identifier,
+            ):
+                raise ValueError("Linux keyring secret identifier is invalid")
         if (
             self.provider is SecretProviderKind.GOOGLE_SECRET_MANAGER
             and self.version is not None

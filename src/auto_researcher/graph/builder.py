@@ -14,6 +14,7 @@ from auto_researcher.graph.nodes.hypothesis import generate_hypothesis
 from auto_researcher.graph.nodes.knowledge import retrieve_knowledge
 from auto_researcher.graph.nodes.initialise import initialise_run
 from auto_researcher.graph.nodes.planner import plan_search
+from auto_researcher.graph.nodes.research_director import research_director_decide
 from auto_researcher.graph.nodes.optuna import (
     optuna_ask_trial,
     optuna_create_experiment,
@@ -53,6 +54,7 @@ from auto_researcher.graph.routing import (
     route_after_openevolve_validation,
     route_after_native_openevolve,
     route_after_prepare,
+    route_after_research_director,
     route_after_verification,
     route_approval,
     route_search_backend,
@@ -78,6 +80,10 @@ def build_graph(
     graph.add_node(
         "generate_hypothesis",
         partial(generate_hypothesis, dependencies=dependencies),
+    )
+    graph.add_node(
+        "research_director_decide",
+        partial(research_director_decide, dependencies=dependencies),
     )
     graph.add_node("plan_search", partial(plan_search, dependencies=dependencies))
     graph.add_node(
@@ -177,6 +183,9 @@ def build_graph(
     )
     graph.add_conditional_edges("supervisor_prepare", route_after_prepare)
     graph.add_conditional_edges("retrieve_knowledge", route_after_knowledge)
+    graph.add_conditional_edges(
+        "research_director_decide", route_after_research_director
+    )
     graph.add_edge("generate_hypothesis", "plan_search")
     graph.add_edge("plan_search", "approval_router")
     graph.add_conditional_edges("approval_router", route_approval)

@@ -10,6 +10,9 @@ from auto_researcher.agents.models import (
     PlannerAgentContext,
     PlannerProposal,
     PriorResearchSummary,
+    ResearchDirective,
+    ResearchDirectiveProposal,
+    ResearchDirectorContext,
 )
 from auto_researcher.contracts.enums import (
     GroundingStatus,
@@ -173,6 +176,70 @@ class HypothesisReconciler:
             grounding_status=grounding,
             agent_call_id=call_id,
             prompt_version=prompt_version,
+        )
+
+
+class ResearchDirectorReconciler:
+    def reconcile(
+        self,
+        proposal: ResearchDirectiveProposal,
+        context: ResearchDirectorContext,
+        *,
+        call_id: str,
+        prompt_version: str,
+    ) -> ResearchDirective:
+        permitted_references = set(context.permitted_evidence_reference_ids)
+        if set(proposal.evidence_references) - permitted_references:
+            raise ReconciliationError("unknown_evidence_reference")
+        if set(proposal.parent_references) - permitted_references:
+            raise ReconciliationError("unknown_parent_reference")
+        if not set(proposal.selected_operators).issubset(
+            context.installed_search_capabilities
+        ):
+            raise ReconciliationError("research_director_operator_not_installed")
+        if not set(proposal.targeted_dimensions).issubset(
+            context.permitted_target_dimensions
+        ):
+            raise ReconciliationError("research_director_dimension_not_permitted")
+        allocation = dict(proposal.experiment_allocation)
+        if set(allocation) - {item.value for item in proposal.selected_operators}:
+            raise ReconciliationError("research_director_allocation_operator_mismatch")
+        if any(type(value) is not int or value < 0 for value in allocation.values()):
+            raise ReconciliationError("research_director_allocation_invalid")
+        if sum(allocation.values()) > context.remaining_experiment_budget:
+            raise ReconciliationError("research_director_allocation_exceeds_budget")
+        metric = context.contract.primary_metric.casefold().replace("_", " ")
+        if metric not in proposal.expected_observation.casefold().replace("_", " "):
+            raise ReconciliationError("research_director_observation_not_measurable")
+        if (
+            proposal.expected_observation.casefold().strip()
+            == proposal.falsification_condition.casefold().strip()
+        ):
+            raise ReconciliationError("research_director_falsification_not_distinct")
+        return ResearchDirective(
+            directive_id=_stable_id(
+                "directive",
+                context.run_id,
+                str(context.cycle),
+                context.trigger,
+                prompt_version,
+                context.context_hash,
+            ),
+            trigger=context.trigger,
+            mechanism_hypothesis=proposal.mechanism_hypothesis,
+            rationale=proposal.rationale,
+            parent_references=proposal.parent_references,
+            selected_operators=proposal.selected_operators,
+            experiment_allocation=allocation,
+            targeted_dimensions=proposal.targeted_dimensions,
+            expected_observation=proposal.expected_observation,
+            falsification_condition=proposal.falsification_condition,
+            alternative_explanations=proposal.alternative_explanations,
+            evidence_references=proposal.evidence_references,
+            confidence=proposal.confidence,
+            agent_call_id=call_id,
+            prompt_version=prompt_version,
+            context_hash=context.context_hash,
         )
 
 

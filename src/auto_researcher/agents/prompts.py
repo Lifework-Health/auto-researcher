@@ -28,7 +28,10 @@ class PromptBundle(BaseModel):
 
 def load_prompt(name: str, version: str = "1.0.0") -> PromptBundle:
     versions = {"1.0.0": "v1", "2.0.0": "v2"}
-    if name not in {"hypothesis", "planner"} or version not in versions:
+    if (
+        name not in {"hypothesis", "planner", "research_director"}
+        or version not in versions
+    ):
         raise ValueError(f"unknown prompt {name}@{version}")
     root = resources.files("auto_researcher.prompts").joinpath(name)
     stem = versions[version]
