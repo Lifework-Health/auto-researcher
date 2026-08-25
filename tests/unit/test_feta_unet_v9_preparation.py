@@ -132,6 +132,14 @@ def test_v9_static_preflight_is_evidence_bound_and_launch_blocked():
     }
 
 
+def test_v9_openevolve_runtime_stays_within_enforced_safety_caps():
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    runtime = raw["openevolve_development_mutation"]
+
+    assert runtime["maximum_model_calls"] == 100
+    assert runtime["maximum_total_cost_usd"] == 50.0
+
+
 def test_v9_static_preflight_rejects_evidence_tampering(tmp_path):
     raw = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     raw["v8_campaign"]["champion"]["best_score"] = 0.84
