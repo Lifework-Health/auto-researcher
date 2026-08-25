@@ -1,0 +1,52 @@
+{
+  "calibration_sha256": "fc1e9dbe57e423e308674d81d32e72a9ecafcb5dceee0816f6654ab7ff384d73",
+  "gpu": "NVIDIA RTX A6000",
+  "gpu_total_memory_bytes": 51033931776,
+  "holdout_subjects_evaluated": 0,
+  "memory_ceiling_gib": 44.0,
+  "model_calls_performed": 0,
+  "passed": true,
+  "pilots": [
+    {
+      "amp_step_seconds": 0.758243627846241,
+      "architecture_identity": "monai-unet-3d-bounded-v4-9367155068ef72b1",
+      "feature_width": "v9_attn_compact_5",
+      "measured_full_step_passed": true,
+      "model_variant": "attention_unet",
+      "peak_gpu_memory_bytes": 4026240512,
+      "peak_gpu_memory_gib": 3.7497286796569824,
+      "trainable_parameters": 36912564
+    },
+    {
+      "amp_step_seconds": 0.2597755938768387,
+      "architecture_identity": "monai-unet-3d-bounded-v4-13c74494a6164752",
+      "feature_width": "v9_attn_balanced_5",
+      "measured_full_step_passed": true,
+      "model_variant": "attention_unet",
+      "peak_gpu_memory_bytes": 4745973760,
+      "peak_gpu_memory_gib": 4.420032501220703,
+      "trainable_parameters": 53150880
+    },
+    {
+      "amp_step_seconds": 0.22754733264446259,
+      "architecture_identity": "monai-unet-3d-bounded-v4-0c44758b2412c07a",
+      "feature_width": "v9_unetr_base_16",
+      "measured_full_step_passed": true,
+      "model_variant": "unetr",
+      "peak_gpu_memory_bytes": 2953524224,
+      "peak_gpu_memory_gib": 2.7506837844848633,
+      "trainable_parameters": 121350472
+    },
+    {
+      "amp_step_seconds": 0.4134657457470894,
+      "architecture_identity": "monai-unet-3d-bounded-v4-ccb83a94a0ca2652",
+      "feature_width": "v9_swin_tiny_24",
+      "measured_full_step_passed": true,
+      "model_variant": "swin_unetr",
+      "peak_gpu_memory_bytes": 9176368640,
+      "peak_gpu_memory_gib": 8.546159267425537,
+      "trainable_parameters": 15703154
+    }
+  ],
+  "schema_version": "feta-unet-v9-cuda-calibration-v1"
+}

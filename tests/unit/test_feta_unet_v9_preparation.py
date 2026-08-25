@@ -115,7 +115,10 @@ def test_v9_static_preflight_is_evidence_bound_and_launch_blocked():
     assert result["model_calls_performed"] == 0
     assert result["holdout_subjects_evaluated"] == 0
     assert result["launch_ready"] is False
-    assert len(result["launch_blockers"]) == 5
+    assert len(result["launch_blockers"]) == 4
+    assert result["cuda_calibration_sha256"] == (
+        "fc1e9dbe57e423e308674d81d32e72a9ecafcb5dceee0816f6654ab7ff384d73"
+    )
     bound = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     counts = {
         item["feature_width"]: item["trainable_parameters"]

@@ -123,7 +123,12 @@ def _validate_bound_evidence(raw: dict[str, Any]) -> tuple[str, ...]:
     if (
         not isinstance(profiles, list)
         or len(profiles) != 4
-        or pilots.get("full_cuda_step_performed") is not False
+        or pilots.get("full_cuda_step_performed") is not True
+        or pilots.get("calibration_sha256")
+        != "fc1e9dbe57e423e308674d81d32e72a9ecafcb5dceee0816f6654ab7ff384d73"
+        or pilots.get("gpu") != "NVIDIA RTX A6000"
+        or pilots.get("holdout_subjects_evaluated") != 0
+        or pilots.get("model_calls_performed") != 0
         or {item.get("feature_width") for item in profiles if isinstance(item, dict)}
         != {
             "v9_attn_compact_5",
@@ -137,6 +142,11 @@ def _validate_bound_evidence(raw: dict[str, Any]) -> tuple[str, ...]:
             <= item.get("trainable_parameters", 0)
             <= V9_MAXIMUM_TRAINABLE_PARAMETERS
             and isinstance(item.get("architecture_identity"), str)
+            and item.get("measured_full_step_passed") is True
+            and 0
+            < item.get("peak_gpu_memory_bytes", 0)
+            <= V9_MAXIMUM_PEAK_GPU_MEMORY_BYTES
+            and item.get("amp_step_seconds", 0) > 0
             for item in profiles
         )
     ):
@@ -176,10 +186,21 @@ def _validate_template(raw: dict[str, Any]) -> tuple[FeTAUNetSearchConfiguration
         or director.get("effort") != "xhigh"
     ):
         raise ValueError("feta_unet_v9_research_director_budget_invalid")
+    calibration = options.get("v9_cuda_calibration")
     if (
         options.get("launch_gate") != "blocked_pending_v9_validation"
         or options.get("v9_portfolio_controller_implemented") is not False
-        or options.get("v9_cuda_calibration") is not None
+        or not isinstance(calibration, dict)
+        or calibration.get("schema_version") != V9_CUDA_CALIBRATION_SCHEMA_VERSION
+        or calibration.get("calibration_sha256")
+        != "fc1e9dbe57e423e308674d81d32e72a9ecafcb5dceee0816f6654ab7ff384d73"
+        or calibration.get("calibration_file_sha256")
+        != "0fb60cf98dd14f9202f331bdd7f4d2fe88a7e70522ecb50c6891e305368ecd38"
+        or calibration.get("pilot_count") != 4
+        or calibration.get("maximum_peak_gpu_memory_bytes") != 9176368640
+        or calibration.get("holdout_subjects_evaluated") != 0
+        or calibration.get("model_calls_performed") != 0
+        or calibration.get("passed") is not True
         or options.get("maximum_peak_gpu_memory_bytes")
         != V9_MAXIMUM_PEAK_GPU_MEMORY_BYTES
     ):
@@ -225,6 +246,9 @@ def static_v9_preflight(*, config_path: Path, evidence_path: Path) -> dict[str, 
         "root_feature_widths": [item.feature_width for item in roots],
         "duration_hours": V9_EXPECTED_DURATION_HOURS,
         "protected_finalisation_hours": V9_EXPECTED_FINALISATION_HOURS,
+        "cuda_calibration_sha256": (
+            _load(config_path)["runtime"]["options"]["v9_cuda_calibration"]
+        )["calibration_sha256"],
         "research_director_valid_decision_budget": 16,
         "knowledge_library_hash": build_v9_knowledge_library().library_hash,
         "literature_brief_hash": build_v9_literature_brief(

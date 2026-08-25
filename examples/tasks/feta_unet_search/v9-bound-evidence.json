@@ -8,7 +8,8 @@
   "fold_hash": "45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e",
   "source_artifacts": {
     "v8_campaign_report_sha256": "21b676af66aeead073c6839e4c9fd926c111697992edef9c92bcd37094dbb878",
-    "v8_best_ensemble_report_sha256": "e47f76eec7a6dda697cbff3ae697427d423d5a8393bdcfcb8a3c4deea7f15f4e"
+    "v8_best_ensemble_report_sha256": "e47f76eec7a6dda697cbff3ae697427d423d5a8393bdcfcb8a3c4deea7f15f4e",
+    "v9_cuda_calibration_file_sha256": "0fb60cf98dd14f9202f331bdd7f4d2fe88a7e70522ecb50c6891e305368ecd38"
   },
   "v8_campaign": {
     "run_id": "feta-unet-campaign-32h-v8-20260823",
@@ -88,31 +89,47 @@
   },
   "v9_architecture_pilots": {
     "environment": "SBIGPUServer1 V8 FeTA Python environment with temporary pinned einops 0.8.1",
-    "full_cuda_step_performed": false,
+    "full_cuda_step_performed": true,
+    "calibration_sha256": "fc1e9dbe57e423e308674d81d32e72a9ecafcb5dceee0816f6654ab7ff384d73",
+    "gpu": "NVIDIA RTX A6000",
+    "holdout_subjects_evaluated": 0,
+    "model_calls_performed": 0,
     "profiles": [
       {
         "feature_width": "v9_attn_compact_5",
         "model_variant": "attention_unet",
         "trainable_parameters": 36912564,
-        "architecture_identity": "monai-unet-3d-bounded-v4-ceeda1c712b6ef02"
+        "architecture_identity": "monai-unet-3d-bounded-v4-9367155068ef72b1",
+        "peak_gpu_memory_bytes": 4026240512,
+        "amp_step_seconds": 0.758243627846241,
+        "measured_full_step_passed": true
       },
       {
         "feature_width": "v9_attn_balanced_5",
         "model_variant": "attention_unet",
         "trainable_parameters": 53150880,
-        "architecture_identity": "monai-unet-3d-bounded-v4-3aa0869c9b7ae905"
+        "architecture_identity": "monai-unet-3d-bounded-v4-13c74494a6164752",
+        "peak_gpu_memory_bytes": 4745973760,
+        "amp_step_seconds": 0.2597755938768387,
+        "measured_full_step_passed": true
       },
       {
         "feature_width": "v9_unetr_base_16",
         "model_variant": "unetr",
         "trainable_parameters": 121350472,
-        "architecture_identity": "monai-unet-3d-bounded-v4-015a090c6e7399b9"
+        "architecture_identity": "monai-unet-3d-bounded-v4-0c44758b2412c07a",
+        "peak_gpu_memory_bytes": 2953524224,
+        "amp_step_seconds": 0.22754733264446259,
+        "measured_full_step_passed": true
       },
       {
         "feature_width": "v9_swin_tiny_24",
         "model_variant": "swin_unetr",
         "trainable_parameters": 15703154,
-        "architecture_identity": "monai-unet-3d-bounded-v4-cd24ca621496b417"
+        "architecture_identity": "monai-unet-3d-bounded-v4-ccb83a94a0ca2652",
+        "peak_gpu_memory_bytes": 9176368640,
+        "amp_step_seconds": 0.4134657457470894,
+        "measured_full_step_passed": true
       }
     ]
   },
@@ -159,7 +176,6 @@
   "launch_ready": false,
   "launch_blockers": [
     "V9 adaptive portfolio controller is not yet implemented and replay-tested.",
-    "AttentionUnet, UNETR and SwinUNETR require real-CUDA memory and throughput calibration.",
     "The 15-to-30-to-50-to-100-to-150 continuation ladder requires end-to-end verification.",
     "V8 champion and alternate checkpoint imports are not yet bound into a fresh V9 runtime.",
     "The production contract, runtime paths and final deadline have not yet been frozen."

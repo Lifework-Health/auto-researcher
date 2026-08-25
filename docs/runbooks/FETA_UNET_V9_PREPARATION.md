@@ -44,12 +44,9 @@ preflight must remain blocked until all of the following are true:
    replayed across every frozen stage and recovery boundary.
 2. The 15-to-30-to-50-to-100-to-150 continuation ladder has tests that restore
    model, optimiser, scheduler, scaler and RNG state.
-3. All ten roots have parameter-count evidence. AttentionUnet, UNETR and
-   SwinUNETR have real-CUDA full-step memory and timing calibration, first on the
-   L4 where practical and then on the production A6000.
-4. The V8 champion and alternate checkpoints are imported read-only and bound
+3. The V8 champion and alternate checkpoints are imported read-only and bound
    to their source manifests and scientific identities.
-5. Runtime paths, production contract, deadline, GPU and credential reference
+4. Runtime paths, production contract, deadline, GPU and credential reference
    are frozen; the control directory is fresh; every source hash matches.
 
 Run the zero-model-call static gate with:
@@ -63,10 +60,12 @@ python -m auto_researcher.tasks.feta_unet_search.v9_preflight \
 Expected state today: `launch_ready: false`. This is a successful preparation
 result, not permission to train.
 
-Static construction on the server measured 36.91M and 53.15M parameters for
-the two AttentionUnet roots, 121.35M for UNETR and 15.70M for SwinUNETR. All
-four are inside the 15M-to-150M envelope. These counts do not replace the
-required real-CUDA full-step memory and timing evidence.
+Real-CUDA calibration on an otherwise idle production A6000 completed one AMP
+forward/backward/optimizer step for all four new pilots without touching the
+holdout or making model calls. Peak allocated memory was 3.75 and 4.42 GiB for
+the two AttentionUnet roots, 2.75 GiB for UNETR and 8.55 GiB for SwinUNETR;
+all are well within the 44 GiB campaign ceiling. The measured evidence and its
+hash are bound in `v9-cuda-calibration.json` and the campaign template.
 
 The transformer pilots require the pinned `einops==0.8.1` dependency included
 in the `feta` optional environment. Dependency presence is part of the CUDA
