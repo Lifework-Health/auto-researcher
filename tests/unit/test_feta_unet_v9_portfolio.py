@@ -185,8 +185,14 @@ def _configurations(request: SearchRequest, request_index: int) -> tuple[dict, .
         },
     )
     return tuple(
-        FeTAUNetSearchConfiguration(**{**parent, **change}).model_dump(mode="json")
-        for change in changes
+        FeTAUNetSearchConfiguration(
+            **{
+                **parent,
+                **change,
+                "learning_rate": parent["learning_rate"] * (1.01 + index / 100),
+            }
+        ).model_dump(mode="json")
+        for index, change in enumerate(changes)
     )
 
 
