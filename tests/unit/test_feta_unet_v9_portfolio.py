@@ -16,6 +16,9 @@ from auto_researcher.tasks.feta_unet_search.portfolio import (
     V9PortfolioPolicy,
     apply_portfolio_policy,
 )
+from auto_researcher.tasks.feta_unet_search.openevolve import (
+    policy_from_configuration,
+)
 from auto_researcher.tasks.models import TaskRuntimeContext
 
 ROOT = Path(__file__).parents[2]
@@ -161,6 +164,18 @@ def test_v9_policy_validates_the_frozen_mixed_family_envelope():
     assert policy.local_optuna_trials_per_parent == 2
     assert policy.openevolve_novel_children == 6
     assert policy.fidelity_targets == V9_FIDELITY_TARGETS
+
+
+def test_v9_dynunet_parent_is_a_legal_openevolve_seed():
+    root = _options()["v9_fixed_roots"][2]
+    configuration = FeTAUNetSearchConfiguration.model_validate(root).model_dump(
+        mode="json"
+    )
+
+    policy = policy_from_configuration(configuration)
+
+    assert policy.model_variant == "dynunet"
+    assert policy.architecture_budget == "dynunet-15m-150m-v1"
 
 
 def test_v9_controller_replays_the_complete_24_to_3_ladder():

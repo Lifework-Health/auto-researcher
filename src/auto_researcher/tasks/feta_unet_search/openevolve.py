@@ -42,6 +42,10 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V7_MAXIMUM_TRAINABLE_PARAMETERS,
     V7_MECHANISM_FEATURE_PROFILES,
     V7_MINIMUM_TRAINABLE_PARAMETERS,
+    V8_DYNUNET_ARCHITECTURE_BUDGET,
+    V8_DYNUNET_DEEP_SUPERVISION_HEADS,
+    V8_DYNUNET_FEATURE_PROFILES,
+    V8_DYNUNET_KERNEL_PROFILES,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
 )
@@ -233,12 +237,19 @@ class UNetTrainingPolicy(BaseModel):
 
     policy_version: Literal["feta-unet-training-policy-v6"] = POLICY_VERSION
     model_variant: Literal[
-        "basic_unet", "unet_plain", "unet_residual", "structural_basic_unet"
+        "basic_unet",
+        "unet_plain",
+        "unet_residual",
+        "structural_basic_unet",
+        "dynunet",
     ] = "basic_unet"
     feature_width: str = "baseline"
     features: tuple[int, ...] = FEATURE_WIDTH_PROFILES["baseline"]
     architecture_budget: Literal[
-        "legacy", "basicunet-15m-150m-v1", "basicunet-structural-15m-150m-v1"
+        "legacy",
+        "basicunet-15m-150m-v1",
+        "basicunet-structural-15m-150m-v1",
+        "dynunet-15m-150m-v1",
     ] = "legacy"
     upsample: Literal["deconv", "pixelshuffle", "nontrainable"] = "deconv"
     kernel_profile: Literal["basic", "standard", "large_front", "context_deep"] = (
@@ -375,6 +386,29 @@ class UNetTrainingPolicy(BaseModel):
             or (self.skip_fusion == "add" and self.features[-1] != self.features[0])
         ):
             raise ValueError("feta_unet_policy_v7_architecture_invalid")
+        if self.architecture_budget == V8_DYNUNET_ARCHITECTURE_BUDGET and (
+            self.model_variant != "dynunet"
+            or self.feature_width not in {*V8_DYNUNET_FEATURE_PROFILES, "custom"}
+            or (expected is not None and self.features != expected)
+            or len(self.features) not in (5, 6)
+            or any(
+                channel % 8 or channel < 32 or channel > 1_024
+                for channel in self.features
+            )
+            or tuple(sorted(self.features)) != self.features
+            or self.upsample != "deconv"
+            or self.kernel_profile not in V8_DYNUNET_KERNEL_PROFILES
+            or self.deep_supervision_heads
+            not in V8_DYNUNET_DEEP_SUPERVISION_HEADS
+            or self.deep_supervision_heads >= len(self.features) - 1
+            or self.convolutions_per_stage != 2
+            or self.stage_block_profile != "uniform"
+            or self.residual_profile != "uniform"
+            or self.dilation_profile != "none"
+            or self.skip_fusion != "concat"
+            or self.downsample != "max_pool"
+        ):
+            raise ValueError("feta_unet_policy_v8_dynunet_architecture_invalid")
         return self
 
 
@@ -581,6 +615,7 @@ class FeTAUNetEvolvableComponent:
         if configuration.architecture_budget in {
             V6_ARCHITECTURE_BUDGET,
             V7_ARCHITECTURE_BUDGET,
+            V8_DYNUNET_ARCHITECTURE_BUDGET,
         }:
             from auto_researcher.tasks.feta_unet_direct.model import (
                 create_unet_model,
@@ -590,17 +625,26 @@ class FeTAUNetEvolvableComponent:
             parameter_count = trainable_parameter_count(
                 create_unet_model(configuration)
             )
-            bounds = (
-                (
+            if configuration.architecture_budget == V7_ARCHITECTURE_BUDGET:
+                bounds = (
                     V7_MINIMUM_TRAINABLE_PARAMETERS,
                     V7_MAXIMUM_TRAINABLE_PARAMETERS,
                 )
-                if configuration.architecture_budget == V7_ARCHITECTURE_BUDGET
-                else (
+            elif configuration.architecture_budget == V8_DYNUNET_ARCHITECTURE_BUDGET:
+                from auto_researcher.tasks.feta_unet_search.configuration import (
+                    V8_MAXIMUM_TRAINABLE_PARAMETERS,
+                    V8_MINIMUM_TRAINABLE_PARAMETERS,
+                )
+
+                bounds = (
+                    V8_MINIMUM_TRAINABLE_PARAMETERS,
+                    V8_MAXIMUM_TRAINABLE_PARAMETERS,
+                )
+            else:
+                bounds = (
                     V6_MINIMUM_TRAINABLE_PARAMETERS,
                     V6_MAXIMUM_TRAINABLE_PARAMETERS,
                 )
-            )
             if not bounds[0] <= parameter_count <= bounds[1]:
                 raise ValueError(
                     "feta_unet_architecture_parameter_budget_out_of_bounds"
