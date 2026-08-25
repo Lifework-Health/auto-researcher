@@ -98,6 +98,7 @@ runtime:
     campaign_finalisation_reserve_seconds: 28800
     campaign_reporting_reserve_seconds: 1800
     campaign_prior_results: 30
+    openevolve_fidelity: 15
     continue_after_failed_candidate: true
     maximum_peak_gpu_memory_bytes: 47244640256
     launch_gate: blocked_pending_v9_validation
@@ -118,7 +119,7 @@ runtime:
     v9_bound_evidence_file: /absolute/path/to/v9-bound-evidence.json
     v9_family_budget_fraction: {dynunet: 0.7, attention_unet: 0.2, transformer_pilots: 0.1}
     v9_fidelity_ladder: [15, 30, 50, 100, 150]
-    v9_fixed_roots:
+    v9_fixed_roots: &v9_fixed_roots
       - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_compact_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, activation: PReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
       - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_compact_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
       - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_balanced_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
@@ -129,3 +130,10 @@ runtime:
       - {maximum_epochs: 15, model_variant: attention_unet, feature_width: v9_attn_balanced_5, architecture_budget: attention-unet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, skip_fusion: gated_concat, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
       - {maximum_epochs: 15, model_variant: unetr, feature_width: v9_unetr_base_16, architecture_budget: transformer-pilot-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
       - {maximum_epochs: 15, model_variant: swin_unetr, feature_width: v9_swin_tiny_24, architecture_budget: transformer-pilot-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+    campaign_portfolio:
+      version: feta-unet-v9-mixed-24-12-7-4-3-v1
+      roots: *v9_fixed_roots
+      local_optuna_parent_count: 4
+      local_optuna_trials_per_parent: 2
+      openevolve_novel_children: 6
+      fidelity_targets: {"15": 24, "30": 12, "50": 7, "100": 4, "150": 3}
