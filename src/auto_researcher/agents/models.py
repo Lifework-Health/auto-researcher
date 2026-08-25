@@ -127,6 +127,7 @@ class ResearchLandscapeEvidence(AgentModel):
         "RUNTIME",
         "FAILURE",
         "LITERATURE",
+        "KNOWLEDGE_CARD_LIBRARY",
     ]
     evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_reference: str = Field(min_length=1)
