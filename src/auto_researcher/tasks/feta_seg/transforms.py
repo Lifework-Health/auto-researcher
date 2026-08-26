@@ -11,6 +11,7 @@ def create_transforms(
     positive_negative_ratio: str = "1:1",
     augmentation_strength: str = "baseline",
     augmentation_policy: str | None = None,
+    sampling_policy: str = "foreground",
 ):
     try:
         from monai.transforms import (
@@ -26,6 +27,7 @@ def create_transforms(
             RandScaleIntensityd,
             RandShiftIntensityd,
             RandCropByPosNegLabeld,
+            RandCropByLabelClassesd,
             Spacingd,
             SpatialPadd,
         )
@@ -130,18 +132,35 @@ def create_transforms(
                         std=0.03,
                     )
                 )
+    if sampling_policy == "foreground":
+        crop = RandCropByPosNegLabeld(
+            keys=("image", "label"),
+            label_key="label",
+            spatial_size=(128, 128, 128),
+            pos=positive,
+            neg=negative,
+            num_samples=2,
+            allow_smaller=True,
+        )
+    elif sampling_policy == "weak_tissue_balanced":
+        # FeTA labels 1 and 2 are external CSF and cortical grey matter, the
+        # two persistently weakest tissues in the bound V8/V9 evidence.  This
+        # preserves all eight classes while doubling their crop probability.
+        crop = RandCropByLabelClassesd(
+            keys=("image", "label"),
+            label_key="label",
+            spatial_size=(128, 128, 128),
+            ratios=(1, 2, 2, 1, 1, 1, 1, 1),
+            num_classes=8,
+            num_samples=2,
+            allow_smaller=True,
+        )
+    else:
+        raise ValueError("feta_sampling_policy_invalid")
     return Compose(
         deterministic
         + [
-            RandCropByPosNegLabeld(
-                keys=("image", "label"),
-                label_key="label",
-                spatial_size=(128, 128, 128),
-                pos=positive,
-                neg=negative,
-                num_samples=2,
-                allow_smaller=True,
-            ),
+            crop,
             SpatialPadd(
                 keys=("image", "label"),
                 spatial_size=(128, 128, 128),

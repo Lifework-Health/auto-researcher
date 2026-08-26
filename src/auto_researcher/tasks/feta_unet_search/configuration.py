@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v6"
 V7_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v5"
 V9_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v7"
+V10_CONFIGURATION_SCHEMA_VERSION = "feta-unet-search-configuration-v8"
 FIDELITY_LEVELS = (5, 10, 15, 25, 30, 50, 100, 150)
 LEARNING_RATE_BOUNDS = (3e-5, 5e-4)
 WEIGHT_DECAY_BOUNDS = (1e-6, 3e-4)
@@ -138,6 +139,8 @@ V9_ARCHITECTURE_FAMILY_ID = "feta-unet-v9-mixed-attention-transformer-family-v1"
 V9_MINIMUM_TRAINABLE_PARAMETERS = 15_000_000
 V9_MAXIMUM_TRAINABLE_PARAMETERS = 150_000_000
 V9_MAXIMUM_PEAK_GPU_MEMORY_BYTES = 44 * 1024**3
+V10_CAMPAIGN_ARCHITECTURE_MODE = "feta-unet-v10-dynunet-mechanism-search-v1"
+V10_ARCHITECTURE_FAMILY_ID = "feta-unet-v10-dynunet-mechanism-family-v1"
 RESIDUAL_CHANNEL_PROFILES = {
     "narrow": (24, 48, 96, 192, 384),
     "baseline": (32, 64, 128, 256, 512),
@@ -147,7 +150,13 @@ ACTIVATIONS = ("LeakyReLU", "ReLU", "PReLU")
 NORMALISATIONS = ("instance", "group")
 OPTIMISERS = ("AdamW", "Adam")
 LEARNING_RATE_SCHEDULES = ("constant", "cosine", "polynomial")
-LOSS_VARIANTS = ("dice_ce", "dice_focal", "dice_tversky")
+LOSS_VARIANTS = (
+    "dice_ce",
+    "dice_focal",
+    "dice_tversky",
+    "generalized_dice_focal",
+)
+SAMPLING_POLICIES = ("foreground", "weak_tissue_balanced")
 AUGMENTATION_POLICIES = (
     "reference_light",
     "geometric",
@@ -181,6 +190,7 @@ CANDIDATE_CONFIGURATION_FIELDS = (
     "dropout",
     "dice_weight",
     "positive_negative_ratio",
+    "sampling_policy",
     "augmentation_policy",
 )
 
@@ -256,6 +266,7 @@ class FeTAUNetSearchConfiguration(BaseModel):
     dropout: float = 0.0
     dice_weight: float = 1.0
     positive_negative_ratio: Literal["1:1", "2:1", "3:1"] = "1:1"
+    sampling_policy: Literal["foreground", "weak_tissue_balanced"] = "foreground"
     augmentation_policy: Literal[
         "reference_light", "geometric", "intensity", "combined"
     ] = "reference_light"
@@ -263,7 +274,9 @@ class FeTAUNetSearchConfiguration(BaseModel):
     lr_schedule: Literal["constant", "cosine", "polynomial"] = "constant"
     scheduler_horizon_epochs: Literal[150] = 150
     polynomial_power: Literal[0.9] = 0.9
-    loss_variant: Literal["dice_ce", "dice_focal", "dice_tversky"] = "dice_ce"
+    loss_variant: Literal[
+        "dice_ce", "dice_focal", "dice_tversky", "generalized_dice_focal"
+    ] = "dice_ce"
     inference_overlap: float = 0.5
     inference_blending: Literal["gaussian"] = "gaussian"
     sliding_window_batch_size: Literal[1] = 1

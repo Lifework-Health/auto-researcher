@@ -40,7 +40,12 @@ def trajectory_payload(
 ) -> dict[str, Any]:
     """Bind every scientific setting except the maximum training fidelity."""
 
-    return configuration.model_dump(mode="json", exclude={"maximum_epochs"})
+    payload = configuration.model_dump(mode="json", exclude={"maximum_epochs"})
+    # Preserve the durable V5-V9 lineage identity for the legacy/default crop.
+    # Only the new V10 weak-tissue mechanism contributes an additional field.
+    if payload.get("sampling_policy") == "foreground":
+        payload.pop("sampling_policy")
+    return payload
 
 
 def trajectory_identity(configuration: FeTAUNetSearchConfiguration) -> str:

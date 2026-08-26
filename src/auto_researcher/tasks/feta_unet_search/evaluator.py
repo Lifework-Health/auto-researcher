@@ -22,11 +22,11 @@ from auto_researcher.tasks.models import (
 )
 
 EVALUATOR_ID = "feta-basic-unet-search-evaluator"
-EVALUATOR_VERSION = "feta-unet-search-evaluator-v5"
-RESULT_ID = "feta-unet-search-result-v5"
+EVALUATOR_VERSION = "feta-unet-search-evaluator-v6"
+RESULT_ID = "feta-unet-search-result-v6"
 SCIENTIFIC_ID = "feta-unet-fold0-bounded-family-tree-search-macro-dice-v5"
-AUGMENTATION_ID = "feta-bounded-explicit-geometric-intensity-policies-v2"
-LOSS_ID = "bounded-dice-ce-focal-or-tversky-no-background-v3"
+AUGMENTATION_ID = "feta-bounded-augmentation-and-weak-tissue-sampling-v3"
+LOSS_ID = "bounded-dice-ce-focal-tversky-or-generalized-focal-v4"
 OPTIMISER_ID = "adam-or-adamw-bounded-lr-wd-with-150epoch-schedules-v2"
 
 
@@ -90,9 +90,7 @@ class FeTAUNetSearchEvaluator(FeTAUNetDirectEvaluator):
             "maximum_peak_gpu_memory_bytes"
         )
         if configured_limit != V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
-            return self._failure(
-                experiment, "feta_unet_peak_gpu_memory_limit_invalid"
-            )
+            return self._failure(experiment, "feta_unet_peak_gpu_memory_limit_invalid")
         raw_summaries = result.metrics.get("fold_summaries")
         if not isinstance(raw_summaries, list) or not raw_summaries:
             return self._failure(
@@ -103,20 +101,13 @@ class FeTAUNetSearchEvaluator(FeTAUNetDirectEvaluator):
             for summary in raw_summaries
             if isinstance(summary, dict)
         ]
-        if (
-            len(peaks) != len(raw_summaries)
-            or any(
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value <= 0
-                for value in peaks
-            )
+        if len(peaks) != len(raw_summaries) or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in peaks
         ):
             return self._failure(
                 experiment, "feta_unet_peak_gpu_memory_evidence_invalid"
             )
         if max(peaks) > V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES:
-            return self._failure(
-                experiment, "feta_unet_peak_gpu_memory_limit_exceeded"
-            )
+            return self._failure(experiment, "feta_unet_peak_gpu_memory_limit_exceeded")
         return result

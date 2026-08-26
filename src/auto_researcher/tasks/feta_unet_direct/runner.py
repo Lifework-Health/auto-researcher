@@ -85,8 +85,8 @@ FoldExecutor = Callable[
 ]
 
 MAX_CONSECUTIVE_AMP_SKIPS = 16
-SEARCH_RUNNER_ID = "feta-unet-family-fold0-development-runner-v5"
-SEARCH_DATA_LOADER_ID = "monai-unet-family-explicit-augmentation-loader-v4"
+SEARCH_RUNNER_ID = "feta-unet-family-fold0-development-runner-v6"
+SEARCH_DATA_LOADER_ID = "monai-unet-family-weak-tissue-sampling-loader-v5"
 
 
 def _amp_step_was_skipped(scale_before: float, scale_after: float) -> bool:
@@ -293,6 +293,9 @@ def _run_cuda_fold(
                 getattr(configuration, "augmentation_strength", "baseline")
             ),
             augmentation_policy=getattr(configuration, "augmentation_policy", None),
+            sampling_policy=str(
+                getattr(configuration, "sampling_policy", "foreground")
+            ),
         ),
         cache_dir=cache_root / "training",
     )
