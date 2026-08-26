@@ -92,13 +92,21 @@ def _deterministic_direct_fallback(
     )
 
 
-def _deterministic_portfolio_placeholder(
+def _deterministic_portfolio_seed(
     state: ResearchState,
     dependencies: RuntimeDependencies,
     *,
-    failure_code: str,
+    failure_code: str | None,
 ) -> SearchRequest | None:
-    """Give a deterministic campaign controller a valid request to replace."""
+    """Give a deterministic campaign controller a valid request to replace.
+
+    A task-owned campaign portfolio is already the authoritative compiler for the
+    next exact search request.  In that mode the model Planner has no remaining
+    configuration authority, so calling it only creates a structured-output
+    failure surface.  ``failure_code=None`` represents the normal compiled path;
+    a concrete code preserves the legacy recovery path for an already-failed
+    planner boundary.
+    """
 
     hypothesis = state["active_hypothesis"]
     if (
@@ -114,6 +122,7 @@ def _deterministic_portfolio_placeholder(
         or state["budget"].experiments_used >= state["budget"].maximum_experiments
     ):
         return None
+    compiler_reason = failure_code or "task-owned-portfolio"
     digest = hashlib.sha256(
         (
             state["run_id"]
@@ -122,20 +131,30 @@ def _deterministic_portfolio_placeholder(
             + "\x1f"
             + hypothesis.hypothesis_id
             + "\x1fportfolio\x1f"
-            + failure_code
+            + compiler_reason
         ).encode()
     ).hexdigest()[:20]
+    if failure_code is None:
+        request_id = f"search-portfolio-compiler-{digest}"
+        rationale = (
+            "Deterministic Planner compiler seed for the task-owned campaign "
+            "portfolio. The portfolio controller will materialise the exact "
+            "schema-valid search request from durable evidence and policy."
+        )
+    else:
+        request_id = f"search-portfolio-placeholder-{digest}"
+        rationale = (
+            "Deterministic placeholder for the task-owned campaign portfolio "
+            f"after the planner boundary returned {failure_code}."
+        )
     return SearchRequest(
-        request_id=f"search-portfolio-placeholder-{digest}",
+        request_id=request_id,
         hypothesis_id=hypothesis.hypothesis_id,
         search_type=SearchType.DIRECT,
         target=state["contract"].primary_metric,
         search_space={},
         experiment_budget=1,
-        rationale=(
-            "Deterministic placeholder for the task-owned campaign portfolio "
-            f"after the planner boundary returned {failure_code}."
-        ),
+        rationale=rationale,
         evidence_references=hypothesis.evidence_references,
         requires_human_approval=False,
         proposal_source=ProposalSource.DETERMINISTIC,
@@ -265,57 +284,69 @@ def plan_search(
     stage = "context_assembly"
     fallback_code: str | None = None
     fallback_stage: str | None = None
-    try:
-        context = dependencies.agent_context_assembler.planner_context(
-            state,
-            dependencies.task_agent_context,
-            dependencies.search_capabilities,
-        )
-        stage = "model_call"
-        request = dependencies.planner_agent.plan(context)
-        if isinstance(dependencies.task, CampaignRequestEnrichmentCapableTask):
-            stage = "request_enrichment"
-            request = dependencies.task.enrich_search_request(
-                request,
-                context.prior_verified_findings,
-            )
-    except Exception as exc:
+    request = _deterministic_portfolio_seed(
+        state,
+        dependencies,
+        failure_code=None,
+    )
+    if request is not None:
+        # The task-owned portfolio is the exact Planner compiler.  Do not spend a
+        # model call on a proposal that the controller will deterministically
+        # replace, and clear any impossible stale telemetry defensively.
+        stage = "portfolio_compilation"
         telemetry = consume_agent_telemetry(dependencies.planner_agent)
-        code = _safe_failure_code(exc)
-        fallback = (
-            _deterministic_direct_fallback(
-                state,
-                dependencies,
-                failure_code=code,
-            )
-            if isinstance(exc, (LiveAgentExecutionError, AgentContextAssemblyError))
-            else None
-        )
-        if fallback is None and isinstance(
-            exc, (LiveAgentExecutionError, AgentContextAssemblyError)
-        ):
-            fallback = _deterministic_portfolio_placeholder(
-                state,
-                dependencies,
-                failure_code=code,
-            )
-        if fallback is not None:
-            request = fallback
-            fallback_code = code
-            fallback_stage = stage
-        else:
-            return {
-                "status": RunStatus.FAILED,
-                "budget": apply_agent_telemetry(state["budget"], telemetry),
-                "search_request": None,
-                "errors": [code],
-                "stop_reason": code,
-                "planner_failure_code": code,
-                "planner_failure_stage": stage,
-                "executed_nodes": ["plan_search"],
-            }
     else:
-        telemetry = consume_agent_telemetry(dependencies.planner_agent)
+        try:
+            context = dependencies.agent_context_assembler.planner_context(
+                state,
+                dependencies.task_agent_context,
+                dependencies.search_capabilities,
+            )
+            stage = "model_call"
+            request = dependencies.planner_agent.plan(context)
+            if isinstance(dependencies.task, CampaignRequestEnrichmentCapableTask):
+                stage = "request_enrichment"
+                request = dependencies.task.enrich_search_request(
+                    request,
+                    context.prior_verified_findings,
+                )
+        except Exception as exc:
+            telemetry = consume_agent_telemetry(dependencies.planner_agent)
+            code = _safe_failure_code(exc)
+            fallback = (
+                _deterministic_direct_fallback(
+                    state,
+                    dependencies,
+                    failure_code=code,
+                )
+                if isinstance(exc, (LiveAgentExecutionError, AgentContextAssemblyError))
+                else None
+            )
+            if fallback is None and isinstance(
+                exc, (LiveAgentExecutionError, AgentContextAssemblyError)
+            ):
+                fallback = _deterministic_portfolio_seed(
+                    state,
+                    dependencies,
+                    failure_code=code,
+                )
+            if fallback is not None:
+                request = fallback
+                fallback_code = code
+                fallback_stage = stage
+            else:
+                return {
+                    "status": RunStatus.FAILED,
+                    "budget": apply_agent_telemetry(state["budget"], telemetry),
+                    "search_request": None,
+                    "errors": [code],
+                    "stop_reason": code,
+                    "planner_failure_code": code,
+                    "planner_failure_stage": stage,
+                    "executed_nodes": ["plan_search"],
+                }
+        else:
+            telemetry = consume_agent_telemetry(dependencies.planner_agent)
     if isinstance(dependencies.task, CampaignPortfolioCapableTask):
         stage = "portfolio_policy"
         try:
