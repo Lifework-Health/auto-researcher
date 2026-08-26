@@ -153,7 +153,8 @@ def test_v10_static_preflight_is_complete_but_fail_closed():
     assert report["model_calls_performed"] == 0
     assert report["holdout_subjects_evaluated"] == 0
     assert report["launch_ready"] is False
-    assert len(report["launch_blockers"]) == 2
+    assert len(report["launch_blockers"]) == 1
+    assert len(report["cuda_mechanism_smoke_sha256"]) == 64
 
 
 def test_v10_policy_validates_mechanism_coverage():

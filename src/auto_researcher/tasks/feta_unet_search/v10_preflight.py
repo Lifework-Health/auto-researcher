@@ -82,6 +82,19 @@ def static_v10_preflight(
     evidence = _load(evidence_path)
     blockers = _validate_evidence(evidence)
     prior_manifest = _load(evidence_path.with_name("v10-prior-artifacts.json"))
+    cuda_smoke = _load(evidence_path.with_name("v10-cuda-mechanism-smoke.json"))
+    if (
+        cuda_smoke.get("schema_version") != "feta-unet-v10-cuda-mechanism-smoke-v1"
+        or cuda_smoke.get("gpu") != "NVIDIA RTX A6000"
+        or cuda_smoke.get("loss_variant") != "generalized_dice_focal"
+        or cuda_smoke.get("sampling_policy") != "weak_tissue_balanced"
+        or cuda_smoke.get("loss_finite") is not True
+        or cuda_smoke.get("passed") is not True
+        or cuda_smoke.get("holdout_subjects_evaluated") != 0
+        or cuda_smoke.get("model_calls_performed") != 0
+        or not (0 < float(cuda_smoke.get("peak_gpu_memory_gib", 0)) <= 44)
+    ):
+        raise ValueError("feta_unet_v10_cuda_smoke_invalid")
     artifacts = prior_manifest.get("artifacts")
     if (
         prior_manifest.get("schema_version") != "feta-unet-v10-prior-artifacts-v1"
@@ -160,6 +173,7 @@ def static_v10_preflight(
         "contract_sha256": payload_hash(_load(contract_path)),
         "bound_evidence_sha256": payload_hash(evidence),
         "prior_artifact_manifest_sha256": payload_hash(prior_manifest),
+        "cuda_mechanism_smoke_sha256": payload_hash(cuda_smoke),
         "root_count": len(policy.roots),
         "screening_target": policy.fidelity_targets[30],
         "promotion_targets": {

@@ -27,4 +27,4 @@ PYTHONPATH=src python -m auto_researcher.tasks.feta_unet_search.v10_preflight \
   --evidence examples/tasks/feta_unet_search/v10-bound-evidence.json
 ```
 
-`launch_ready: false` is expected at this stage. Do not launch until the two reported blockers are cleared by a fresh action-bound preflight on the A6000 server.
+`launch_ready: false` is expected at this stage. The real-CUDA mechanism smoke is bound in `v10-cuda-mechanism-smoke.json`; its generalized-Dice-focal AMP step and weak-tissue crop both passed on an RTX A6000 without dataset or holdout access. Do not launch until the remaining action-bound preflight passes on the exact clean server checkout.

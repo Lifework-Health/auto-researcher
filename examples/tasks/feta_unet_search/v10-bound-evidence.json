@@ -19,6 +19,12 @@
     "artifact_count": 4,
     "roots_train_from_scratch": true
   },
+  "cuda_mechanism_smoke": {
+    "path": "v10-cuda-mechanism-smoke.json",
+    "gpu": "NVIDIA RTX A6000",
+    "passed": true,
+    "holdout_subjects_evaluated": 0
+  },
   "v9_ensemble": {
     "report_sha256": "f036be6b284eae34404e6c454afa4b9720b3116992106b5a58322b1cf68fbe3d",
     "mean_subject_macro_dice": 0.8306509760526394,
@@ -69,7 +75,6 @@
   },
   "launch_ready": false,
   "launch_blockers": [
-    "run real-CUDA forward-backward smoke for generalized_dice_focal and weak_tissue_balanced sampling",
     "run action-bound remote preflight with clean exact commit, free GPU 1, keyring reference and fresh control stores"
   ]
 }
