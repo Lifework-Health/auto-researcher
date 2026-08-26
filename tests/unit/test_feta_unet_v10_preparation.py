@@ -158,6 +158,7 @@ def test_v10_static_preflight_is_complete_but_fail_closed():
 
 
 def test_v10_policy_validates_mechanism_coverage():
+    assert _options()["campaign_prior_results"] == 30
     policy = V10PortfolioPolicy.from_runtime(
         TaskRuntimeContext(task_options=_options())
     )

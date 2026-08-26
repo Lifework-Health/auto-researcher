@@ -91,7 +91,7 @@ runtime:
     campaign_duration_seconds: 129600
     campaign_finalisation_reserve_seconds: 28800
     campaign_reporting_reserve_seconds: 1800
-    campaign_prior_results: 40
+    campaign_prior_results: 30
     openevolve_fidelity: 30
     continue_after_failed_candidate: true
     maximum_peak_gpu_memory_bytes: 47244640256

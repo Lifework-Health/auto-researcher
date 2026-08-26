@@ -126,6 +126,7 @@ def static_v10_preflight(
         or options.get("planner_allocation_mode")
         != "deterministic_campaign_portfolio_compiler"
         or options.get("v10_fidelity_ladder") != [30, 50, 100, 150]
+        or options.get("campaign_prior_results") != 30
         or policy.fidelity_targets != V10_FIDELITY_TARGETS
         or agents.get("budget", {}).get(
             "maximum_research_director_valid_decisions_total"
