@@ -1,14 +1,15 @@
 """Hypothesis agent invocation."""
 
 import math
+from collections.abc import Mapping
 
 from auto_researcher.agents.context import AgentContextAssemblyError
 from auto_researcher.agents.live.base import LiveAgentExecutionError
+from auto_researcher.agents.models import HypothesisAgentContext
 from auto_researcher.agents.telemetry import (
     apply_agent_telemetry,
     consume_agent_telemetry,
 )
-from auto_researcher.agents.models import HypothesisAgentContext
 from auto_researcher.contracts.enums import (
     EvidenceStatus,
     GroundingStatus,
@@ -123,10 +124,77 @@ def _deterministic_prior_hypothesis_fallback(
     )
 
 
+def _deterministic_portfolio_hypothesis(
+    state: ResearchState,
+    dependencies: RuntimeDependencies,
+) -> Hypothesis | None:
+    """Represent a frozen confirmation portfolio without an unnecessary LLM call."""
+
+    options = dependencies.runtime_context.task_options
+    portfolio = options.get("campaign_portfolio")
+    if options.get(
+        "hypothesis_mode"
+    ) != "deterministic_campaign_portfolio_confirmation" or not isinstance(
+        portfolio, Mapping
+    ):
+        return None
+    roots = portfolio.get("roots")
+    if not isinstance(roots, (list, tuple)) or not roots:
+        raise ValueError("deterministic_campaign_portfolio_roots_invalid")
+    try:
+        configuration = dependencies.task.normalise_configuration(dict(roots[0]))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("deterministic_campaign_portfolio_roots_invalid") from exc
+    identity = payload_hash(
+        {
+            "run_id": state["run_id"],
+            "cycle": state["cycle"],
+            "portfolio_version": portfolio.get("version"),
+            "contract_id": state["contract"].contract_id,
+        }
+    )
+    return Hypothesis(
+        hypothesis_id=f"hyp-confirmation-{identity[:20]}",
+        statement=(
+            "A frozen candidate remains eligible for prespecified five-fold "
+            "development confirmation."
+        ),
+        rationale=(
+            "The task-owned portfolio, rather than an agent proposal, determines "
+            "the next immutable candidate and prevents post-selection search."
+        ),
+        predicted_subspace=configuration,
+        expected_observation=(
+            f"{state['contract'].primary_metric} is measured over all development folds."
+        ),
+        falsification_condition=(
+            f"{state['contract'].primary_metric} cannot be measured with complete "
+            "out-of-fold coverage."
+        ),
+        evidence_references=(state["contract"].contract_id,),
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.REAL,
+        proposal_source=ProposalSource.DETERMINISTIC,
+        grounding_status=GroundingStatus.CONTRACT_GROUNDED,
+        prompt_version="deterministic-campaign-confirmation-v1",
+    )
+
+
 def generate_hypothesis(
     state: ResearchState,
     dependencies: RuntimeDependencies,
 ) -> dict:
+    deterministic = _deterministic_portfolio_hypothesis(state, dependencies)
+    if deterministic is not None:
+        # No model request is reserved or consumed for prespecified confirmation.
+        return {
+            "active_hypothesis": deterministic,
+            "hypothesis_failure_code": None,
+            "hypothesis_failure_stage": None,
+            "hypothesis_fallback_code": None,
+            "executed_nodes": ["generate_hypothesis"],
+        }
     context: HypothesisAgentContext | None = None
     stage = "context_assembly"
     try:

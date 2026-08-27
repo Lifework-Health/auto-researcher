@@ -86,6 +86,7 @@ FoldExecutor = Callable[
 
 MAX_CONSECUTIVE_AMP_SKIPS = 16
 SEARCH_RUNNER_ID = "feta-unet-family-fold0-development-runner-v6"
+CONFIRMATION_RUNNER_ID = "feta-unet-family-five-fold-development-runner-v1"
 SEARCH_DATA_LOADER_ID = "monai-unet-family-weak-tissue-sampling-loader-v5"
 
 
@@ -97,6 +98,8 @@ def _amp_step_was_skipped(scale_before: float, scale_after: float) -> bool:
 
 def _runner_id(configuration: FeTAUNetDirectConfiguration) -> str:
     if hasattr(configuration, "model_variant"):
+        if configuration.profile == "five_fold_confirmation":
+            return CONFIRMATION_RUNNER_ID
         return SEARCH_RUNNER_ID
     return runner_id(configuration.profile)
 
@@ -111,7 +114,7 @@ def _is_progress_milestone(
     configuration: FeTAUNetDirectConfiguration, epoch: int
 ) -> bool:
     return (
-        configuration.profile == "development_baseline"
+        configuration.profile in {"development_baseline", "five_fold_confirmation"}
         and epoch in configuration.progress_milestone_epochs
     )
 
@@ -639,7 +642,7 @@ def select_profile_folds(
     selected = []
     fold_ids = (
         tuple(range(5))
-        if configuration.profile == "frozen_baseline"
+        if configuration.profile in {"frozen_baseline", "five_fold_confirmation"}
         else (configuration.smoke_fold,)
     )
     for fold in fold_ids:
@@ -690,9 +693,10 @@ def orchestrate_profile_folds(
     }
     if observed != expected:
         raise ValueError("feta_unet_oof_coverage_invalid")
-    if configuration.profile == "frozen_baseline" and expected != set(
-        partition.development
-    ):
+    if configuration.profile in {
+        "frozen_baseline",
+        "five_fold_confirmation",
+    } and expected != set(partition.development):
         raise ValueError("feta_unet_oof_coverage_invalid")
     return tuple(results)
 
@@ -777,8 +781,27 @@ def run_profile(
     # Subject rows are needed inside the protected runner for correct macro
     # aggregation, but they must never cross into the shareable result bundle.
     aggregate.pop("subject_metrics", None)
+    confirmation_metrics: dict[str, Any] = {}
+    if configuration.profile == "five_fold_confirmation":
+        novel_results = tuple(result for result in fold_results if result.fold != 0)
+        novel_subject_count = sum(
+            len(result.subject_metrics) for result in novel_results
+        )
+        if novel_subject_count != 54:
+            raise ValueError("feta_unet_confirmation_oof_coverage_invalid")
+        confirmation_metrics = {
+            "selection_fold": 0,
+            "novel_confirmation_folds": [1, 2, 3, 4],
+            "novel_confirmation_subject_count": novel_subject_count,
+            "novel_confirmation_mean_subject_macro_dice": sum(
+                result.validation_score * len(result.subject_metrics)
+                for result in novel_results
+            )
+            / novel_subject_count,
+        }
     return {
         **aggregate,
+        **confirmation_metrics,
         "architecture_identity": fold_results[0].architecture_identity,
         "architecture_trainable_parameters": fold_results[
             0

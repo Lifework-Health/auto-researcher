@@ -57,7 +57,10 @@ from auto_researcher.tasks.feta_unet_direct.model import (
     TRAINABLE_PARAMETER_COUNT,
     architecture_identity,
 )
-from auto_researcher.tasks.feta_unet_direct.runner import run_profile
+from auto_researcher.tasks.feta_unet_direct.runner import (
+    CONFIRMATION_RUNNER_ID,
+    run_profile,
+)
 from auto_researcher.tasks.models import (
     DatasetManifest,
     ExperimentMetadata,
@@ -311,10 +314,12 @@ class FeTAUNetDirectEvaluator:
 
         scientific_baseline = configuration.profile == "frozen_baseline"
         development_baseline = configuration.profile == "development_baseline"
+        five_fold_confirmation = configuration.profile == "five_fold_confirmation"
         validation_scope = {
             "engineering_smoke": "single-subject-engineering-smoke",
             "development_baseline": "fold0-development-oof",
             "frozen_baseline": "five-fold-development-oof",
+            "five_fold_confirmation": "five-fold-confirmation-oof",
         }[configuration.profile]
         expected_architecture_identity = architecture_identity(configuration)
         reported_parameter_count = metrics.get(
@@ -401,6 +406,15 @@ class FeTAUNetDirectEvaluator:
             "development_baseline",
             "validation_scope",
         }
+        if five_fold_confirmation:
+            required_metrics.update(
+                {
+                    "selection_fold",
+                    "novel_confirmation_folds",
+                    "novel_confirmation_subject_count",
+                    "novel_confirmation_mean_subject_macro_dice",
+                }
+            )
         if not required_metrics.issubset(metrics):
             return self._failure(experiment, "feta_unet_metrics_incomplete")
         try:
@@ -411,6 +425,9 @@ class FeTAUNetDirectEvaluator:
         if scientific_baseline:
             expected_folds, expected_subjects = 5, 68
             expected_runner = BASELINE_RUNNER_ID
+        elif five_fold_confirmation:
+            expected_folds, expected_subjects = 5, 68
+            expected_runner = CONFIRMATION_RUNNER_ID
         elif development_baseline:
             expected_folds, expected_subjects = 1, 14
             expected_runner = self.development_runner_identity
@@ -451,6 +468,18 @@ class FeTAUNetDirectEvaluator:
             "development_identity_correct": metrics["development_baseline"]
             is development_baseline,
             "validation_scope_exact": metrics["validation_scope"] == validation_scope,
+            "confirmation_scope_exact": (
+                metrics.get("selection_fold") == 0
+                and metrics.get("novel_confirmation_folds") == [1, 2, 3, 4]
+                and metrics.get("novel_confirmation_subject_count") == 54
+                and math.isfinite(
+                    float(
+                        metrics.get("novel_confirmation_mean_subject_macro_dice", "nan")
+                    )
+                )
+                if five_fold_confirmation
+                else True
+            ),
         }
         success = all(constraint_results.values())
         result = EvaluationResult(

@@ -24,19 +24,6 @@ from auto_researcher.search.optuna.models import (
 )
 from auto_researcher.search.optuna.narrowing import narrow_study_spec
 from auto_researcher.search.protocols import SearchCapability
-from auto_researcher.tasks.feta_unet_search.openevolve import (
-    FeTAUNetEvolvableComponent,
-    UNetTrainingPolicy,
-    default_openevolve_configuration,
-    policy_from_configuration,
-)
-from auto_researcher.tasks.feta_unet_search.portfolio import (
-    V7_MECHANISM_PORTFOLIO_VERSION,
-    V8_PORTFOLIO_VERSION,
-    apply_portfolio_policy,
-    apply_v7_deadline_graduation_policy,
-    apply_v8_deadline_graduation_policy,
-)
 from auto_researcher.tasks.feta_seg.manifests import (
     DATASET_RELEASE,
     EXPECTED_MANIFEST_HASH,
@@ -55,8 +42,8 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     CONFIGURATION_SCHEMA_VERSION,
     DICE_WEIGHT_BOUNDS,
     DROPOUT_BOUNDS,
-    FIDELITY_LEVELS,
     FEATURE_WIDTH_PROFILES,
+    FIDELITY_LEVELS,
     LEARNING_RATE_BOUNDS,
     LEARNING_RATE_SCHEDULES,
     LOSS_VARIANTS,
@@ -76,9 +63,9 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V7_CONFIGURATION_SCHEMA_VERSION,
     V7_DEEP_SUPERVISION_HEADS,
     V7_KERNEL_PROFILES,
-    V7_MECHANISM_FEATURE_PROFILES,
-    V7_MAXIMUM_TRAINABLE_PARAMETERS,
     V7_MAXIMUM_PEAK_GPU_MEMORY_BYTES,
+    V7_MAXIMUM_TRAINABLE_PARAMETERS,
+    V7_MECHANISM_FEATURE_PROFILES,
     V7_MINIMUM_TRAINABLE_PARAMETERS,
     V7_OPTUNA_FEATURE_PROFILES,
     V8_ARCHITECTURE_FAMILY_ID,
@@ -105,6 +92,9 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     V10_ARCHITECTURE_FAMILY_ID,
     V10_CAMPAIGN_ARCHITECTURE_MODE,
     V10_CONFIGURATION_SCHEMA_VERSION,
+    V11_ARCHITECTURE_FAMILY_ID,
+    V11_CAMPAIGN_ARCHITECTURE_MODE,
+    V11_CONFIGURATION_SCHEMA_VERSION,
     WEIGHT_DECAY_BOUNDS,
     FeTAUNetSearchConfiguration,
     baseline_search_configuration,
@@ -116,6 +106,19 @@ from auto_researcher.tasks.feta_unet_search.evaluator import (
     SCIENTIFIC_ID,
     FeTAUNetSearchEvaluator,
     evaluator_code_version,
+)
+from auto_researcher.tasks.feta_unet_search.openevolve import (
+    FeTAUNetEvolvableComponent,
+    UNetTrainingPolicy,
+    default_openevolve_configuration,
+    policy_from_configuration,
+)
+from auto_researcher.tasks.feta_unet_search.portfolio import (
+    V7_MECHANISM_PORTFOLIO_VERSION,
+    V8_PORTFOLIO_VERSION,
+    apply_portfolio_policy,
+    apply_v7_deadline_graduation_policy,
+    apply_v8_deadline_graduation_policy,
 )
 from auto_researcher.tasks.feta_unet_search.verification import (
     FeTAUNetSearchVerificationPolicy,
@@ -165,6 +168,7 @@ LEGACY_ARCHITECTURE_FAMILY_ID = "monai-unet-3d-bounded-family-v4"
 V8_SCIENTIFIC_ID = "feta-unet-fold0-v8-branch-exploitation-macro-dice-v1"
 V9_SCIENTIFIC_ID = "feta-unet-fold0-v9-macro-dice-v1"
 V10_SCIENTIFIC_ID = "feta-unet-fold0-v10-mechanism-macro-dice-v1"
+V11_SCIENTIFIC_ID = "feta-unet-five-fold-confirmation-macro-dice-v1"
 
 
 class FeTAUNetSearchTask(FeTAUNetDirectTask):
@@ -211,12 +215,18 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             contract.constraints.get("architecture_search_mode")
             == V10_CAMPAIGN_ARCHITECTURE_MODE
         )
+        v11_mode = (
+            contract.constraints.get("architecture_search_mode")
+            == V11_CAMPAIGN_ARCHITECTURE_MODE
+        )
         if (
             contract.evaluator_id != EVALUATOR_ID
             or contract.primary_metric != "mean_subject_macro_dice"
             or contract.objective_version
             != (
-                V10_SCIENTIFIC_ID
+                V11_SCIENTIFIC_ID
+                if v11_mode
+                else V10_SCIENTIFIC_ID
                 if v10_mode
                 else V9_SCIENTIFIC_ID
                 if v9_mode
@@ -226,7 +236,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             )
             or contract.task_constraints_version
             != (
-                V10_CONFIGURATION_SCHEMA_VERSION
+                V11_CONFIGURATION_SCHEMA_VERSION
+                if v11_mode
+                else V10_CONFIGURATION_SCHEMA_VERSION
                 if v10_mode
                 else V9_CONFIGURATION_SCHEMA_VERSION
                 if v9_mode
@@ -253,7 +265,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             "split_hash": EXPECTED_SPLIT_HASH,
             "fold_hash": EXPECTED_FOLD_HASH,
             "architecture_identity": (
-                V10_ARCHITECTURE_FAMILY_ID
+                V11_ARCHITECTURE_FAMILY_ID
+                if v11_mode
+                else V10_ARCHITECTURE_FAMILY_ID
                 if v10_mode
                 else V9_ARCHITECTURE_FAMILY_ID
                 if v9_mode
@@ -266,7 +280,9 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 )
             ),
             "architecture_model_variants": (
-                ["dynunet"]
+                ["basic_unet", "dynunet"]
+                if v11_mode
+                else ["dynunet"]
                 if v10_mode
                 else ["dynunet", "attention_unet", "unetr", "swin_unetr"]
                 if v9_mode
@@ -285,6 +301,8 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     *V9_TRANSFORMER_FEATURE_PROFILES,
                 )
                 if v9_mode
+                else ("baseline", "v8_dyn_balanced_5", "v8_dyn_compact_5")
+                if v11_mode
                 else tuple(V8_DYNUNET_FEATURE_PROFILES)
                 if v10_mode
                 else (
@@ -303,7 +321,11 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 )
             ),
             "holdout_policy": "sealed-no-evaluation",
-            "search_scope": "development-fold-0-only",
+            "search_scope": (
+                "development-five-fold-confirmation-only"
+                if v11_mode
+                else "development-fold-0-only"
+            ),
         }
         if any(
             contract.constraints.get(key) != value for key, value in expected.items()
@@ -353,6 +375,17 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             != V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES
             or contract.constraints.get("external_pretraining") != "prohibited"
             or contract.constraints.get("weak_tissue_labels") != [1, 2]
+        ):
+            raise ValueError("feta_unet_search_scientific_identity_mismatch")
+        if v11_mode and (
+            contract.constraints.get("architecture_trainable_parameter_minimum")
+            != 5_000_000
+            or contract.constraints.get("architecture_trainable_parameter_maximum")
+            != V8_MAXIMUM_TRAINABLE_PARAMETERS
+            or contract.constraints.get("maximum_peak_gpu_memory_bytes")
+            != V8_MAXIMUM_PEAK_GPU_MEMORY_BYTES
+            or contract.constraints.get("external_pretraining") != "prohibited"
+            or contract.allowed_search_types != frozenset({SearchType.DIRECT})
         ):
             raise ValueError("feta_unet_search_scientific_identity_mismatch")
 
@@ -954,6 +987,10 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
         else:
             fidelity = request.search_space.get("maximum_epochs", 25)
             candidates = 1
+            if request.search_space.get("profile") == "five_fold_confirmation":
+                if request.search_space.get("fold_count") != 5:
+                    raise ValueError("feta_unet_search_validation_scope_invalid")
+                candidates = 5
         if (
             isinstance(fidelity, bool)
             or not isinstance(fidelity, int)
@@ -1019,7 +1056,22 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             contract.constraints.get("architecture_search_mode")
             == V10_CAMPAIGN_ARCHITECTURE_MODE
         )
-        if v10_mode:
+        v11_mode = (
+            contract.constraints.get("architecture_search_mode")
+            == V11_CAMPAIGN_ARCHITECTURE_MODE
+        )
+        if v11_mode:
+            agent_model_variants = ("basic_unet", "dynunet")
+            direct_feature_profiles = (
+                "baseline",
+                "v8_dyn_balanced_5",
+                "v8_dyn_compact_5",
+            )
+            all_agent_feature_profiles = direct_feature_profiles
+            architecture_budgets = ("legacy", V8_DYNUNET_ARCHITECTURE_BUDGET)
+            openevolve_model_variants = ()
+            architecture_identity_value = V11_ARCHITECTURE_FAMILY_ID
+        elif v10_mode:
             agent_model_variants = ("dynunet",)
             direct_feature_profiles = tuple(V8_DYNUNET_FEATURE_PROFILES)
             all_agent_feature_profiles = direct_feature_profiles
@@ -1086,7 +1138,10 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
             display_name="FeTA U-Net Family Development Search",
             domain="fetal MRI segmentation",
             task_description=(
-                "Improve a bounded MONAI U-Net family through fold-0 "
+                "Confirm a frozen, diverse MONAI U-Net panel over all five "
+                "development folds without further search."
+                if v11_mode
+                else "Improve a bounded MONAI U-Net family through fold-0 "
                 "micro-architecture and training-policy experiments."
             ),
             safe_scientific_vocabulary=(
@@ -1105,29 +1160,54 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "training fidelity",
             ),
             primary_metric_description=(
-                "Mean subject-level macro Dice over labels 1-7 on 14 fold-0 "
+                "Mean out-of-fold subject-level macro Dice over labels 1-7 on "
+                "all 68 development subjects."
+                if v11_mode
+                else "Mean subject-level macro Dice over labels 1-7 on 14 fold-0 "
                 "validation subjects."
             ),
             scientific_constraint_summary=(
-                "fold 0 only",
+                "five-fold development confirmation" if v11_mode else "fold 0 only",
                 "holdout sealed",
                 "fixed preprocessing and evaluation",
-                "bounded U-Net family, micro-architecture and training-policy search",
+                (
+                    "four frozen cross-campaign configurations; DIRECT only"
+                    if v11_mode
+                    else "bounded U-Net family, micro-architecture and training-policy search"
+                ),
             ),
             dataset_summary={
                 "dataset_release": DATASET_RELEASE,
-                "training_subjects": 54,
-                "validation_subjects": 14,
+                "training_subjects": 68 if v11_mode else 54,
+                "validation_subjects": 68 if v11_mode else 14,
                 "holdout_subjects_evaluated": 0,
                 "contains_medical_images": True,
             },
             available_search_types=(
-                SearchType.DIRECT,
-                SearchType.OPTUNA,
-                SearchType.OPENEVOLVE,
+                (SearchType.DIRECT,)
+                if v11_mode
+                else (
+                    SearchType.DIRECT,
+                    SearchType.OPTUNA,
+                    SearchType.OPENEVOLVE,
+                )
             ),
             direct_configuration_schema={
-                "maximum_epochs": [25] if v6_mode or v7_mode else list(FIDELITY_LEVELS),
+                "maximum_epochs": (
+                    [150]
+                    if v11_mode
+                    else [25]
+                    if v6_mode or v7_mode
+                    else list(FIDELITY_LEVELS)
+                ),
+                **(
+                    {
+                        "profile": ["five_fold_confirmation"],
+                        "fold_count": [5],
+                    }
+                    if v11_mode
+                    else {}
+                ),
                 "model_variant": list(agent_model_variants),
                 "feature_width": list(direct_feature_profiles),
                 "architecture_budget": list(architecture_budgets),
@@ -1138,7 +1218,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                         "residual_blocks": [False, True],
                         "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS),
                     }
-                    if v7_mode or v8_mode or v9_mode or v10_mode
+                    if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                     else {}
                 ),
                 "activation": list(ACTIVATIONS),
@@ -1165,13 +1245,13 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "model_variant": list(agent_model_variants),
                 "feature_width": list(direct_feature_profiles),
                 "kernel_profile": list(V7_KERNEL_PROFILES)
-                if v7_mode or v8_mode or v9_mode or v10_mode
+                if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                 else ["basic"],
                 "residual_blocks": [False, True]
-                if v7_mode or v8_mode or v9_mode or v10_mode
+                if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                 else [False],
                 "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS)
-                if v7_mode or v8_mode or v9_mode or v10_mode
+                if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                 else [0],
                 "stage_block_profile": list(V8_STAGE_BLOCK_PROFILES)
                 if v8_mode
@@ -1199,22 +1279,24 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                     "model_variant": list(openevolve_model_variants),
                     "feature_width": list(all_agent_feature_profiles),
                     "features": "five or six integer stage widths"
-                    if v7_mode or v8_mode or v9_mode or v10_mode
+                    if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                     else "six integer channel widths",
-                    "architecture_budget": [V8_DYNUNET_ARCHITECTURE_BUDGET]
+                    "architecture_budget": list(architecture_budgets)
+                    if v11_mode
+                    else [V8_DYNUNET_ARCHITECTURE_BUDGET]
                     if v9_mode or v10_mode
                     else [V7_ARCHITECTURE_BUDGET]
                     if v8_mode
                     else list(architecture_budgets),
                     "upsample": ["deconv"] if v7_mode else list(V6_UPSAMPLE_MODES),
                     "kernel_profile": list(V7_KERNEL_PROFILES)
-                    if v7_mode or v8_mode or v9_mode or v10_mode
+                    if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                     else ["basic"],
                     "residual_blocks": [False, True]
-                    if v7_mode or v8_mode or v9_mode or v10_mode
+                    if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                     else [False],
                     "deep_supervision_heads": list(V7_DEEP_SUPERVISION_HEADS)
-                    if v7_mode or v8_mode or v9_mode or v10_mode
+                    if v7_mode or v8_mode or v9_mode or v10_mode or v11_mode
                     else [0],
                     "stage_block_profile": list(V8_STAGE_BLOCK_PROFILES)
                     if v8_mode
@@ -1236,7 +1318,7 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 "split_hash": EXPECTED_SPLIT_HASH,
                 "fold_identity": FOLD_ID,
                 "fold_hash": EXPECTED_FOLD_HASH,
-                "fold": 0,
+                "fold": "all-development-folds" if v11_mode else 0,
                 "optimiser_family": OPTIMISER_ID,
                 "campaign_seconds_per_epoch": runtime_context.task_options.get(
                     "campaign_seconds_per_epoch", 120.0
@@ -1249,7 +1331,13 @@ class FeTAUNetSearchTask(FeTAUNetDirectTask):
                 ),
             },
             task_limitations=(
-                "No holdout evaluation, unbounded topology mutation, multiple folds or multiple GPUs.",
+                (
+                    "No holdout evaluation, configuration changes or search; "
+                    "all five development folds only."
+                    if v11_mode
+                    else "No holdout evaluation, unbounded topology mutation, "
+                    "multiple folds or multiple GPUs."
+                ),
             ),
             safety_notes=(
                 "Raw MRI, masks, subject rows, predictions and checkpoint bytes are excluded from model context.",

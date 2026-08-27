@@ -1,0 +1,76 @@
+# Frozen V11 confirmation design. This template is deliberately not launchable:
+# remote artifact binding, real-CUDA smoke and an action-bound preflight remain.
+task: {id: feta_unet_search, version: "1.0"}
+
+agents:
+  mode: live
+  provider: anthropic
+  model_id: claude-sonnet-4-5-20250929
+  credential: {logical_name: anthropic_api_key, provider: linux_kernel_keyring, provider_identifier: auto-researcher/anthropic-api-key, version: null, required: true}
+  pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+  budget:
+    maximum_hypothesis_calls_per_cycle: 1
+    maximum_planner_calls_per_cycle: 1
+    maximum_attempts_per_agent_call: 1
+    maximum_input_context_size: 32000
+    maximum_output_tokens: 1024
+    maximum_cost_per_call: 0.25
+    maximum_total_model_calls: 1
+  hypothesis: {temperature: 0.0, maximum_output_tokens: 1024, timeout_seconds: 60, maximum_attempts: 1, maximum_cost_per_call: 0.25, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+  planner: {temperature: 0.0, maximum_output_tokens: 1024, timeout_seconds: 60, maximum_attempts: 1, maximum_cost_per_call: 0.25, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+
+experiment: &v11_v8_champion
+  profile: five_fold_confirmation
+  fold_count: 5
+  maximum_epochs: 150
+  model_variant: dynunet
+  feature_width: v8_dyn_balanced_5
+  architecture_budget: dynunet-15m-150m-v1
+  upsample: deconv
+  kernel_profile: large_front
+  residual_blocks: true
+  deep_supervision_heads: 1
+  activation: ReLU
+  norm: instance
+  optimizer: AdamW
+  lr_schedule: cosine
+  loss_variant: dice_focal
+  learning_rate: 0.0001129297960052267
+  weight_decay: 0.00001516410659573061
+  dropout: 0.022853564045494074
+  dice_weight: 1.3287448814674725
+  positive_negative_ratio: "2:1"
+  sampling_policy: foreground
+  augmentation_policy: combined
+
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: /absolute/path/to/runtime/output
+  workspace_dir: /absolute/path/to/runtime/workspace
+  environment: {CUDA_VISIBLE_DEVICES: "1"}
+  options:
+    protected_storage_acknowledged: true
+    workspace_namespace: feta_unet_campaign_v11
+    shared_preprocessing_cache: true
+    campaign_duration_seconds: 259200
+    campaign_finalisation_reserve_seconds: 21600
+    campaign_reporting_reserve_seconds: 1800
+    campaign_prior_results: 4
+    campaign_seconds_per_epoch: 60.0
+    campaign_seconds_per_epoch_by_model_variant: {basic_unet: 60.0, unet_plain: 60.0, unet_residual: 60.0, dynunet: 60.0}
+    continue_after_failed_candidate: false
+    maximum_peak_gpu_memory_bytes: 47244640256
+    launch_gate: blocked_pending_v11_action_preflight
+    sealed_test_gate: blocked_until_five_fold_models_and_ensemble_frozen
+    planner_allocation_mode: deterministic_campaign_portfolio_compiler
+    hypothesis_mode: deterministic_campaign_portfolio_confirmation
+    v11_bound_evidence_file: /absolute/path/to/v11-bound-evidence.json
+    v11_confirmation_scope: five-fold-development-oof
+    v11_fixed_roots: &v11_fixed_roots
+      - *v11_v8_champion
+      - {profile: five_fold_confirmation, fold_count: 5, maximum_epochs: 150, model_variant: basic_unet, feature_width: baseline, architecture_budget: legacy, upsample: deconv, kernel_profile: basic, residual_blocks: false, deep_supervision_heads: 0, activation: PReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", sampling_policy: foreground, augmentation_policy: intensity}
+      - {profile: five_fold_confirmation, fold_count: 5, maximum_epochs: 150, model_variant: dynunet, feature_width: v8_dyn_compact_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", sampling_policy: foreground, augmentation_policy: combined}
+      - {profile: five_fold_confirmation, fold_count: 5, maximum_epochs: 150, model_variant: basic_unet, feature_width: baseline, architecture_budget: legacy, upsample: deconv, kernel_profile: basic, residual_blocks: false, deep_supervision_heads: 0, activation: LeakyReLU, norm: instance, optimizer: AdamW, lr_schedule: constant, loss_variant: dice_ce, learning_rate: 0.0002571864984165606, weight_decay: 0.0000062147089411317485, dropout: 0.020113868409613763, dice_weight: 1.1956546747501025, positive_negative_ratio: "1:1", sampling_policy: foreground, augmentation_policy: reference_light}
+    campaign_portfolio:
+      version: feta-unet-v11-five-fold-confirmation-4-v1
+      roots: *v11_fixed_roots

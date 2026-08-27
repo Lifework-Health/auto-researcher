@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from auto_researcher.contracts.enums import (
-    EvidenceStatus,
     EventType,
+    EvidenceStatus,
     ProposalSource,
     SearchType,
 )
@@ -49,6 +49,7 @@ V7_MECHANISM_PORTFOLIO_VERSION = "feta-basicunet-structural-tree-4-12-8-2-8-4-2-
 V8_PORTFOLIO_VERSION = "feta-unet-v8-exploitation-44-30-18-8-4-3-v1"
 V9_PORTFOLIO_VERSION = "feta-unet-v9-mixed-24-12-7-4-3-v1"
 V10_PORTFOLIO_VERSION = "feta-unet-v10-dynunet-mechanism-20-10-6-4-v1"
+V11_PORTFOLIO_VERSION = "feta-unet-v11-five-fold-confirmation-4-v1"
 V9_FIDELITY_TARGETS = {15: 24, 30: 12, 50: 7, 100: 4, 150: 3}
 V10_FIDELITY_TARGETS = {30: 20, 50: 10, 100: 6, 150: 4}
 V8_FIDELITY_TARGETS = {10: 44, 15: 30, 25: 18, 50: 8, 100: 4, 150: 3}
@@ -105,7 +106,7 @@ class PortfolioPolicy:
     direct_screening_configurations: tuple[dict[str, Any], ...]
 
     @classmethod
-    def from_runtime(cls, context: TaskRuntimeContext) -> "PortfolioPolicy | None":
+    def from_runtime(cls, context: TaskRuntimeContext) -> PortfolioPolicy | None:
         raw = context.task_options.get("campaign_portfolio")
         if raw is None:
             return None
@@ -179,7 +180,7 @@ class TreePortfolioPolicy:
     direct_root_configurations: tuple[dict[str, Any], ...]
 
     @classmethod
-    def from_runtime(cls, context: TaskRuntimeContext) -> "TreePortfolioPolicy":
+    def from_runtime(cls, context: TaskRuntimeContext) -> TreePortfolioPolicy:
         raw = context.task_options.get("campaign_portfolio")
         if not isinstance(raw, dict) or raw.get("version") not in {
             TREE_PORTFOLIO_VERSION,
@@ -308,7 +309,7 @@ class V7MechanismPortfolioPolicy:
     req11_diagnostic: dict[str, Any]
 
     @classmethod
-    def from_runtime(cls, context: TaskRuntimeContext) -> "V7MechanismPortfolioPolicy":
+    def from_runtime(cls, context: TaskRuntimeContext) -> V7MechanismPortfolioPolicy:
         raw = context.task_options.get("campaign_portfolio")
         if (
             not isinstance(raw, dict)
@@ -457,7 +458,7 @@ class V8PortfolioPolicy:
     local_optuna_allocation: dict[str, int]
 
     @classmethod
-    def from_runtime(cls, context: TaskRuntimeContext) -> "V8PortfolioPolicy":
+    def from_runtime(cls, context: TaskRuntimeContext) -> V8PortfolioPolicy:
         raw = context.task_options.get("campaign_portfolio")
         if not isinstance(raw, dict) or raw.get("version") != V8_PORTFOLIO_VERSION:
             raise ValueError("feta_unet_v8_portfolio_invalid")
@@ -587,7 +588,7 @@ class V9PortfolioPolicy:
     fidelity_targets: dict[int, int]
 
     @classmethod
-    def from_runtime(cls, context: TaskRuntimeContext) -> "V9PortfolioPolicy":
+    def from_runtime(cls, context: TaskRuntimeContext) -> V9PortfolioPolicy:
         raw = context.task_options.get("campaign_portfolio")
         if not isinstance(raw, dict) or raw.get("version") != V9_PORTFOLIO_VERSION:
             raise ValueError("feta_unet_v9_portfolio_invalid")
@@ -646,7 +647,7 @@ class V10PortfolioPolicy:
     fidelity_targets: dict[int, int]
 
     @classmethod
-    def from_runtime(cls, context: TaskRuntimeContext) -> "V10PortfolioPolicy":
+    def from_runtime(cls, context: TaskRuntimeContext) -> V10PortfolioPolicy:
         raw = context.task_options.get("campaign_portfolio")
         if not isinstance(raw, dict) or raw.get("version") != V10_PORTFOLIO_VERSION:
             raise ValueError("feta_unet_v10_portfolio_invalid")
@@ -699,6 +700,54 @@ class V10PortfolioPolicy:
             openevolve_novel_children=children,
             fidelity_targets=targets,
         )
+
+
+@dataclass(frozen=True)
+class V11PortfolioPolicy:
+    """Immutable four-model, five-fold development confirmation panel."""
+
+    roots: tuple[dict[str, Any], ...]
+
+    @classmethod
+    def from_runtime(cls, context: TaskRuntimeContext) -> V11PortfolioPolicy:
+        raw = context.task_options.get("campaign_portfolio")
+        if not isinstance(raw, dict) or raw.get("version") != V11_PORTFOLIO_VERSION:
+            raise ValueError("feta_unet_v11_portfolio_invalid")
+        try:
+            roots = tuple(dict(item) for item in raw["roots"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("feta_unet_v11_portfolio_invalid") from exc
+        if len(roots) != 4:
+            raise ValueError("feta_unet_v11_portfolio_invalid")
+        validated: list[dict[str, Any]] = []
+        identities: set[str] = set()
+        variants: dict[str, int] = {}
+        feature_widths: dict[str, int] = {}
+        for raw_root in roots:
+            candidate = FeTAUNetSearchConfiguration.model_validate(raw_root)
+            identity = trajectory_identity(candidate)
+            variants[candidate.model_variant] = (
+                variants.get(candidate.model_variant, 0) + 1
+            )
+            feature_widths[candidate.feature_width] = (
+                feature_widths.get(candidate.feature_width, 0) + 1
+            )
+            if (
+                candidate.profile != "five_fold_confirmation"
+                or candidate.fold_count != 5
+                or candidate.maximum_epochs != 150
+                or identity in identities
+            ):
+                raise ValueError("feta_unet_v11_root_invalid")
+            identities.add(identity)
+            validated.append(candidate.model_dump(mode="json"))
+        if variants != {"basic_unet": 2, "dynunet": 2} or feature_widths != {
+            "baseline": 2,
+            "v8_dyn_balanced_5": 1,
+            "v8_dyn_compact_5": 1,
+        }:
+            raise ValueError("feta_unet_v11_diversity_panel_invalid")
+        return cls(roots=tuple(validated))
 
 
 @dataclass(frozen=True)
@@ -2448,6 +2497,44 @@ def apply_v10_portfolio_policy(
     return None
 
 
+def apply_v11_portfolio_policy(
+    original: SearchRequest,
+    *,
+    run_id: str,
+    cycle: int,
+    events: tuple[DecisionEvent, ...],
+    runtime_context: TaskRuntimeContext,
+) -> SearchRequest | None:
+    """Run each frozen candidate once across all five development folds."""
+
+    policy = V11PortfolioPolicy.from_runtime(runtime_context)
+    completed = _unique_at_fidelity(_evidence(events), 150)
+    for index, configuration in enumerate(policy.roots):
+        candidate = FeTAUNetSearchConfiguration.model_validate(configuration)
+        identity = trajectory_identity(candidate)
+        if identity in completed:
+            continue
+        return _request(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            stage="v11-five-fold-confirmation",
+            search_type=SearchType.DIRECT,
+            search_space=candidate.model_dump(mode="json"),
+            experiment_budget=1,
+            rationale=(
+                f"{V11_PORTFOLIO_VERSION}: confirm frozen panel member "
+                f"{index + 1}/4 over all five development folds."
+            ),
+            evidence_references=(
+                f"v11-panel-member:{index + 1}",
+                "v11-scope:five-fold-development-oof",
+                "v11-holdout:sealed",
+            ),
+        )
+    return None
+
+
 def apply_v9_portfolio_policy(
     original: SearchRequest,
     *,
@@ -3030,6 +3117,17 @@ def apply_portfolio_policy(
     runtime_context: TaskRuntimeContext,
 ) -> SearchRequest | None:
     raw_policy = runtime_context.task_options.get("campaign_portfolio")
+    if (
+        isinstance(raw_policy, dict)
+        and raw_policy.get("version") == V11_PORTFOLIO_VERSION
+    ):
+        return apply_v11_portfolio_policy(
+            original,
+            run_id=run_id,
+            cycle=cycle,
+            events=events,
+            runtime_context=runtime_context,
+        )
     if (
         isinstance(raw_policy, dict)
         and raw_policy.get("version") == V10_PORTFOLIO_VERSION
