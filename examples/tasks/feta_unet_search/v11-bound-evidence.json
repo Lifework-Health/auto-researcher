@@ -16,7 +16,7 @@
             "fold0_macro_dice": 0.8260410594691577,
             "experiment_spec_sha256": "17defc9ca0a59b1d3003b63d2ce206153035159190f61f9048b9fb751c0d0be2",
             "evaluation_result_sha256": "c735a51b2a27464f9130ef2fe9250bdbe36823f12bbe0cbc53ad6e69b2a8ea4f",
-            "best_checkpoint_sha256": "ca0353ca734aa0f690ab808b1c6bb136a7116291ef51c86fa24cfc52032ccae7",
+            "best_checkpoint_sha256": "ca0353ca734aa0f690ab808b1c6bb136a7116291ef51c86fa24cfc52032ccae7"
         },
         {
             "panel_order": 2,
@@ -27,44 +27,44 @@
             "fold0_macro_dice": 0.8192219633033265,
             "experiment_spec_sha256": "924e8092b25ecf33d9284ce462fea43fa2e6d66c04956ec93000712645c8299b",
             "evaluation_result_sha256": "e6a96bb46e96b06c4d1d8b90860f4fa2ab2a67a6769da556e0038def568d2f3b",
-            "best_checkpoint_sha256": "8643880675e254b2f5b735c0a73d9dde8a72d2872ed87a725b5886dc15b5e244",
-        },
+            "best_checkpoint_sha256": "8643880675e254b2f5b735c0a73d9dde8a72d2872ed87a725b5886dc15b5e244"
+        }
     ],
     "deferred_candidates": [
         {
             "campaign": "V10",
             "experiment_id": "experiment-f7626c9939c6e2be",
             "fold0_macro_dice": 0.8246828360878596,
-            "reason": "excluded before V11 to satisfy the 32-hour hard deadline",
+            "reason": "excluded before V11 to satisfy the 32-hour hard deadline"
         },
         {
             "campaign": "V4",
             "experiment_id": "experiment-d481b6e38a21f5c5",
             "fold0_macro_dice": 0.8169983918129687,
-            "reason": "excluded before V11 to satisfy the 32-hour hard deadline",
-        },
+            "reason": "excluded before V11 to satisfy the 32-hour hard deadline"
+        }
     ],
     "excluded_duplicate": {
         "campaign": "V9",
         "experiment_id": "experiment-73ea1c554b176a67",
         "duplicate_of": "experiment-f7626c9939c6e2be",
-        "reason": "same architecture identity, scientific configuration and fold-0 predictions as the deferred V10 candidate",
+        "reason": "same architecture identity, scientific configuration and fold-0 predictions as the deferred V10 candidate"
     },
     "prior_ensemble": {
         "members": ["experiment-fc2d8d2a371ddba0", "experiment-fd7420c452e1982d"],
         "weighting": "equal-probability",
         "fold0_mean_subject_macro_dice": 0.8288165856904497,
-        "sealed_holdout_evaluations": 0,
+        "sealed_holdout_evaluations": 0
     },
     "compute_tradeoff": {
         "four_member_fold0_mean_subject_macro_dice": 0.8306509760526394,
         "two_member_delta": -0.0018343903621897,
-        "confirmation_compute_reduction_fraction": 0.5,
+        "confirmation_compute_reduction_fraction": 0.5
     },
     "launch_ready": false,
     "launch_blockers": [
         "bind and verify remote source artifacts",
         "complete real-CUDA five-fold restart smoke",
-        "pass action-bound launch preflight",
-    ],
+        "pass action-bound launch preflight"
+    ]
 }
