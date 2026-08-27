@@ -49,7 +49,7 @@ V7_MECHANISM_PORTFOLIO_VERSION = "feta-basicunet-structural-tree-4-12-8-2-8-4-2-
 V8_PORTFOLIO_VERSION = "feta-unet-v8-exploitation-44-30-18-8-4-3-v1"
 V9_PORTFOLIO_VERSION = "feta-unet-v9-mixed-24-12-7-4-3-v1"
 V10_PORTFOLIO_VERSION = "feta-unet-v10-dynunet-mechanism-20-10-6-4-v1"
-V11_PORTFOLIO_VERSION = "feta-unet-v11-five-fold-confirmation-4-v1"
+V11_PORTFOLIO_VERSION = "feta-unet-v11-five-fold-confirmation-2-v2"
 V9_FIDELITY_TARGETS = {15: 24, 30: 12, 50: 7, 100: 4, 150: 3}
 V10_FIDELITY_TARGETS = {30: 20, 50: 10, 100: 6, 150: 4}
 V8_FIDELITY_TARGETS = {10: 44, 15: 30, 25: 18, 50: 8, 100: 4, 150: 3}
@@ -704,7 +704,7 @@ class V10PortfolioPolicy:
 
 @dataclass(frozen=True)
 class V11PortfolioPolicy:
-    """Immutable four-model, five-fold development confirmation panel."""
+    """Immutable two-model, five-fold development confirmation panel."""
 
     roots: tuple[dict[str, Any], ...]
 
@@ -717,7 +717,7 @@ class V11PortfolioPolicy:
             roots = tuple(dict(item) for item in raw["roots"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("feta_unet_v11_portfolio_invalid") from exc
-        if len(roots) != 4:
+        if len(roots) != 2:
             raise ValueError("feta_unet_v11_portfolio_invalid")
         validated: list[dict[str, Any]] = []
         identities: set[str] = set()
@@ -741,10 +741,9 @@ class V11PortfolioPolicy:
                 raise ValueError("feta_unet_v11_root_invalid")
             identities.add(identity)
             validated.append(candidate.model_dump(mode="json"))
-        if variants != {"basic_unet": 2, "dynunet": 2} or feature_widths != {
-            "baseline": 2,
+        if variants != {"basic_unet": 1, "dynunet": 1} or feature_widths != {
+            "baseline": 1,
             "v8_dyn_balanced_5": 1,
-            "v8_dyn_compact_5": 1,
         }:
             raise ValueError("feta_unet_v11_diversity_panel_invalid")
         return cls(roots=tuple(validated))
@@ -2524,7 +2523,7 @@ def apply_v11_portfolio_policy(
             experiment_budget=1,
             rationale=(
                 f"{V11_PORTFOLIO_VERSION}: confirm frozen panel member "
-                f"{index + 1}/4 over all five development folds."
+                f"{index + 1}/2 over all five development folds."
             ),
             evidence_references=(
                 f"v11-panel-member:{index + 1}",

@@ -1,73 +1,70 @@
 {
-  "schema_version": "feta-unet-v11-bound-evidence-v1",
-  "dataset_manifest_hash": "6d6f375fda99512a93bbaaa715d6edb5031c4d4f2356584b578f2ebd9631eacf",
-  "split_hash": "3ee6e9f02b4d35f7611bb70cdf19aea3ebc12f81ef89b57291eac9983df66561",
-  "fold_hash": "45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e",
-  "selection_scope": "fold-0-development-only",
-  "confirmation_scope": "five-fold-development-oof",
-  "sealed_holdout_evaluations": 0,
-  "selected_candidates": [
-    {
-      "panel_order": 1,
-      "campaign": "V8",
-      "experiment_id": "experiment-fd7420c452e1982d",
-      "model_variant": "dynunet",
-      "feature_width": "v8_dyn_balanced_5",
-      "fold0_macro_dice": 0.8260410594691577,
-      "experiment_spec_sha256": "17defc9ca0a59b1d3003b63d2ce206153035159190f61f9048b9fb751c0d0be2",
-      "evaluation_result_sha256": "c735a51b2a27464f9130ef2fe9250bdbe36823f12bbe0cbc53ad6e69b2a8ea4f",
-      "best_checkpoint_sha256": "ca0353ca734aa0f690ab808b1c6bb136a7116291ef51c86fa24cfc52032ccae7"
+    "schema_version": "feta-unet-v11-bound-evidence-v1",
+    "dataset_manifest_hash": "6d6f375fda99512a93bbaaa715d6edb5031c4d4f2356584b578f2ebd9631eacf",
+    "split_hash": "3ee6e9f02b4d35f7611bb70cdf19aea3ebc12f81ef89b57291eac9983df66561",
+    "fold_hash": "45e70dc010448d124b978a8becdc5866264b457c3b5ffddc802916f30ec28f6e",
+    "selection_scope": "fold-0-development-only",
+    "confirmation_scope": "five-fold-development-oof",
+    "sealed_holdout_evaluations": 0,
+    "selected_candidates": [
+        {
+            "panel_order": 1,
+            "campaign": "V8",
+            "experiment_id": "experiment-fd7420c452e1982d",
+            "model_variant": "dynunet",
+            "feature_width": "v8_dyn_balanced_5",
+            "fold0_macro_dice": 0.8260410594691577,
+            "experiment_spec_sha256": "17defc9ca0a59b1d3003b63d2ce206153035159190f61f9048b9fb751c0d0be2",
+            "evaluation_result_sha256": "c735a51b2a27464f9130ef2fe9250bdbe36823f12bbe0cbc53ad6e69b2a8ea4f",
+            "best_checkpoint_sha256": "ca0353ca734aa0f690ab808b1c6bb136a7116291ef51c86fa24cfc52032ccae7",
+        },
+        {
+            "panel_order": 2,
+            "campaign": "V5",
+            "experiment_id": "experiment-fc2d8d2a371ddba0",
+            "model_variant": "basic_unet",
+            "feature_width": "baseline",
+            "fold0_macro_dice": 0.8192219633033265,
+            "experiment_spec_sha256": "924e8092b25ecf33d9284ce462fea43fa2e6d66c04956ec93000712645c8299b",
+            "evaluation_result_sha256": "e6a96bb46e96b06c4d1d8b90860f4fa2ab2a67a6769da556e0038def568d2f3b",
+            "best_checkpoint_sha256": "8643880675e254b2f5b735c0a73d9dde8a72d2872ed87a725b5886dc15b5e244",
+        },
+    ],
+    "deferred_candidates": [
+        {
+            "campaign": "V10",
+            "experiment_id": "experiment-f7626c9939c6e2be",
+            "fold0_macro_dice": 0.8246828360878596,
+            "reason": "excluded before V11 to satisfy the 32-hour hard deadline",
+        },
+        {
+            "campaign": "V4",
+            "experiment_id": "experiment-d481b6e38a21f5c5",
+            "fold0_macro_dice": 0.8169983918129687,
+            "reason": "excluded before V11 to satisfy the 32-hour hard deadline",
+        },
+    ],
+    "excluded_duplicate": {
+        "campaign": "V9",
+        "experiment_id": "experiment-73ea1c554b176a67",
+        "duplicate_of": "experiment-f7626c9939c6e2be",
+        "reason": "same architecture identity, scientific configuration and fold-0 predictions as the deferred V10 candidate",
     },
-    {
-      "panel_order": 2,
-      "campaign": "V5",
-      "experiment_id": "experiment-fc2d8d2a371ddba0",
-      "model_variant": "basic_unet",
-      "feature_width": "baseline",
-      "fold0_macro_dice": 0.8192219633033265,
-      "experiment_spec_sha256": "924e8092b25ecf33d9284ce462fea43fa2e6d66c04956ec93000712645c8299b",
-      "evaluation_result_sha256": "e6a96bb46e96b06c4d1d8b90860f4fa2ab2a67a6769da556e0038def568d2f3b",
-      "best_checkpoint_sha256": "8643880675e254b2f5b735c0a73d9dde8a72d2872ed87a725b5886dc15b5e244"
+    "prior_ensemble": {
+        "members": ["experiment-fc2d8d2a371ddba0", "experiment-fd7420c452e1982d"],
+        "weighting": "equal-probability",
+        "fold0_mean_subject_macro_dice": 0.8288165856904497,
+        "sealed_holdout_evaluations": 0,
     },
-    {
-      "panel_order": 3,
-      "campaign": "V10",
-      "experiment_id": "experiment-f7626c9939c6e2be",
-      "model_variant": "dynunet",
-      "feature_width": "v8_dyn_compact_5",
-      "fold0_macro_dice": 0.8246828360878596,
-      "experiment_spec_sha256": "757bdc24f3a33937592c02a39d2fd2382af57d4f84f9c9a4b7bd8c5148ee6bdb",
-      "evaluation_result_sha256": "1aeb85c419179006a30959b0779e84f3573a9092a9f9c62899379938f8ad8281",
-      "best_checkpoint_sha256": "82551e8a8b7c72b9bc292c161efe07ee5f13acc59481477760d7ab2d14c414df"
+    "compute_tradeoff": {
+        "four_member_fold0_mean_subject_macro_dice": 0.8306509760526394,
+        "two_member_delta": -0.0018343903621897,
+        "confirmation_compute_reduction_fraction": 0.5,
     },
-    {
-      "panel_order": 4,
-      "campaign": "V4",
-      "experiment_id": "experiment-d481b6e38a21f5c5",
-      "model_variant": "basic_unet",
-      "feature_width": "baseline",
-      "fold0_macro_dice": 0.8169983918129687,
-      "experiment_spec_sha256": "27959ae94a3766aaa75c23b036bf52879646421a3e779f8c1c0147c6ca0bb2a3",
-      "evaluation_result_sha256": "6226ad7d52de7f84644989bc59f4c9c494f8a5310dbf00ce81360fd26e25e8a0",
-      "best_checkpoint_sha256": "c77fe2953cd0100e52e5c223c857105d61e4b650070587219fe0aee68d1dc965"
-    }
-  ],
-  "excluded_duplicate": {
-    "campaign": "V9",
-    "experiment_id": "experiment-73ea1c554b176a67",
-    "duplicate_of": "experiment-f7626c9939c6e2be",
-    "reason": "same architecture identity, scientific configuration and fold-0 predictions as the V10 panel member"
-  },
-  "prior_ensemble": {
-    "members": ["experiment-d481b6e38a21f5c5", "experiment-fc2d8d2a371ddba0", "experiment-fd7420c452e1982d", "experiment-f7626c9939c6e2be"],
-    "weighting": "equal-probability",
-    "fold0_mean_subject_macro_dice": 0.8306509760526394,
-    "sealed_holdout_evaluations": 0
-  },
-  "launch_ready": false,
-  "launch_blockers": [
-    "bind and verify remote source artifacts",
-    "complete real-CUDA five-fold restart smoke",
-    "pass action-bound launch preflight"
-  ]
+    "launch_ready": false,
+    "launch_blockers": [
+        "bind and verify remote source artifacts",
+        "complete real-CUDA five-fold restart smoke",
+        "pass action-bound launch preflight",
+    ],
 }

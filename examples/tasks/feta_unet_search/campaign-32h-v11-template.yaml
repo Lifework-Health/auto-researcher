@@ -52,10 +52,10 @@ runtime:
     protected_storage_acknowledged: true
     workspace_namespace: feta_unet_campaign_v11
     shared_preprocessing_cache: true
-    campaign_duration_seconds: 259200
-    campaign_finalisation_reserve_seconds: 21600
+    campaign_duration_seconds: 115200
+    campaign_finalisation_reserve_seconds: 14400
     campaign_reporting_reserve_seconds: 1800
-    campaign_prior_results: 4
+    campaign_prior_results: 2
     campaign_seconds_per_epoch: 60.0
     campaign_seconds_per_epoch_by_model_variant: {basic_unet: 60.0, unet_plain: 60.0, unet_residual: 60.0, dynunet: 60.0}
     continue_after_failed_candidate: false
@@ -69,8 +69,6 @@ runtime:
     v11_fixed_roots: &v11_fixed_roots
       - *v11_v8_champion
       - {profile: five_fold_confirmation, fold_count: 5, maximum_epochs: 150, model_variant: basic_unet, feature_width: baseline, architecture_budget: legacy, upsample: deconv, kernel_profile: basic, residual_blocks: false, deep_supervision_heads: 0, activation: PReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", sampling_policy: foreground, augmentation_policy: intensity}
-      - {profile: five_fold_confirmation, fold_count: 5, maximum_epochs: 150, model_variant: dynunet, feature_width: v8_dyn_compact_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", sampling_policy: foreground, augmentation_policy: combined}
-      - {profile: five_fold_confirmation, fold_count: 5, maximum_epochs: 150, model_variant: basic_unet, feature_width: baseline, architecture_budget: legacy, upsample: deconv, kernel_profile: basic, residual_blocks: false, deep_supervision_heads: 0, activation: LeakyReLU, norm: instance, optimizer: AdamW, lr_schedule: constant, loss_variant: dice_ce, learning_rate: 0.0002571864984165606, weight_decay: 0.0000062147089411317485, dropout: 0.020113868409613763, dice_weight: 1.1956546747501025, positive_negative_ratio: "1:1", sampling_policy: foreground, augmentation_policy: reference_light}
     campaign_portfolio:
-      version: feta-unet-v11-five-fold-confirmation-4-v1
+      version: feta-unet-v11-five-fold-confirmation-2-v2
       roots: *v11_fixed_roots

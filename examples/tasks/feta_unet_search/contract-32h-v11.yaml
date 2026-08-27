@@ -5,7 +5,7 @@ task_version: "1.0"
 objective_version: feta-unet-five-fold-confirmation-macro-dice-v1
 primary_metric: mean_subject_macro_dice
 task_constraints_version: feta-unet-search-configuration-v9
-question: How well do four prespecified, diverse U-Net candidates generalise across all five development folds?
+question: How well do two prespecified, complementary U-Net candidates generalise across all five development folds?
 objective: estimate candidate and ensemble performance on complete five-fold out-of-fold development predictions without further model selection
 constraints:
   dataset_release: feta-2.1-export-80
@@ -26,13 +26,13 @@ constraints:
   external_pretraining: prohibited
   score_minimum: 0.0
   score_maximum: 1.0
-  campaign_duration_seconds: 259200
-  campaign_finalisation_reserve_seconds: 21600
+  campaign_duration_seconds: 115200
+  campaign_finalisation_reserve_seconds: 14400
 allowed_search_types: [DIRECT]
 evaluator_id: feta-basic-unet-search-evaluator
 verifier_id: deterministic-verifier
-maximum_cycles: 12
-maximum_experiments: 4
+maximum_cycles: 8
+maximum_experiments: 2
 maximum_cost: 5.0
 requires_approval_for: []
 provenance: REAL

@@ -65,7 +65,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
 CV_ENSEMBLE_SCHEMA_VERSION = "feta-unet-five-fold-ensemble-evaluation-v1"
 CV_MANIFEST_SCHEMA_VERSION = "feta-unet-five-fold-ensemble-run-manifest-v1"
 CV_PRIMARY_SELECTION_RULE = (
-    "pre-specified equal-weight probability mean of the four frozen V11 "
+    "pre-specified equal-weight probability mean of the two frozen V11 "
     "confirmation members"
 )
 

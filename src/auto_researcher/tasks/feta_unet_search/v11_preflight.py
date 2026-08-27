@@ -28,8 +28,6 @@ V11_BOUND_EVIDENCE_SCHEMA_VERSION = "feta-unet-v11-bound-evidence-v1"
 V11_SELECTED_EXPERIMENTS = (
     "experiment-fd7420c452e1982d",
     "experiment-fc2d8d2a371ddba0",
-    "experiment-f7626c9939c6e2be",
-    "experiment-d481b6e38a21f5c5",
 )
 
 
@@ -53,7 +51,7 @@ def _validate_evidence(raw: dict[str, Any]) -> tuple[str, ...]:
         or raw.get("confirmation_scope") != "five-fold-development-oof"
         or raw.get("sealed_holdout_evaluations") != 0
         or not isinstance(selected, list)
-        or len(selected) != 4
+        or len(selected) != 2
         or tuple(item.get("experiment_id") for item in selected)
         != V11_SELECTED_EXPERIMENTS
         or not all(
@@ -70,7 +68,7 @@ def _validate_evidence(raw: dict[str, Any]) -> tuple[str, ...]:
             for index, item in enumerate(selected, start=1)
         )
         or not isinstance(prior_ensemble, dict)
-        or prior_ensemble.get("fold0_mean_subject_macro_dice") != 0.8306509760526394
+        or prior_ensemble.get("fold0_mean_subject_macro_dice") != 0.8288165856904497
         or prior_ensemble.get("sealed_holdout_evaluations") != 0
         or not isinstance(duplicate, dict)
         or duplicate.get("experiment_id") != "experiment-73ea1c554b176a67"

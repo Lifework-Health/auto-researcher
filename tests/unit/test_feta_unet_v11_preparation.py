@@ -35,8 +35,8 @@ from auto_researcher.tasks.feta_unet_search.v11_preflight import (
 )
 
 EXAMPLES = Path("examples/tasks/feta_unet_search")
-CONFIG = EXAMPLES / "campaign-72h-v11-template.yaml"
-CONTRACT = EXAMPLES / "contract-72h-v11.yaml"
+CONFIG = EXAMPLES / "campaign-32h-v11-template.yaml"
+CONTRACT = EXAMPLES / "contract-32h-v11.yaml"
 EVIDENCE = EXAMPLES / "v11-bound-evidence.json"
 
 
@@ -117,7 +117,7 @@ def test_v11_static_preflight_is_fail_closed_and_holdout_safe():
         contract_path=CONTRACT,
         evidence_path=EVIDENCE,
     )
-    assert report["root_count"] == 4
+    assert report["root_count"] == 2
     assert report["fold_count_per_root"] == 5
     assert report["oof_development_subjects"] == 68
     assert report["holdout_subjects_evaluated"] == 0
