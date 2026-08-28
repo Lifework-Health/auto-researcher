@@ -198,6 +198,7 @@ def test_agent_context_exposes_direct_executable_parameter_names():
         "dropout",
         "dice_weight",
         "positive_negative_ratio",
+        "sampling_policy",
         "augmentation_policy",
         "model_variant",
         "architecture_budget",
@@ -347,7 +348,7 @@ def test_search_evaluator_binds_variable_training_policy_identities():
     assert evaluator.optimiser_identity == OPTIMISER_ID
 
 
-def test_optuna_space_has_thirteen_axes_and_fixed_fidelity():
+def test_optuna_space_has_fourteen_axes_and_fixed_fidelity():
     task = FeTAUNetSearchTask()
     specification = task.create_optuna_study_spec(
         default_feta_unet_search_contract(),
@@ -365,6 +366,7 @@ def test_optuna_space_has_thirteen_axes_and_fixed_fidelity():
         "dropout",
         "dice_weight",
         "positive_negative_ratio",
+        "sampling_policy",
         "augmentation_policy",
         "model_variant",
         "feature_width",
@@ -872,6 +874,7 @@ def test_openevolve_uses_verified_initial_incumbent_and_observations():
         "dropout": 0.05,
         "dice_weight": 1.2,
         "positive_negative_ratio": "2:1",
+        "sampling_policy": "foreground",
         "augmentation_policy": "combined",
     }
     assert component.component_spec().task_mutation_context[

@@ -96,6 +96,20 @@ class _PortfolioRecoveryTask(FeTAUNetSearchTask):
         )
 
 
+class _PassThroughPortfolioTask(_PortfolioRecoveryTask):
+    def apply_campaign_portfolio(
+        self,
+        request,
+        *,
+        run_id,
+        cycle,
+        events,
+        runtime_context,
+    ):
+        del run_id, cycle, events, runtime_context
+        return request
+
+
 class _DeadlineRecoveryTask(_PortfolioRecoveryTask):
     def estimate_search_duration_seconds(self, request, runtime_context):
         del runtime_context
@@ -219,7 +233,7 @@ def test_valid_hypothesis_uses_identity_stable_direct_fallback(
     assert "fallback:agent_context_too_large" in planned[0].output_references
 
 
-def test_campaign_portfolio_overrides_direct_fallback_after_planner_exhaustion(
+def test_campaign_portfolio_compiles_without_planner_context_or_model_call(
     contract_factory,
     deterministic_dependencies,
 ):
@@ -271,19 +285,150 @@ def test_campaign_portfolio_overrides_direct_fallback_after_planner_exhaustion(
         agent_context_assembler=_OversizedPlannerContext(),
         planner_agent=_PlannerMustNotRun(),
         task=_PortfolioRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
     )
 
     update = plan_search(state, dependencies)
 
     assert "status" not in update
-    assert update["planner_fallback_code"] == "agent_context_too_large"
-    assert update["planner_failure_stage"] == "context_assembly"
+    assert update["planner_fallback_code"] is None
+    assert update["planner_failure_stage"] is None
     assert update["search_request"].request_id == "search-controller-recovery"
     assert update["search_request"].search_type == SearchType.OPTUNA
+    assert update["search_request"].proposal_source == ProposalSource.DETERMINISTIC
     assert update["search_request"].rationale == (
         "Controller-owned portfolio recovery request."
     )
     assert update["errors"] == []
+
+
+def test_campaign_portfolio_compiler_does_not_require_direct_hypothesis_subspace(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-portfolio-placeholder",
+        statement="The controller owns the next executable configuration.",
+        rationale="Exercise portfolio recovery without a valid Direct subspace.",
+        predicted_subspace={"unknown_parameter": 1},
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-portfolio-placeholder",
+        "thread_id": "thread-portfolio-placeholder",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_PortfolioRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["planner_fallback_code"] is None
+    assert update["planner_failure_stage"] is None
+    assert update["search_request"].request_id == "search-controller-recovery"
+    assert update["search_request"].search_type == SearchType.OPTUNA
+    assert update["search_request"].proposal_source == ProposalSource.DETERMINISTIC
+    assert update["errors"] == []
+
+
+def test_campaign_portfolio_compiler_seed_is_stable_and_traceable(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-portfolio-compiler",
+        statement="The controller compiles the next bounded experiment.",
+        rationale="Exercise the deterministic Planner compiler boundary.",
+        predicted_subspace={"unknown_parameter": 1},
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        evidence_references=(contract.contract_id,),
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.CONTRACT_GROUNDED,
+    )
+    state = {
+        "run_id": "run-portfolio-compiler",
+        "thread_id": "thread-portfolio-compiler",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_PassThroughPortfolioTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
+    )
+
+    first = plan_search(state, dependencies)
+    second = plan_search(state, dependencies)
+    request = first["search_request"]
+
+    assert request.request_id.startswith("search-portfolio-compiler-")
+    assert request.request_id == second["search_request"].request_id
+    assert request.hypothesis_id == hypothesis.hypothesis_id
+    assert request.evidence_references == hypothesis.evidence_references
+    assert request.proposal_source == ProposalSource.DETERMINISTIC
+    assert request.agent_call_id is None
+    assert request.prompt_version is None
+    assert first["budget"] == state["budget"]
+    assert first["planner_fallback_code"] is None
+    assert first["planner_failure_stage"] is None
+    assert first["errors"] == []
 
 
 def test_campaign_deadline_replaces_exploration_with_fitting_graduation(

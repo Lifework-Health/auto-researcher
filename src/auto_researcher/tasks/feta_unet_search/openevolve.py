@@ -30,6 +30,7 @@ from auto_researcher.tasks.feta_unet_search.configuration import (
     MODEL_VARIANTS,
     NORMALISATIONS,
     OPTIMISERS,
+    SAMPLING_POLICIES,
     V6_ARCHITECTURE_BUDGET,
     V6_BASIC_UNET_FEATURE_PROFILES,
     V6_MAXIMUM_TRAINABLE_PARAMETERS,
@@ -227,6 +228,7 @@ def policy_from_configuration(configuration: dict[str, Any]) -> "UNetTrainingPol
             "dropout": configuration["dropout"],
             "dice_weight": configuration["dice_weight"],
             "positive_negative_ratio": configuration["positive_negative_ratio"],
+            "sampling_policy": configuration.get("sampling_policy", "foreground"),
             "augmentation_policy": configuration["augmentation_policy"],
         }
     )
@@ -271,12 +273,15 @@ class UNetTrainingPolicy(BaseModel):
     norm: Literal["instance", "group"] = "instance"
     optimizer: Literal["AdamW", "Adam"] = "AdamW"
     lr_schedule: Literal["constant", "cosine", "polynomial"] = "constant"
-    loss_variant: Literal["dice_ce", "dice_focal", "dice_tversky"] = "dice_ce"
+    loss_variant: Literal[
+        "dice_ce", "dice_focal", "dice_tversky", "generalized_dice_focal"
+    ] = "dice_ce"
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     dropout: float = 0.0
     dice_weight: float = 1.0
     positive_negative_ratio: Literal["1:1", "2:1", "3:1"] = "1:1"
+    sampling_policy: Literal["foreground", "weak_tissue_balanced"] = "foreground"
     augmentation_policy: Literal[
         "reference_light", "geometric", "intensity", "combined"
     ] = "reference_light"
@@ -490,6 +495,7 @@ class FeTAUNetEvolvableComponent:
             "bounded_optimisers": list(OPTIMISERS),
             "bounded_learning_rate_schedules": list(LEARNING_RATE_SCHEDULES),
             "bounded_loss_variants": list(LOSS_VARIANTS),
+            "bounded_sampling_policies": list(SAMPLING_POLICIES),
             "bounded_augmentation_policies": list(AUGMENTATION_POLICIES),
             "immutable_preprocessing": "RAS, 0.5 mm, foreground crop, nonzero z-score, 128^3 patches",
             "maximum_epochs": self.maximum_epochs,
@@ -500,6 +506,7 @@ class FeTAUNetEvolvableComponent:
                 "about earlier results.",
                 "When campaign_context includes required_model_variant, preserve "
                 "that exact model_variant while mutating other bounded fields.",
+                "When campaign_context requires weak-tissue mechanisms, mutate sampling_policy or loss_variant only within the bounded schema and preserve the sealed macro-Dice objective.",
                 "When campaign_context requires the V6 architecture budget, emit only BasicUNet policies inside the 15M-150M trainable-parameter envelope. Prefer meaningful non-uniform feature allocations over uniform scaling alone.",
                 "When campaign_context requires the V7 architecture budget, emit only structural_basic_unet policies inside the 15M-150M and 44 GiB envelopes. Mutate at least one genuine structural field: depth or non-uniform stage widths, convolutions per stage, kernel or dilation profile, residual blocks, skip fusion, down/up operator, or deep-supervision heads. Do not reduce the search to uniform width scaling.",
             ],

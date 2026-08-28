@@ -115,7 +115,10 @@ def test_v6_rejects_registered_pixelshuffle_profiles_over_parameter_budget(
         )
 
 
-@pytest.mark.parametrize("variant", ["dice_ce", "dice_focal", "dice_tversky"])
+@pytest.mark.parametrize(
+    "variant",
+    ["dice_ce", "dice_focal", "dice_tversky", "generalized_dice_focal"],
+)
 def test_v5_registered_loss_variants_are_finite(variant: str):
     configuration = FeTAUNetSearchConfiguration(loss_variant=variant)
     loss = create_loss(configuration)
@@ -160,3 +163,15 @@ def test_v5_explicit_augmentation_policies_build(policy: str):
         assert "RandAffined" in names
     if policy in {"intensity", "combined"}:
         assert "RandGaussianNoised" in names
+
+
+def test_v10_weak_tissue_sampling_policy_builds_class_balanced_crop():
+    transforms = create_transforms(
+        training=True,
+        augmentation_policy="combined",
+        sampling_policy="weak_tissue_balanced",
+    )
+    names = {item.__class__.__name__ for item in transforms.transforms}
+
+    assert "RandCropByLabelClassesd" in names
+    assert "RandCropByPosNegLabeld" not in names

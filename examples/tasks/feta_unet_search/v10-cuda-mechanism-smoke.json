@@ -1,0 +1,19 @@
+{
+  "schema_version": "feta-unet-v10-cuda-mechanism-smoke-v1",
+  "gpu": "NVIDIA RTX A6000",
+  "gpu_total_gib": 47.529052734375,
+  "model_variant": "dynunet",
+  "feature_width": "v8_dyn_compact_5",
+  "trainable_parameters": 51421264,
+  "loss_variant": "generalized_dice_focal",
+  "sampling_policy": "weak_tissue_balanced",
+  "crop_shapes": [[1, 128, 128, 128], [1, 128, 128, 128]],
+  "label_shapes": [[1, 128, 128, 128], [1, 128, 128, 128]],
+  "crop_labels": [[0, 1, 2, 3, 4, 5, 6, 7], [0, 1, 2, 3, 4, 5, 6, 7]],
+  "loss_finite": true,
+  "amp_step_seconds": 0.9594163149595261,
+  "peak_gpu_memory_gib": 4.936967849731445,
+  "holdout_subjects_evaluated": 0,
+  "model_calls_performed": 0,
+  "passed": true
+}

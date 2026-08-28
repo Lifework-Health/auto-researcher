@@ -28,7 +28,10 @@ from auto_researcher.tasks.feta_seg.metrics import (
 )
 from auto_researcher.tasks.feta_seg.runner import restore_prediction_to_native
 from auto_researcher.tasks.feta_seg.splits import locked_partition
-from auto_researcher.tasks.feta_seg.transforms import PREPROCESSING_VERSION, create_transforms
+from auto_researcher.tasks.feta_seg.transforms import (
+    PREPROCESSING_VERSION,
+    create_transforms,
+)
 from auto_researcher.tasks.feta_unet_direct.model import create_unet_model
 from auto_researcher.tasks.feta_unet_direct.trainer import (
     require_full_baseline_environment,
@@ -52,7 +55,6 @@ from auto_researcher.tasks.feta_unet_ensemble.models import (
 from auto_researcher.tasks.feta_unet_search.configuration import (
     FeTAUNetSearchConfiguration,
 )
-
 
 ENSEMBLE_EVALUATION_SCHEMA_VERSION = "feta-unet-ensemble-evaluation-v1"
 LABEL_MAPPING_IDENTITY = "feta-labels-0-through-7-v1"
@@ -137,7 +139,9 @@ def load_member_source(value: dict[str, Any]) -> MemberSource:
     checkpoint_path = Path(str(value["checkpoint_path"])).expanduser().resolve()
     specification_path = Path(str(value["experiment_spec_path"])).expanduser().resolve()
     result_path = Path(str(value["evaluation_result_path"])).expanduser().resolve()
-    if not all(path.is_file() for path in (checkpoint_path, specification_path, result_path)):
+    if not all(
+        path.is_file() for path in (checkpoint_path, specification_path, result_path)
+    ):
         raise ValueError("feta_unet_ensemble_member_source_missing")
     specification = _read_json(specification_path)
     result = _read_json(result_path)
@@ -230,7 +234,9 @@ def _native_label(subject: FeTASubject):
     return values
 
 
-def _dice_row(subject: FeTASubject, actual: Any, predicted: Any) -> dict[str, Any]:
+def _dice_row(
+    subject: FeTASubject, actual: Any, predicted: Any, *, fold: int = 0
+) -> dict[str, Any]:
     try:
         import numpy as np
     except ImportError as exc:
@@ -256,7 +262,7 @@ def _dice_row(subject: FeTASubject, actual: Any, predicted: Any) -> dict[str, An
     return {
         "subject_id": subject.subject_id,
         "reconstruction_method": subject.reconstruction_method,
-        "fold": 0,
+        "fold": fold,
         "dice": scores,
         "macro_dice": sum(scores.values()) / len(scores),
     }
@@ -316,7 +322,10 @@ def _predict_and_cache(
             if not probability_path.is_file() or not record_path.is_file():
                 raise ValueError("feta_unet_probability_cache_partial")
             record = _load_record(record_path)
-            if record.subject_id != subject.subject_id or record.member_identity != identity:
+            if (
+                record.subject_id != subject.subject_id
+                or record.member_identity != identity
+            ):
                 raise ValueError("feta_unet_probability_cache_identity_mismatch")
             load_probability_cache(probability_path, record)
             continue
@@ -429,9 +438,7 @@ def evaluate_manifest(
     member_by_id = {item.member.experiment_id: item for item in sources}
     member_ids = tuple(member_by_id)
     combinations = candidate_subsets(member_ids)
-    rows: dict[str, list[dict[str, Any]]] = {
-        member_id: [] for member_id in member_ids
-    }
+    rows: dict[str, list[dict[str, Any]]] = {member_id: [] for member_id in member_ids}
     combo_keys = {items: "+".join(items) for items in combinations}
     rows.update({key: [] for key in combo_keys.values()})
     for index, subject in enumerate(validation_subjects):
@@ -439,9 +446,7 @@ def evaluate_manifest(
         affine = sample["image"].affine.detach().cpu().numpy()
         actual = _native_label(subject)
         probabilities = {
-            member_id: _load_probability(
-                cache_root, member_by_id[member_id], subject
-            )
+            member_id: _load_probability(cache_root, member_by_id[member_id], subject)
             for member_id in member_ids
         }
         for member_id, tensor in probabilities.items():
@@ -498,9 +503,7 @@ def evaluate_manifest(
     best_single = max(
         individual_results, key=lambda item: float(item["reproduced_score"])
     )
-    primary = next(
-        item for item in ensemble_results if item["primary_pre_specified"]
-    )
+    primary = next(item for item in ensemble_results if item["primary_pre_specified"])
     best_exploratory = select_best_exploratory_ensemble(ensemble_results)
     report = {
         "schema_version": ENSEMBLE_EVALUATION_SCHEMA_VERSION,
@@ -514,7 +517,11 @@ def evaluate_manifest(
         "development_fold": 0,
         "development_subject_count": len(validation_subjects),
         "reconstruction_method_counts": dict(
-            sorted(Counter(item.reconstruction_method for item in validation_subjects).items())
+            sorted(
+                Counter(
+                    item.reconstruction_method for item in validation_subjects
+                ).items()
+            )
         ),
         "sealed_holdout_evaluations": 0,
         "individual_models": individual_results,
@@ -522,9 +529,7 @@ def evaluate_manifest(
         "best_single_model": best_single,
         "primary_ensemble": {
             **primary,
-            "delta_vs_best_single": float(
-                primary["metrics"]["mean_subject_macro_dice"]
-            )
+            "delta_vs_best_single": float(primary["metrics"]["mean_subject_macro_dice"])
             - float(best_single["reproduced_score"]),
         },
         "best_exploratory_ensemble": {

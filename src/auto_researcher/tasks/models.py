@@ -11,7 +11,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    JsonValue,
     field_validator,
     model_validator,
 )

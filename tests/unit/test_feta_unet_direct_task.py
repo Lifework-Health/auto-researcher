@@ -62,6 +62,9 @@ from auto_researcher.tasks.feta_unet_direct.runner import (
     select_profile_folds,
 )
 from auto_researcher.tasks.feta_unet_direct.trainer import checkpoint_reference
+from auto_researcher.tasks.feta_unet_search.configuration import (
+    FeTAUNetSearchConfiguration,
+)
 from auto_researcher.tasks.models import (
     DatasetManifest,
     ExperimentMetadata,
@@ -330,6 +333,22 @@ def test_development_profile_uses_full_fold_zero_and_seals_holdout():
     exposed = {subject.subject_id for subject in training + validation}
     assert exposed == set(partition.development)
     assert exposed.isdisjoint(partition.holdout)
+
+
+def test_confirmation_profile_uses_all_five_development_folds_and_seals_holdout():
+    partition = locked_partition(_methods())
+    confirmation = FeTAUNetSearchConfiguration(
+        profile="five_fold_confirmation",
+        fold_count=5,
+        maximum_epochs=150,
+    )
+    selections = select_profile_folds(confirmation, _subjects(), partition)
+    assert tuple(fold for fold, _, _ in selections) == tuple(range(5))
+    observed = {
+        subject.subject_id for _, _, validation in selections for subject in validation
+    }
+    assert observed == set(partition.development)
+    assert observed.isdisjoint(partition.holdout)
 
 
 def test_development_progress_milestones_are_exact():
