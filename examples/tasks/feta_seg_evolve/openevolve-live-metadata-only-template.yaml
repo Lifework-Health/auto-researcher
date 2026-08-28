@@ -8,8 +8,8 @@ openevolve_live_mutation:
   mode: metadata_only
   approval_file: /absolute/protected/path/live-mutation-approval-v2.json
   bridge_contract_file: /absolute/protected/path/model-bridge-contract.json
-  adapter_lock_file: /absolute/path/to/auto_researcherv2.1/constraints/openevolve-0.3.2.lock
-  prompt_file: /absolute/path/to/auto_researcherv2.1/src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v2.md
+  adapter_lock_file: /absolute/path/to/auto-researcher/constraints/openevolve-0.3.2.lock
+  prompt_file: /absolute/path/to/auto-researcher/src/auto_researcher/prompts/openevolve/openevolve-mutation-prompt-v2.md
   executor_policy_file: /absolute/protected/path/hardened-executor-policy.json
   isolation_evidence_file: /absolute/protected/path/executor-isolation-evidence.json
   # Production example (non-sensitive reference; resolved lazily through ADC):
