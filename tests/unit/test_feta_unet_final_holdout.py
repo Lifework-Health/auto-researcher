@@ -7,7 +7,9 @@ import pytest
 from auto_researcher.tasks.feta_unet_ensemble import final_holdout
 from auto_researcher.tasks.feta_unet_ensemble.final_holdout import (
     FINAL_HOLDOUT_MANIFEST_SCHEMA,
+    _average_fold_probabilities,
     _fold_cache_paths,
+    _prepare_release_output,
     _validate_release_manifest,
     subject_bootstrap_interval,
 )
@@ -102,3 +104,26 @@ def test_fold_cache_identity_separates_all_five_models(tmp_path):
     paths = tuple(_fold_cache_paths(tmp_path, source, fold, subject) for fold in range(5))
     assert len({item[0] for item in paths}) == 5
     assert len({item[2] for item in paths}) == 5
+
+
+def test_fold_probability_mean_requires_exactly_five_models():
+    import numpy as np
+
+    values = tuple(np.full((8, 2, 3, 4), 0.125, dtype=np.float32) for _ in range(5))
+    combined = _average_fold_probabilities(values)
+    assert combined.shape == (8, 2, 3, 4)
+    assert np.allclose(combined.sum(axis=0), 1.0)
+    with pytest.raises(ValueError, match="fold_probability_count_invalid"):
+        _average_fold_probabilities(values[:4])
+
+
+def test_release_output_resumes_only_exact_incomplete_run(tmp_path):
+    output = tmp_path / "output"
+    manifest = _manifest()
+    _prepare_release_output(output, manifest, "a" * 64)
+    _prepare_release_output(output, manifest, "a" * 64)
+    with pytest.raises(ValueError, match="output_exists"):
+        _prepare_release_output(output, manifest, "b" * 64)
+    (output / "final-holdout-report.json").write_text("{}")
+    with pytest.raises(ValueError, match="output_exists"):
+        _prepare_release_output(output, manifest, "a" * 64)

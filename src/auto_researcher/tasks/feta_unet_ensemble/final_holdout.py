@@ -30,7 +30,6 @@ from auto_researcher.tasks.feta_unet_direct.trainer import (
     sliding_window_predict,
 )
 from auto_researcher.tasks.feta_unet_ensemble.aggregation import (
-    aggregate_probabilities,
     member_identity,
     predicted_labels,
 )
@@ -91,6 +90,26 @@ def subject_bootstrap_interval(
     }
 
 
+def _average_fold_probabilities(values: Sequence[Any]):
+    """Average exactly five fold predictions without broadening member ensembles."""
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("feta_metric_dependencies_unavailable") from exc
+    arrays = tuple(np.asarray(value, dtype=np.float32) for value in values)
+    if len(arrays) != 5 or not arrays or arrays[0].ndim != 4:
+        raise ValueError("feta_unet_final_holdout_fold_probability_count_invalid")
+    if any(value.shape != arrays[0].shape for value in arrays[1:]):
+        raise ValueError("feta_unet_final_holdout_fold_probability_shape_invalid")
+    combined = np.mean(np.stack(arrays, axis=0), axis=0, dtype=np.float32)
+    if not bool(np.isfinite(combined).all()) or not bool(
+        np.allclose(combined.sum(axis=0), 1.0, atol=1e-4)
+    ):
+        raise ValueError("feta_unet_final_holdout_probability_invalid")
+    return combined
+
+
 def _validate_release_manifest(
     manifest: dict[str, Any],
 ) -> CrossValidationMemberSource:
@@ -132,6 +151,31 @@ def _validate_release_manifest(
     ):
         raise ValueError("feta_unet_final_holdout_candidate_not_frozen_v8_dynunet")
     return source
+
+
+def _prepare_release_output(
+    output_root: Path, manifest: dict[str, Any], manifest_identity: str
+) -> None:
+    """Create a release root or admit only an exact incomplete same-run retry."""
+
+    release_path = output_root / "release-manifest.json"
+    if output_root.exists():
+        if (
+            not output_root.is_dir()
+            or not release_path.is_file()
+            or (output_root / "final-holdout-report.json").exists()
+            or (output_root / "protected-subject-metrics.json").exists()
+            or _read_json(release_path).get("manifest_identity") != manifest_identity
+        ):
+            raise ValueError("feta_unet_final_holdout_output_exists")
+        return
+    output_root.mkdir(parents=True, mode=0o700)
+    os.chmod(output_root, 0o700)
+    atomic_json_write(
+        release_path,
+        {**manifest, "manifest_identity": manifest_identity},
+    )
+    os.chmod(release_path, 0o600)
 
 
 def _fold_cache_paths(
@@ -251,20 +295,12 @@ def evaluate_final_holdout(
 ) -> dict[str, Any]:
     """Evaluate the frozen V8 DynUNet once on the locked 12-subject holdout."""
 
-    if output_root.exists():
-        raise ValueError("feta_unet_final_holdout_output_exists")
-    output_root.mkdir(parents=True, mode=0o700)
-    os.chmod(output_root, 0o700)
-    cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(cache_root, 0o700)
     manifest = _read_json(manifest_path)
     source = _validate_release_manifest(manifest)
     manifest_identity = payload_hash(manifest)
-    atomic_json_write(
-        output_root / "release-manifest.json",
-        {**manifest, "manifest_identity": manifest_identity},
-    )
-    os.chmod(output_root / "release-manifest.json", 0o600)
+    _prepare_release_output(output_root, manifest, manifest_identity)
+    cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(cache_root, 0o700)
     if source.member.dataset_manifest_hash != EXPECTED_MANIFEST_HASH:
         raise ValueError("feta_unet_final_holdout_dataset_identity_mismatch")
     if source.member.preprocessing_identity != PREPROCESSING_VERSION:
@@ -311,7 +347,7 @@ def evaluate_final_holdout(
             _load_fold_probability(cache_root, source, fold, subject)
             for fold in range(5)
         )
-        combined = aggregate_probabilities(probabilities, (0.2,) * 5)
+        combined = _average_fold_probabilities(probabilities)
         prediction = restore_prediction_to_native(
             predicted_labels(combined), affine, subject.segmentation_path
         )
