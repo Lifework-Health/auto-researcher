@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from auto_researcher.contracts.enums import EvidenceStatus, ProvenanceKind, SearchType
