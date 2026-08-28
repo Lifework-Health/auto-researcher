@@ -70,3 +70,12 @@ auditable action. No test result may feed back into architecture, hyperparameter
 weight, post-processing or ensemble-member selection. If challenge rules permit
 multiple submissions, their number and identities must be declared before the
 first submission.
+
+If a planned confirmation member is later proven to be a scientific duplicate,
+it is excluded rather than treated as an independent model. The remaining valid
+five-fold member may be released as a standalone family only after its identity,
+five checkpoint hashes, equal-fold probability rule and absence of
+post-processing are frozen. The dedicated `final_holdout` evaluator then performs
+exactly one aggregate evaluation of the 12 test subjects, writes subject rows only
+to protected storage, and reports a deterministic subject-bootstrap 95% confidence
+interval. The result is terminal evidence and cannot authorize further tuning.
