@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from auto_researcher.contracts.enums import EventType
-from auto_researcher.contracts.models import EvaluationResult, VerificationResult
+from auto_researcher.contracts.models import (
+    EvaluationResult,
+    ExperimentSpec,
+    VerificationResult,
+)
 from auto_researcher.graph.nodes.provenance import record_provenance
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.runtime.dependencies import RuntimeDependencies
@@ -45,6 +49,78 @@ def _replace_candidate(
         for item in collection.candidates
     )
     return OpenEvolveCandidateCollection(candidates=candidates)
+
+
+def _canonical_generation_zero_experiment(
+    state: ResearchState,
+    dependencies: RuntimeDependencies,
+    candidate: OpenEvolveCandidate,
+    proposed: ExperimentSpec,
+) -> ExperimentSpec:
+    """Reuse the exact published incumbent bundle across search methods."""
+
+    if candidate.generation != 0:
+        return proposed
+    record = dependencies.provenance_store.get_evaluation_reuse(
+        state["run_id"], proposed.experiment_id
+    )
+    if record is None:
+        return proposed
+
+    from auto_researcher.graph.nodes.evaluate import _published_payload
+
+    published = _published_payload(
+        dependencies,
+        record.expected_artefact_references,
+        "experiment_spec.json",
+        ExperimentSpec,
+    )
+    if payload_hash(published) != record.experiment_payload_hash:
+        raise ValueError("openevolve_incumbent_experiment_identity_conflict")
+    proposed_configuration = dependencies.task.normalise_configuration(
+        dict(proposed.configuration)
+    )
+    published_configuration = dependencies.task.normalise_configuration(
+        dict(published.configuration)
+    )
+    configuration_differences = {
+        key
+        for key in proposed_configuration.keys() | published_configuration.keys()
+        if proposed_configuration.get(key) != published_configuration.get(key)
+    }
+    if configuration_differences - {"maximum_epochs"}:
+        raise ValueError("openevolve_incumbent_configuration_conflict")
+    if (
+        proposed.evaluator_id != published.evaluator_id
+        or proposed.dataset_version != published.dataset_version
+        or proposed.provenance != published.provenance
+    ):
+        raise ValueError("openevolve_incumbent_metadata_conflict")
+    if configuration_differences or proposed.code_version != published.code_version:
+        # Imported parents may have been produced by an earlier compatible
+        # evaluator implementation.  They cannot be reused under the current
+        # evaluator identity, but the unchanged policy remains a valid
+        # generation-zero candidate.  Give that re-evaluation a deterministic
+        # fresh identity instead of colliding with the imported artefact.
+        request = state.get("search_request")
+        request_id = (
+            request.request_id if request is not None else proposed.search_request_id
+        )
+        experiment_id = (
+            "experiment-"
+            + payload_hash(
+                {
+                    "identity": "openevolve-generation-zero-reanchor-v1",
+                    "run_id": state["run_id"],
+                    "search_request_id": request_id,
+                    "candidate_id": candidate.candidate_id,
+                    "configuration": proposed_configuration,
+                    "code_version": proposed.code_version,
+                }
+            )[:16]
+        )
+        return proposed.model_copy(update={"experiment_id": experiment_id})
+    return published
 
 
 def _event(
@@ -297,6 +373,12 @@ def prepare_openevolve_candidate(
                 state["contract"],
                 dependencies.experiment_metadata,
                 run_id=state["run_id"],
+            )
+            experiment = _canonical_generation_zero_experiment(
+                state,
+                dependencies,
+                candidate,
+                experiment,
             )
             if (
                 experiment.evaluator_id != dependencies.experiment_metadata.evaluator_id
@@ -579,6 +661,11 @@ def decide_openevolve_continue(
     search_contract = state["openevolve_search_contract"]
     assert population is not None and search_contract is not None
     reason = _backend(dependencies).stop_reason(population, search_contract)
+    if (
+        state["budget"].deadline_at is not None
+        and dependencies.clock() >= state["budget"].deadline_at
+    ):
+        reason = "campaign_deadline_reached"
     if reason is not None:
         population = population.model_copy(
             update={"stopping_status": "STOPPED", "stop_reason": reason}

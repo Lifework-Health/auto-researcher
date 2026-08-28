@@ -8,11 +8,15 @@ from pydantic import JsonValue
 
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import (
+    DecisionEvent,
     EvaluationResult,
+    ExperimentSpec,
     ResearchContract,
     SearchRequest,
+    VerificationResult,
 )
 from auto_researcher.search.optuna.models import OptunaStudySpec
+from auto_researcher.search.optuna.pruning import OptunaIntermediateReporter
 from auto_researcher.search.openevolve.protocols import EvolvableComponent
 from auto_researcher.search.openevolve.live_dataset import LiveMutationDatasetClass
 from auto_researcher.search.openevolve.live_boundary import (
@@ -23,7 +27,7 @@ from auto_researcher.knowledge.models import (
     KnowledgeGroundingPolicy,
     KnowledgeQueryPlan,
 )
-from auto_researcher.agents.models import TaskAgentContext
+from auto_researcher.agents.models import PriorResearchSummary, TaskAgentContext
 from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.tasks.models import (
     ArtefactPolicy,
@@ -96,6 +100,20 @@ class OptunaCapableTask(Protocol):
 
 
 @runtime_checkable
+class IntermediateReportingEvaluator(Protocol):
+    """Optional cooperative evaluator seam for native Optuna pruning."""
+
+    evaluator_id: str
+
+    def evaluate_with_intermediate_reporting(
+        self,
+        experiment: ExperimentSpec,
+        contract: ResearchContract,
+        reporter: OptunaIntermediateReporter,
+    ) -> EvaluationResult: ...
+
+
+@runtime_checkable
 class OpenEvolveCapableTask(Protocol):
     """Optional task-owned mutable surface for bounded program search."""
 
@@ -104,6 +122,71 @@ class OpenEvolveCapableTask(Protocol):
         contract: ResearchContract,
         runtime_context: TaskRuntimeContext,
     ) -> EvolvableComponent: ...
+
+
+@runtime_checkable
+class CampaignDurationCapableTask(Protocol):
+    """Optional conservative wall-time estimate used before admitting a block."""
+
+    def estimate_search_duration_seconds(
+        self,
+        request: SearchRequest,
+        runtime_context: TaskRuntimeContext,
+    ) -> float: ...
+
+
+@runtime_checkable
+class CampaignDeadlinePortfolioCapableTask(Protocol):
+    """Optional completion request when exploration no longer fits safely."""
+
+    def apply_campaign_deadline_policy(
+        self,
+        request: SearchRequest,
+        *,
+        run_id: str,
+        cycle: int,
+        events: tuple[DecisionEvent, ...],
+        remaining_seconds: float,
+        runtime_context: TaskRuntimeContext,
+    ) -> SearchRequest | None: ...
+
+
+@runtime_checkable
+class CampaignRequestEnrichmentCapableTask(Protocol):
+    """Optional deterministic handoff from verified results into a search block."""
+
+    def enrich_search_request(
+        self,
+        request: SearchRequest,
+        prior_verified_findings: tuple[PriorResearchSummary, ...],
+    ) -> SearchRequest: ...
+
+
+@runtime_checkable
+class CampaignPortfolioCapableTask(Protocol):
+    """Optional controller-owned cross-method portfolio and promotion policy."""
+
+    def apply_campaign_portfolio(
+        self,
+        request: SearchRequest,
+        *,
+        run_id: str,
+        cycle: int,
+        events: tuple[DecisionEvent, ...],
+        runtime_context: TaskRuntimeContext,
+    ) -> SearchRequest | None: ...
+
+
+@runtime_checkable
+class SafeEvidencePayloadCapableTask(Protocol):
+    """Optional task-owned, aggregate-only evidence payload for provenance."""
+
+    def safe_evidence_payload(
+        self,
+        experiment: ExperimentSpec,
+        evaluation: EvaluationResult,
+        verification: VerificationResult,
+    ) -> dict[str, JsonValue]: ...
 
 
 @runtime_checkable

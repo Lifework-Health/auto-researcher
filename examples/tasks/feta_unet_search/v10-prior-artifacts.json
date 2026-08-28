@@ -1,0 +1,39 @@
+{
+  "schema_version": "feta-unet-v10-prior-artifacts-v1",
+  "usage": "read-only evidence and reproducibility references; V10 roots train from scratch",
+  "sealed_holdout_evaluations": 0,
+  "artifacts": [
+    {
+      "experiment_id": "experiment-fd7420c452e1982d",
+      "role": "v8_best_bound_prior",
+      "score": 0.8260410594691577,
+      "experiment_spec_sha256": "17defc9ca0a59b1d3003b63d2ce206153035159190f61f9048b9fb751c0d0be2",
+      "evaluation_result_sha256": "c735a51b2a27464f9130ef2fe9250bdbe36823f12bbe0cbc53ad6e69b2a8ea4f",
+      "best_checkpoint_sha256": "ca0353ca734aa0f690ab808b1c6bb136a7116291ef51c86fa24cfc52032ccae7"
+    },
+    {
+      "experiment_id": "experiment-73ea1c554b176a67",
+      "role": "v9_campaign_champion",
+      "score": 0.8246828360878596,
+      "experiment_spec_sha256": "46a94d48faf2f050854b20ee201d5150ce49745bf2f053ca760010ceff0c91b8",
+      "evaluation_result_sha256": "e937a8f6a4ac763075655204fa3904a83116fd815839398309530f6d512f5119",
+      "best_checkpoint_sha256": "455249407b8d0b5d69085a641f6fb48a20c47d48fbf90550936d783525b0b77e"
+    },
+    {
+      "experiment_id": "experiment-98f66cf259655b73",
+      "role": "v9_balanced_dynunet_finalist",
+      "score": 0.8226116436225303,
+      "experiment_spec_sha256": "1ebe1a9de16536ccd7183b762e997e2c70286ed866077d61960b0c07e73b7bd1",
+      "evaluation_result_sha256": "94ea81e1b7a3a649e3ae24c2bac12e3cd8d193a3a11d2ffe363f63407900bd2c",
+      "best_checkpoint_sha256": "57f6bb0fe07ab9ab8fe3e800370dd2fdb0d45ef50b9e6f9dea0ae102a532e78a"
+    },
+    {
+      "experiment_id": "experiment-547658217ac390ac",
+      "role": "v9_deep_dynunet_finalist",
+      "score": 0.820123976070006,
+      "experiment_spec_sha256": "6739729a38461c0b71114945f6614b3b200aa13fb30d6afdc68941fc2c74617e",
+      "evaluation_result_sha256": "d96fa6f5f7e883fa154e32d74979f1a6c6cc9c3363216d2ea16684d701100757",
+      "best_checkpoint_sha256": "f3c0e0e94c2e3cd11d0ee038e569b7d373af800e923aa99148c825551856d1fc"
+    }
+  ]
+}

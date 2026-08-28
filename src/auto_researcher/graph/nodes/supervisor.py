@@ -2,18 +2,24 @@
 
 from auto_researcher.contracts.enums import RunStatus
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.runtime.dependencies import RuntimeDependencies
 
 
-def supervisor_prepare(state: ResearchState) -> dict:
+def supervisor_prepare(
+    state: ResearchState, dependencies: RuntimeDependencies | None = None
+) -> dict:
     if state["status"] != RunStatus.RUNNING:
         return {"executed_nodes": ["supervisor_prepare"]}
-    if state["errors"]:
+    recovered = set(state.get("recovered_error_codes", ()))
+    if any(code not in recovered for code in state["errors"]):
         return {
             "status": RunStatus.FAILED,
             "stop_reason": "fatal_error",
             "executed_nodes": ["supervisor_prepare"],
         }
-    budget = state["budget"].before_cycle()
+    budget = state["budget"].before_cycle(
+        dependencies.clock() if dependencies is not None else None
+    )
     if budget.exhausted:
         return {
             "budget": budget,
@@ -40,5 +46,11 @@ def supervisor_prepare(state: ResearchState) -> dict:
         "diagnostic_evaluation_result": None,
         "diagnostic_verification_result": None,
         "knowledge_bundle_reference": None,
+        "planner_failure_code": None,
+        "planner_failure_stage": None,
+        "planner_fallback_code": None,
+        "hypothesis_failure_code": None,
+        "hypothesis_failure_stage": None,
+        "hypothesis_fallback_code": None,
         "executed_nodes": ["supervisor_prepare"],
     }

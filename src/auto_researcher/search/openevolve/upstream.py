@@ -34,6 +34,9 @@ from auto_researcher.search.openevolve.upstream_models import (
     UpstreamOpenEvolveAdapterContract,
     UpstreamOpenEvolveAdapterState,
 )
+from auto_researcher.search.openevolve.validation import (
+    candidate_static_validation_guidance,
+)
 from auto_researcher.search.openevolve.hardened_executor import (
     HardenedDockerExecutor,
 )
@@ -47,21 +50,12 @@ from auto_researcher.tasks.protocols import (
 )
 
 DISABLED_UPSTREAM_FEATURES = (
-    "controller",
-    "evaluator",
-    "provider_clients",
-    "embeddings",
-    "network",
-    "subprocess_execution",
-    "package_installation",
-    "filesystem_mutation",
-    "persistence",
-    "resume",
-    "budgets",
-    "stopping",
-    "scientific_judgement",
-    "parallel_execution",
-    "telemetry_prompts",
+    "arbitrary_package_installation",
+    "cascade_evaluation",
+    "direct_provider_credential_access",
+    "embedding_novelty",
+    "arbitrary_network_access",
+    "unrestricted_host_filesystem",
 )
 
 
@@ -102,7 +96,7 @@ def validate_upstream_dependency(contract: UpstreamOpenEvolveAdapterContract) ->
         raise ValueError("upstream_openevolve_identity_mismatch")
     if installed_record_hash() != UPSTREAM_INSTALLED_RECORD_HASH:
         raise ValueError("upstream_openevolve_dependency_hash_mismatch")
-    from openevolve.database import Program
+    from openevolve.database import Program  # type: ignore[import-untyped]
 
     required = {"id", "code", "parent_id", "generation", "metrics", "metadata"}
     if not required.issubset(Program.__dataclass_fields__):
@@ -158,7 +152,6 @@ class UpstreamOpenEvolveAdapter:
     operator_id = "pinned-upstream-openevolve"
     operator_version = "upstream-openevolve-adapter-v1"
     model_calls_per_mutation = 1
-    provenance = "FAKE_MODEL"
 
     def __init__(
         self,
@@ -168,6 +161,9 @@ class UpstreamOpenEvolveAdapter:
         validate_upstream_dependency(contract)
         self.contract = contract
         self.bridge = bridge
+        self.provenance = getattr(bridge, "creation_provenance", "FAKE_MODEL")
+        if self.provenance not in {"FAKE_MODEL", "LIVE_MODEL"}:
+            raise ValueError("upstream_mutation_provenance_invalid")
         self.state = UpstreamOpenEvolveAdapterState(
             adapter_identity_hash=payload_hash(contract)
         )
@@ -210,6 +206,19 @@ class UpstreamOpenEvolveAdapter:
                 "protocol": "upstream-adapter-mutation-request-v2",
                 "mutation_constraints": constraints.model_dump(mode="json"),
             }
+            if getattr(self.bridge, "development_dynamic_feedback", False):
+                request["feedback_instruction"] = (
+                    "Treat campaign_context and parent_feedback as the only "
+                    "evidence about earlier results; do not invent results."
+                )
+                request["static_validation_rules"] = list(
+                    candidate_static_validation_guidance(component)
+                )
+                request["campaign_context"] = dict(reservation.campaign_context)
+                request["parent_feedback"] = dict(reservation.parent_feedback)
+        bind_search_request = getattr(self.bridge, "bind_search_request", None)
+        if bind_search_request is not None:
+            bind_search_request(reservation.search_request_id)
         response, call = self.bridge.complete(request, reservation.reservation_id)
         try:
             envelope = UpstreamMutationEnvelope.model_validate(response)
@@ -247,8 +256,11 @@ class UpstreamOpenEvolveAdapter:
         self, candidates: tuple[OpenEvolveCandidate, ...], scores: dict[str, float]
     ) -> str:
         """Use upstream population bookkeeping as a suggestion, never authority."""
-        from openevolve.config import DatabaseConfig
-        from openevolve.database import Program, ProgramDatabase
+        from openevolve.config import DatabaseConfig  # type: ignore[import-untyped]
+        from openevolve.database import (  # type: ignore[import-untyped]
+            Program,
+            ProgramDatabase,
+        )
 
         database = ProgramDatabase(
             DatabaseConfig(
@@ -297,6 +309,10 @@ def default_adapter_contract(lock_path: Path) -> UpstreamOpenEvolveAdapterContra
             "program_dataclass": True,
             "database_mapping": True,
             "direct_provider_calls": False,
+            "native_controller": True,
+            "native_population_archive": True,
+            "resource_broker_parallel_adapter": True,
+            "scientific_evaluator_adapter": True,
         },
     )
 

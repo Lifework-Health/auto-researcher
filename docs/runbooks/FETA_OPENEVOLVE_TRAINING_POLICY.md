@@ -6,6 +6,23 @@
 
 Pure OpenEvolve uses the registered base configuration and seed policy in `openevolve-deterministic-smoke.yaml`. A hybrid run uses `openevolve-hybrid-template.yaml`; replace only `runtime.options.base_configuration` with the selected bounded Optuna configuration. This inherits configuration values, not checkpoints. The recorded `seeding_mode`, base identity, policy identity, candidate source hash and OpenEvolve lineage distinguish pure and hybrid runs.
 
+## Public-data development canary
+
+`openevolve-development-native-template.yaml` is an explicitly non-production
+host-run canary for the public FeTA development data. It runs one seed and two
+live mutations through the existing local source sandbox and trusted host GPU
+evaluator. It does not select the hardened Docker executor and cannot be
+configured alongside `openevolve_live_mutation`. The template fixes the live
+budget at two Anthropic calls and writes a source-free JSONL usage ledger.
+
+Before launch, replace `runtime.options.base_configuration` with the completed
+Optuna winner and render the absolute data, workspace, output and usage-ledger
+paths. The canary may continue from a verified seed that misses the production
+per-tissue feasibility threshold. Such candidates remain marked scientifically
+ineligible and are labelled `development_population_only`; this relaxation
+exists only to exercise two development mutations and does not produce a
+scientific or production champion.
+
 The budget includes generation zero. Three candidate evaluations mean one seed plus two evolved candidates. `maximum_candidate_evaluations`, the `SearchRequest` experiment budget and the contract's `maximum_experiments` must agree.
 
 Macro Dice remains the optimization objective, but scientific feasibility is a hard eligibility gate before parent selection and population replacement. `feta-evolve-scientific-feasibility-v1` requires zero empty predictions and Dice of at least 0.50 for every one of the seven foreground tissues at screen and full fidelity. The threshold is inclusive. Reconstruction gap remains diagnostic rather than a hard gate. Scientifically infeasible candidates remain archived with their evaluation, verification and lineage evidence, but cannot enter the active/best population or become parents.
@@ -13,6 +30,14 @@ Macro Dice remains the optimization objective, but scientific feasibility is a h
 ## GPU and resource expectations
 
 Candidate source preparation is CPU-only and sandboxed. Each scientific evaluation is a full fold-0 SegResNet training run. The production template uses courteous primary admission on physical GPU 0 and permits only 25/50/100 epoch fidelities. Set `CUDA_VISIBLE_DEVICES=0`; training uses logical `cuda:0`. Use separate output/checkpoint databases and do not point this task at an active Optuna run's output directory. The deterministic preprocessing cache may safely share a workspace because population is protected by `flock` and the cache identity is unchanged.
+
+## Full-strength A4 acceptance profile
+
+`examples/tasks/feta_seg_evolve/openevolve-a4-full-strength-template.yaml` is the bounded post-merge A4 profile. It enables the pinned native controller with a population and archive of 12, three islands, ring migration, safe `primary_score` and `policy_complexity` feature dimensions, three parallel equivalent-GPU admissions, and checkpointing every two iterations. `default_feta_evolve_a4_openevolve_configuration()` exposes the same executable search mapping; `native_configuration_from_search_space()` and `native_limits_from_search_space()` validate and translate it into the embedded engine contracts.
+
+Each generated source still passes through the task-owned sandbox and validates to canonical `TrainingPolicy@feta-training-policy-v1` before scientific identity or ResourceBroker admission. Equivalent source representations reuse compatible evaluator evidence before GPU execution. OpenEvolve owns the native population, archive, feature map, islands, migration, selection, prompt strategy, and champion; Auto Researcher owns the evaluator, verifier, approval, durable provider bridge, evidence, global ceilings, and resource leases. Resource placement does not enter scientific identity.
+
+The profile is not permission to start a paid campaign. Before A4, bind a fresh metadata-only approval and Managed Secrets provider reference, confirm three genuinely equivalent GPU candidates, choose a fresh search/output identity, and retain the exact immutable search envelope on resume. The offline A4-like integration gate must remain green before any paid/GPU invocation.
 
 ## Live-mutation security status
 

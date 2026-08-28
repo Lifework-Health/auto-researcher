@@ -14,6 +14,7 @@ from auto_researcher.graph.nodes.hypothesis import generate_hypothesis
 from auto_researcher.graph.nodes.knowledge import retrieve_knowledge
 from auto_researcher.graph.nodes.initialise import initialise_run
 from auto_researcher.graph.nodes.planner import plan_search
+from auto_researcher.graph.nodes.research_director import research_director_decide
 from auto_researcher.graph.nodes.optuna import (
     optuna_ask_trial,
     optuna_create_experiment,
@@ -33,6 +34,7 @@ from auto_researcher.graph.nodes.openevolve import (
     select_openevolve_parent,
     validate_openevolve_candidate,
 )
+from auto_researcher.graph.nodes.native_openevolve import run_native_openevolve
 from auto_researcher.graph.nodes.provenance import record_provenance
 from auto_researcher.graph.nodes.search_router import search_router
 from auto_researcher.graph.nodes.stop import supervisor_decide
@@ -45,11 +47,14 @@ from auto_researcher.graph.routing import (
     route_after_initialise,
     route_after_knowledge,
     route_after_optuna_decision,
+    route_after_evaluation,
     route_after_optuna_prepare,
     route_after_openevolve_decision,
     route_after_openevolve_preparation,
     route_after_openevolve_validation,
+    route_after_native_openevolve,
     route_after_prepare,
+    route_after_research_director,
     route_after_verification,
     route_approval,
     route_search_backend,
@@ -64,8 +69,10 @@ def build_graph(
     interrupt_after: list[str] | Literal["*"] | None = None,
 ):
     graph = StateGraph(ResearchState)
-    graph.add_node("initialise_run", initialise_run)
-    graph.add_node("supervisor_prepare", supervisor_prepare)
+    graph.add_node("initialise_run", partial(initialise_run, dependencies=dependencies))
+    graph.add_node(
+        "supervisor_prepare", partial(supervisor_prepare, dependencies=dependencies)
+    )
     graph.add_node(
         "retrieve_knowledge",
         partial(retrieve_knowledge, dependencies=dependencies),
@@ -73,6 +80,10 @@ def build_graph(
     graph.add_node(
         "generate_hypothesis",
         partial(generate_hypothesis, dependencies=dependencies),
+    )
+    graph.add_node(
+        "research_director_decide",
+        partial(research_director_decide, dependencies=dependencies),
     )
     graph.add_node("plan_search", partial(plan_search, dependencies=dependencies))
     graph.add_node(
@@ -96,7 +107,9 @@ def build_graph(
         "record_provenance",
         partial(record_provenance, dependencies=dependencies),
     )
-    graph.add_node("supervisor_decide", supervisor_decide)
+    graph.add_node(
+        "supervisor_decide", partial(supervisor_decide, dependencies=dependencies)
+    )
     graph.add_node(
         "optuna_prepare_study",
         partial(optuna_prepare_study, dependencies=dependencies),
@@ -117,7 +130,10 @@ def build_graph(
         "optuna_record_trial",
         partial(optuna_record_trial, dependencies=dependencies),
     )
-    graph.add_node("optuna_decide_study", optuna_decide_study)
+    graph.add_node(
+        "optuna_decide_study",
+        partial(optuna_decide_study, dependencies=dependencies),
+    )
     graph.add_node(
         "optuna_finalise_study",
         partial(optuna_finalise_study, dependencies=dependencies),
@@ -154,6 +170,10 @@ def build_graph(
         "finalise_openevolve",
         partial(finalise_openevolve, dependencies=dependencies),
     )
+    graph.add_node(
+        "run_native_openevolve",
+        partial(run_native_openevolve, dependencies=dependencies),
+    )
 
     graph.add_edge(START, "initialise_run")
     graph.add_conditional_edges(
@@ -163,6 +183,9 @@ def build_graph(
     )
     graph.add_conditional_edges("supervisor_prepare", route_after_prepare)
     graph.add_conditional_edges("retrieve_knowledge", route_after_knowledge)
+    graph.add_conditional_edges(
+        "research_director_decide", route_after_research_director
+    )
     graph.add_edge("generate_hypothesis", "plan_search")
     graph.add_edge("plan_search", "approval_router")
     graph.add_conditional_edges("approval_router", route_approval)
@@ -175,7 +198,7 @@ def build_graph(
     )
     graph.add_edge("optuna_ask_trial", "optuna_create_experiment")
     graph.add_edge("optuna_create_experiment", "evaluate_experiment")
-    graph.add_edge("evaluate_experiment", "verify_evidence")
+    graph.add_conditional_edges("evaluate_experiment", route_after_evaluation)
     graph.add_conditional_edges("verify_evidence", route_after_verification)
     graph.add_edge("optuna_tell_trial", "optuna_record_trial")
     graph.add_edge("optuna_record_trial", "optuna_decide_study")
@@ -201,6 +224,11 @@ def build_graph(
     graph.add_edge("select_openevolve_parent", "propose_openevolve_candidate")
     graph.add_edge("propose_openevolve_candidate", "validate_openevolve_candidate")
     graph.add_edge("finalise_openevolve", "supervisor_decide")
+    graph.add_conditional_edges(
+        "run_native_openevolve",
+        route_after_native_openevolve,
+        {"run_native_openevolve": "run_native_openevolve", "__end__": END},
+    )
     graph.add_edge("unavailable_backend", "record_provenance")
     graph.add_edge("record_provenance", "supervisor_decide")
     graph.add_conditional_edges(

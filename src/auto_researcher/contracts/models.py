@@ -291,6 +291,7 @@ class DecisionEvent(ImmutableDomainModel):
     timestamp: datetime
     code_version: str = Field(min_length=1)
     provenance: ProvenanceKind
+    safe_payload: FrozenJsonDict = Field(default_factory=dict)
 
 
 class BudgetState(ImmutableDomainModel):
@@ -308,12 +309,16 @@ class BudgetState(ImmutableDomainModel):
     model_cache_read_tokens_used: int = Field(default=0, ge=0)
     model_cost_used: float = Field(default=0.0, ge=0)
     evaluator_cost_used: float = Field(default=0.0, ge=0)
+    started_at: datetime | None = None
+    deadline_at: datetime | None = None
     exhausted: bool = False
     exhaustion_reason: str | None = None
 
-    def before_cycle(self) -> "BudgetState":
+    def before_cycle(self, now: datetime | None = None) -> "BudgetState":
         reason: str | None = None
-        if self.cycles_used >= self.maximum_cycles:
+        if self.deadline_at is not None and now is not None and now >= self.deadline_at:
+            reason = "campaign_deadline_reached"
+        elif self.cycles_used >= self.maximum_cycles:
             reason = "maximum_cycles_reached"
         elif self.experiments_used >= self.maximum_experiments:
             reason = "maximum_experiments_reached"
@@ -324,6 +329,11 @@ class BudgetState(ImmutableDomainModel):
                 update={"exhausted": True, "exhaustion_reason": reason}
             )
         return self.model_copy(update={"cycles_used": self.cycles_used + 1})
+
+    def remaining_seconds(self, now: datetime) -> float | None:
+        if self.deadline_at is None:
+            return None
+        return max(0.0, (self.deadline_at - now).total_seconds())
 
     def record_experiment(self, cost: float = 0.0) -> "BudgetState":
         experiments = self.experiments_used + 1

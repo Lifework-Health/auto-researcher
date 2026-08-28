@@ -10,6 +10,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 ALLOWED_CHECKPOINT_TYPES = [
+    ("auto_researcher.agents.models", "ResearchDirective"),
     ("auto_researcher.contracts.enums", "EvidenceStatus"),
     ("auto_researcher.contracts.enums", "GroundingStatus"),
     ("auto_researcher.contracts.enums", "EventType"),
@@ -38,6 +39,13 @@ ALLOWED_CHECKPOINT_TYPES = [
     ("auto_researcher.search.optuna.models", "FloatParameterSpec"),
     ("auto_researcher.search.optuna.models", "IntParameterSpec"),
     ("auto_researcher.search.optuna.models", "CategoricalParameterSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaConditionSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaObjectiveSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaConstraintSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaSamplerSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaPrunerSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaDiagnosticsSpec"),
+    ("auto_researcher.search.optuna.models", "OptunaStudyDiagnostics"),
     ("auto_researcher.search.optuna.models", "OptunaStudySpec"),
     ("auto_researcher.search.optuna.models", "OptunaTrialReference"),
     ("auto_researcher.search.optuna.models", "OptunaTrialOutcome"),
@@ -66,6 +74,18 @@ ALLOWED_CHECKPOINT_TYPES = [
     (
         "auto_researcher.search.openevolve.upstream_models",
         "UpstreamOpenEvolveAdapterState",
+    ),
+    (
+        "auto_researcher.search.openevolve.native_engine",
+        "SafeEvolutionFeedback",
+    ),
+    (
+        "auto_researcher.search.openevolve.native_engine",
+        "NativeEvolutionDecision",
+    ),
+    (
+        "auto_researcher.search.openevolve.native_engine",
+        "NativeEvolutionResult",
     ),
 ]
 

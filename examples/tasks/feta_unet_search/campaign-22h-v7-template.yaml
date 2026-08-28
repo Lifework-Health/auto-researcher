@@ -1,0 +1,154 @@
+# V7 mechanism-changing U-Net campaign. The 22-hour hard ceiling contains a
+# 20-hour nominal campaign plus two hours of graduation-only grace.
+task: {id: feta_unet_search, version: "1.0"}
+
+agents:
+  mode: live
+  provider: anthropic
+  model_id: claude-sonnet-4-5-20250929
+  pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+  budget: {maximum_hypothesis_calls_per_cycle: 1, maximum_planner_calls_per_cycle: 1, maximum_attempts_per_agent_call: 4, maximum_input_context_size: 48000, maximum_output_tokens: 2048, maximum_cost_per_call: 0.50, maximum_total_model_calls: 384}
+  hypothesis: {temperature: 0.0, maximum_output_tokens: 1200, timeout_seconds: 120, maximum_attempts: 4, maximum_cost_per_call: 0.50, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+  planner: {temperature: 0.0, maximum_output_tokens: 1600, timeout_seconds: 120, maximum_attempts: 4, maximum_cost_per_call: 0.50, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+
+openevolve_development_mutation:
+  protocol_version: development-live-openevolve-runtime-v1
+  mode: local_development
+  acknowledgement: public-data-non-production-development
+  maximum_model_calls: 96
+  maximum_total_cost_usd: 50.0
+  usage_log_file: /absolute/path/to/runtime/openevolve-model-usage.jsonl
+  credential: {logical_name: anthropic_api_key, provider: environment, provider_identifier: ANTHROPIC_API_KEY, version: null, required: true}
+  model:
+    provider: anthropic
+    model_id: claude-sonnet-4-5-20250929
+    temperature: 0.25
+    maximum_output_tokens: 4096
+    timeout_seconds: 180
+    maximum_attempts: 1
+    maximum_cost_per_call: 0.40
+    prompt_version: openevolve-mutation-prompt-v2
+    structured_output_strategy: pydantic
+    pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+
+experiment:
+  # The adaptive portfolio owns the four Direct roots below. This initial
+  # candidate is a valid scientific seed for the CLI's Direct launch path;
+  # it is replaced by the first portfolio root before execution.
+  maximum_epochs: 25
+  model_variant: structural_basic_unet
+  feature_width: v7_deep_6
+  architecture_budget: basicunet-structural-15m-150m-v1
+  upsample: deconv
+  kernel_profile: standard
+  residual_blocks: false
+  deep_supervision_heads: 0
+  convolutions_per_stage: 2
+  dilation_profile: none
+  skip_fusion: concat
+  downsample: max_pool
+  activation: ReLU
+  norm: instance
+  optimizer: Adam
+  lr_schedule: polynomial
+  loss_variant: dice_focal
+  learning_rate: 0.00014676947772184417
+  weight_decay: 0.000009170939006065463
+  dropout: 0.08363354043325907
+  dice_weight: 1.2833957004567855
+  positive_negative_ratio: "2:1"
+  augmentation_policy: intensity
+  openevolve:
+    population_size: 1
+    maximum_generations: 3
+    maximum_candidate_evaluations: 4
+    maximum_wall_time_seconds: 79200
+    maximum_model_calls: 3
+    maximum_failed_candidates: 4
+    maximum_consecutive_failures: 4
+    maximum_artefact_bytes: 20000000
+    random_seed: 20260822
+    objective_direction: MAXIMIZE
+    objective_threshold: null
+    sandbox_policy_id: openevolve-sandbox-v1
+    candidate_cpu_time_seconds: 2
+    candidate_wall_time_seconds: 3.0
+    candidate_memory_bytes: 268435456
+    candidate_process_limit: 1
+    candidate_output_bytes: 64000
+    candidate_log_bytes: 8000
+    candidate_file_count_limit: 8
+    candidate_workspace_bytes: 1048576
+    candidate_file_size_bytes: 64000
+
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: /absolute/path/to/runtime/output
+  workspace_dir: /absolute/path/to/runtime/workspace
+  environment: {CUDA_VISIBLE_DEVICES: "1"}
+  options:
+    protected_storage_acknowledged: true
+    workspace_namespace: feta_unet_campaign_v7
+    shared_preprocessing_cache: true
+    openevolve_fidelity: 25
+    campaign_seconds_per_epoch: 90.0
+    campaign_seconds_per_epoch_by_model_variant: {basic_unet: 70.0, unet_plain: 70.0, unet_residual: 70.0, structural_basic_unet: 90.0}
+    # New exploration stops with 6.75 hours left. This is sufficient for two
+    # worst-case 25-to-150 continuations at 90 seconds/epoch plus reporting.
+    campaign_finalisation_reserve_seconds: 24300.0
+    campaign_reporting_reserve_seconds: 1800.0
+    inference_calibration:
+      enabled: true
+      finalist_count: 2
+      maximum_variants: 8
+      overlaps: [0.25, 0.5, 0.75]
+      blending_modes: [gaussian, constant]
+      flip_tta: [false, true]
+      class_specific_postprocessing: diagnostic_gated
+    campaign_prior_results: 30
+    continue_after_failed_candidate: true
+    maximum_peak_gpu_memory_bytes: 47244640256
+    initial_incumbent_configuration:
+      {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_deep_6, architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, convolutions_per_stage: 2, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+    initial_campaign_observations:
+      - "Verified V6 finalist mean macro Dice was 0.8206412646177336 at best epoch 110 and 0.8183156149629622 at epoch 150."
+      - "A second verified V6 finalist reached 0.8194349024061267 at best epoch 105 and 0.818386262202946 at epoch 150."
+      - "Both V6 finalists plateaued after epochs 105 to 110, so V7 prioritises structural mechanisms and lineage-local optimisation rather than longer training or uniform width scaling."
+      - "REQ-11 panel c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871 found only +0.001136 mean macro Dice for experiment-643b2c5f65b4bc25 and +0.000035 for experiment-ccc5fcf318cf2eb1 relative to the V5 champion, with mixed tissue-level gains and regressions."
+      - "REQ-11 found shared topology-fragmentation signals and approximately +1.4 mm deep-grey-matter HD95 deltas for both V6 finalists; OpenEvolve should prioritise continuity, receptive-field and skip-fusion mechanisms while macro Dice remains the sole optimisation objective."
+      - "REQ-11 measured complementary tissue advantages between the V6 finalists: 10 left material wins, 17 right material wins and 57 near-ties. Diversity and the separate ensemble lane remain warranted."
+      - "A separately trained U-Net reportedly reached approximately 0.84 under a believed-comparable evaluation, but its architecture and training policy remain deliberately withheld."
+    campaign_portfolio:
+      version: feta-basicunet-structural-tree-4-12-8-2-8-4-2-v2
+      mutations_per_root: 3
+      local_parent_count: 4
+      optuna_trials_per_parent: 2
+      controlled_wildcard_count: 2
+      promotion_targets: {"50": 8, "100": 4, "150": 2}
+      wildcard_counts: {"50": 2, "100": 1, "150": 0}
+      # Verified V6 evidence is supplied to every structural mutation as parent
+      # context. It is never scheduled or retrained inside V7.
+      req11_diagnostic:
+        schema_version: feta-unet-diagnostic-report-v1
+        diagnostic_id: feta-unet-v7-parent-diagnostics-20260822
+        panel_identity: c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871
+        case_count: 12
+        baseline_experiment_id: experiment-fc2d8d2a371ddba0
+        candidates:
+          - {experiment_id: experiment-643b2c5f65b4bc25, mean_macro_dice_delta: 0.001136112933560011}
+          - {experiment_id: experiment-ccc5fcf318cf2eb1, mean_macro_dice_delta: 0.000035058287334012915}
+        complementarity: {left_material_win_count: 10, right_material_win_count: 17, near_tie_count: 57, observed: true}
+        priorities: [topology_continuity, deep_grey_boundary, external_csf_retention, tissue_complementarity]
+        interpretation_boundary: diagnostic_observation_not_objective
+      v6_parent_evidence:
+        - experiment_id: experiment-643b2c5f65b4bc25
+          best_score: 0.8206412646177336
+          configuration: {maximum_epochs: 150, model_variant: basic_unet, feature_width: v6_deep_80, architecture_budget: basicunet-15m-150m-v1, upsample: pixelshuffle, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - experiment_id: experiment-ccc5fcf318cf2eb1
+          best_score: 0.8194349024061267
+          configuration: {maximum_epochs: 150, model_variant: basic_unet, feature_width: v6_balanced_96, architecture_budget: basicunet-15m-150m-v1, upsample: pixelshuffle, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: constant, loss_variant: dice_focal, learning_rate: 0.00009338464902664518, weight_decay: 0.0000032557989778462594, dropout: 0.12244504239178453, dice_weight: 1.278374357967457, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+      structural_roots:
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_deep_6, architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, convolutions_per_stage: 2, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_balanced_5, architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 2, convolutions_per_stage: 3, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: PReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_asymmetric_5, architecture_budget: basicunet-structural-15m-150m-v1, upsample: nontrainable, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, convolutions_per_stage: 2, dilation_profile: multiscale, skip_fusion: gated_concat, downsample: strided_conv, activation: ReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_tversky, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: combined}
+        - {maximum_epochs: 25, model_variant: structural_basic_unet, feature_width: v7_compact_5, architecture_budget: basicunet-structural-15m-150m-v1, upsample: pixelshuffle, kernel_profile: context_deep, residual_blocks: true, deep_supervision_heads: 2, convolutions_per_stage: 3, dilation_profile: deep, skip_fusion: gated_concat, downsample: max_pool, activation: PReLU, norm: group, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_tversky, learning_rate: 0.00012, weight_decay: 0.00002, dropout: 0.05, dice_weight: 1.2, positive_negative_ratio: "3:1", augmentation_policy: geometric}

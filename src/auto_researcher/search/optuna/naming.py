@@ -29,18 +29,41 @@ def _canonical_json(value) -> str:
 
 
 def search_space_hash(spec: OptunaStudySpec) -> str:
-    payload = {
-        "schema_version": spec.schema_version,
-        "search_space_version": spec.search_space_version,
-        "direction": spec.direction.value,
-        "parameters": [
-            parameter.model_dump(mode="json") for parameter in spec.parameters
-        ],
-        "fixed_configuration": spec.fixed_configuration,
-        "sampler": spec.sampler,
-        "n_startup_trials": spec.n_startup_trials,
-        "objective_metric": spec.objective_metric,
-    }
+    if spec.is_v1:
+        # Byte-for-byte v1 payload compatibility preserves existing study names.
+        payload = {
+            "schema_version": spec.schema_version,
+            "search_space_version": spec.search_space_version,
+            "direction": spec.direction.value,
+            "parameters": [
+                parameter.model_dump(mode="json", exclude={"condition"})
+                for parameter in spec.parameters
+            ],
+            "fixed_configuration": spec.fixed_configuration,
+            "sampler": spec.sampler,
+            "n_startup_trials": spec.n_startup_trials,
+            "objective_metric": spec.objective_metric,
+        }
+    else:
+        payload = {
+            "identity_schema_version": "optuna-study-identity-v2",
+            "schema_version": spec.schema_version,
+            "search_space_version": spec.search_space_version,
+            "parameters": [
+                parameter.model_dump(mode="json") for parameter in spec.parameters
+            ],
+            "fixed_configuration": spec.fixed_configuration,
+            "sampler": spec.sampler_spec.model_dump(mode="json"),
+            "pruner": spec.pruner.model_dump(mode="json"),
+            "objectives": [
+                objective.model_dump(mode="json") for objective in spec.objective_specs
+            ],
+            "constraints": [
+                constraint.model_dump(mode="json") for constraint in spec.constraints
+            ],
+            "intermediate_reporting": spec.intermediate_reporting,
+            "diagnostics": spec.diagnostics.model_dump(mode="json"),
+        }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -59,7 +82,7 @@ def build_study_identity(
 ) -> StudyIdentity:
     space_hash = search_space_hash(spec)
     attributes: dict[str, str | int] = {
-        "identity_schema_version": "1.0",
+        "identity_schema_version": "1.0" if spec.is_v1 else "2.0",
         "run_id": run_id,
         "task_id": contract.task_id,
         "task_version": contract.task_version,
@@ -74,9 +97,18 @@ def build_study_identity(
         "seed": spec.seed,
         "trial_budget": spec.trial_budget,
     }
-    suffix = hashlib.sha256(
-        _canonical_json(attributes).encode("utf-8")
-    ).hexdigest()[:16]
+    if not spec.is_v1:
+        attributes.update(
+            objectives="|".join(
+                f"{item.name}:{item.direction.value}:{item.metric}"
+                for item in spec.objective_specs
+            ),
+            sampler=spec.sampler_spec.type,
+            pruner=spec.pruner.type,
+        )
+    suffix = hashlib.sha256(_canonical_json(attributes).encode("utf-8")).hexdigest()[
+        :16
+    ]
     prefix = "-".join(
         (
             _safe_prefix(run_id),

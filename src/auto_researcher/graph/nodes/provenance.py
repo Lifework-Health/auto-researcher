@@ -8,6 +8,7 @@ from auto_researcher.contracts.enums import EventType, ProvenanceKind
 from auto_researcher.contracts.models import DecisionEvent
 from auto_researcher.agents.provenance import append_model_call_events
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.tasks.protocols import SafeEvidencePayloadCapableTask
 from auto_researcher.knowledge.models import KnowledgeBundleReference
 from auto_researcher.knowledge.provenance import append_knowledge_retrieval_events
 from auto_researcher.runtime.dependencies import RuntimeDependencies
@@ -15,6 +16,26 @@ from auto_researcher.runtime.identity import payload_hash
 
 CODE_VERSION = "auto-researcher-v2.1-pr5.3"
 PROVENANCE_SEMANTIC_VERSION = "provenance-events-v2"
+
+
+def _experiment_request_evidence_references(
+    experiment_search_request_id: str,
+    request: Any | None,
+) -> tuple[str, ...]:
+    """Return tree metadata only when the request owns the experiment.
+
+    OpenEvolve may reuse a canonical generation-zero experiment that was
+    originally prepared by another search method.  In that case the current
+    request describes the reuse operation, not the historical experiment, and
+    its lineage annotations must not be attached to the experiment event.
+    """
+
+    if request is None or request.request_id != experiment_search_request_id:
+        return ()
+    return tuple(
+        f"evidence_reference:{reference}"
+        for reference in request.evidence_references
+    )
 
 
 def _semantic_identity(
@@ -103,6 +124,7 @@ def record_provenance(
         bundle_reference = KnowledgeBundleReference.model_validate(bundle_reference)
 
     if hypothesis:
+        hypothesis_fallback_code = state.get("hypothesis_fallback_code")
         rows.append(
             (
                 EventType.HYPOTHESIS_PROPOSED,
@@ -123,6 +145,11 @@ def record_provenance(
                     f"prompt:{hypothesis.prompt_version or 'none'}",
                     f"prior_weight:{hypothesis.prior_weight}",
                     *(
+                        (f"fallback:{hypothesis_fallback_code}",)
+                        if hypothesis_fallback_code
+                        else ()
+                    ),
+                    *(
                         f"evidence_reference:{reference}"
                         for reference in hypothesis.evidence_references
                     ),
@@ -132,6 +159,7 @@ def record_provenance(
             )
         )
     if request:
+        fallback_code = state.get("planner_fallback_code")
         rows.append(
             (
                 EventType.SEARCH_PLANNED,
@@ -151,6 +179,7 @@ def record_provenance(
                     f"source:{request.proposal_source.value}",
                     f"grounding:{request.grounding_status.value}",
                     f"prompt:{request.prompt_version or 'none'}",
+                    *((f"fallback:{fallback_code}",) if fallback_code else ()),
                     *(
                         f"evidence_reference:{reference}"
                         for reference in request.evidence_references
@@ -184,16 +213,39 @@ def record_provenance(
             )
         )
     if experiment:
-        search_type = request.search_type.value if request else "DIRECT"
+        reused_experiment = (
+            request is not None
+            and request.request_id != experiment.search_request_id
+        )
+        search_type = (
+            "HISTORICAL"
+            if reused_experiment
+            else request.search_type.value if request else "DIRECT"
+        )
         rows.append(
             (
                 EventType.EXPERIMENT_PREPARED,
-                f"{search_type.lower()}_search",
-                (experiment.search_request_id,),
-                (experiment.experiment_id,),
                 (
-                    "Prepared one task-owned experiment without evaluating it; "
-                    f"the selected generic backend was {search_type}."
+                    "canonical_experiment_reuse"
+                    if reused_experiment
+                    else f"{search_type.lower()}_search"
+                ),
+                (experiment.search_request_id,),
+                (
+                    experiment.experiment_id,
+                    *_experiment_request_evidence_references(
+                        experiment.search_request_id,
+                        request,
+                    ),
+                ),
+                (
+                    "Reused one canonical task-owned experiment without "
+                    "changing its original search lineage."
+                    if reused_experiment
+                    else (
+                        "Prepared one task-owned experiment without evaluating it; "
+                        f"the selected generic backend was {search_type}."
+                    )
                 ),
                 experiment.provenance,
             )
@@ -238,7 +290,30 @@ def record_provenance(
                 verification.provenance,
             )
         )
-    if not rows:
+    failure_code = state.get("planner_failure_code") or state.get(
+        "hypothesis_failure_code"
+    )
+    if failure_code:
+        planner_failure = state.get("planner_failure_code") is not None
+        failure_stage = (
+            state.get("planner_failure_stage")
+            if planner_failure
+            else state.get("hypothesis_failure_stage")
+        )
+        rows.append(
+            (
+                EventType.RUN_STOPPED,
+                "planner_agent" if planner_failure else "hypothesis_agent",
+                (hypothesis.hypothesis_id,) if hypothesis else (),
+                (
+                    f"error_code:{failure_code}",
+                    f"failure_stage:{failure_stage or 'unknown'}",
+                ),
+                failure_code,
+                ProvenanceKind.REAL,
+            )
+        )
+    elif not rows:
         rows.append(
             (
                 EventType.RUN_STOPPED,
@@ -253,6 +328,19 @@ def record_provenance(
     event_ids: list[str] = [*knowledge_event_ids, *model_event_ids]
     for event_type, actor, inputs, outputs, rationale, provenance in rows:
         semantic = _semantic_identity(event_type, state, dependencies)
+        safe_payload: dict[str, Any] = {}
+        if (
+            event_type == EventType.EVIDENCE_VERIFIED
+            and experiment is not None
+            and evaluation is not None
+            and verification is not None
+            and isinstance(dependencies.task, SafeEvidencePayloadCapableTask)
+        ):
+            safe_payload = dependencies.task.safe_evidence_payload(
+                experiment,
+                evaluation,
+                verification,
+            )
         event = DecisionEvent(
             event_id=(
                 f"event-{semantic[0][:24]}"
@@ -269,6 +357,7 @@ def record_provenance(
             timestamp=dependencies.clock(),
             code_version=CODE_VERSION,
             provenance=provenance,
+            safe_payload=safe_payload,
         )
         if semantic is None:
             dependencies.provenance_store.append_event(event)

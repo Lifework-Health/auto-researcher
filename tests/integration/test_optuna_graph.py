@@ -6,6 +6,7 @@ import inspect
 
 import pytest
 
+from auto_researcher.agents.mock import MockPlannerAgent
 from auto_researcher.contracts.enums import (
     EvidenceStatus,
     EventType,
@@ -44,6 +45,17 @@ def invoke(graph, contract, run_id, thread_id, value=None):
 
 
 def test_synthetic_optuna_study_is_generic_verified_and_writes_artefacts(tmp_path):
+    class EvidencePlanner(MockPlannerAgent):
+        def plan(self, *args, **kwargs):
+            return super().plan(*args, **kwargs).model_copy(
+                update={
+                    "evidence_references": (
+                        "tree-stage:root",
+                        "tree-action:OPTUNA",
+                    )
+                }
+            )
+
     contract = default_synthetic_contract(
         search_types=frozenset({SearchType.OPTUNA}),
         maximum_experiments=8,
@@ -58,6 +70,11 @@ def test_synthetic_optuna_study_is_generic_verified_and_writes_artefacts(tmp_pat
         context,
         contract,
         {"trial_budget": 8, "seed": 123},
+        planner_agent=EvidencePlanner(
+            search_type=SearchType.OPTUNA,
+            configuration={"trial_budget": 8, "seed": 123},
+            experiment_budget=8,
+        ),
         search_type=SearchType.OPTUNA,
         clock=lambda: FIXED_TIME,
     )
@@ -86,6 +103,28 @@ def test_synthetic_optuna_study_is_generic_verified_and_writes_artefacts(tmp_pat
     assert sum(event.event_type == EventType.EVIDENCE_VERIFIED for event in events) == 8
     assert sum(event.event_type == EventType.OPTUNA_TRIAL_REPORTED for event in events) == 8
     assert events[-1].event_type == EventType.OPTUNA_STUDY_COMPLETED
+    planned = next(
+        event for event in events if event.event_type == EventType.SEARCH_PLANNED
+    )
+    assert final["search_request"].evidence_references
+    assert {
+        reference.removeprefix("evidence_reference:")
+        for reference in planned.output_references
+        if reference.startswith("evidence_reference:")
+    } == set(final["search_request"].evidence_references)
+    prepared = [
+        event for event in events if event.event_type == EventType.EXPERIMENT_PREPARED
+    ]
+    assert prepared
+    assert all(
+        {
+            reference.removeprefix("evidence_reference:")
+            for reference in event.output_references
+            if reference.startswith("evidence_reference:")
+        }
+        == set(final["search_request"].evidence_references)
+        for event in prepared
+    )
 
 
 @pytest.mark.parametrize(

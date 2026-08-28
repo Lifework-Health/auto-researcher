@@ -1,0 +1,309 @@
+# Locked V8 planning template. It is deliberately PRE-RUN BLOCKED until V7
+# parent evidence, measured runtime coefficients and real-CUDA evidence are bound.
+task: {id: feta_unet_search, version: "1.0"}
+
+agents:
+  mode: live
+  provider: anthropic
+  model_id: claude-sonnet-4-5-20250929
+  credential: {logical_name: anthropic_api_key, provider: linux_kernel_keyring, provider_identifier: auto-researcher/anthropic-api-key, version: null, required: true}
+  pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+  budget: {maximum_research_director_calls_per_cycle: 1, maximum_research_director_calls_total: 8, maximum_hypothesis_calls_per_cycle: 1, maximum_planner_calls_per_cycle: 1, maximum_attempts_per_agent_call: 4, maximum_input_context_size: 128000, maximum_output_tokens: 2048, maximum_cost_per_call: 0.50, maximum_research_director_output_tokens: 64000, maximum_research_director_cost_per_call: 5.0, maximum_total_model_calls: 512}
+  research_director:
+    provider: anthropic
+    model_id: claude-opus-5
+    pricing: {version: anthropic-opus5-usd-5-25-v1, input_cost_per_million_tokens: 5.0, output_cost_per_million_tokens: 25.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+    temperature: null
+    thinking: {type: adaptive}
+    effort: xhigh
+    maximum_output_tokens: 64000
+    timeout_seconds: 600
+    maximum_attempts: 2
+    maximum_cost_per_call: 5.0
+    prompt_version: 2.0.0
+    structured_output_strategy: pydantic
+  hypothesis: {temperature: 0.0, maximum_output_tokens: 1200, timeout_seconds: 120, maximum_attempts: 4, maximum_cost_per_call: 0.50, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+  planner: {temperature: 0.0, maximum_output_tokens: 1600, timeout_seconds: 120, maximum_attempts: 4, maximum_cost_per_call: 0.50, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+
+openevolve_development_mutation:
+  protocol_version: development-live-openevolve-runtime-v1
+  mode: local_development
+  acknowledgement: public-data-non-production-development
+  maximum_model_calls: 100
+  maximum_total_cost_usd: 50.0
+  usage_log_file: /absolute/path/to/runtime/openevolve-model-usage.jsonl
+  credential: {logical_name: anthropic_api_key, provider: linux_kernel_keyring, provider_identifier: auto-researcher/anthropic-api-key, version: null, required: true}
+  model:
+    provider: anthropic
+    model_id: claude-sonnet-4-5-20250929
+    temperature: 0.25
+    maximum_output_tokens: 4096
+    timeout_seconds: 180
+    maximum_attempts: 1
+    maximum_cost_per_call: 0.40
+    prompt_version: openevolve-mutation-prompt-v2
+    structured_output_strategy: pydantic
+    pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+
+# Valid Direct launch shape. The portfolio owns scheduling; launch remains
+# blocked until the V8 preflight reports launch_ready=true.
+experiment:
+  maximum_epochs: 10
+  model_variant: dynunet
+  feature_width: v8_dyn_compact_5
+  architecture_budget: dynunet-15m-150m-v1
+  upsample: deconv
+  kernel_profile: standard
+  residual_blocks: false
+  deep_supervision_heads: 0
+  convolutions_per_stage: 2
+  stage_block_profile: uniform
+  residual_profile: uniform
+  dilation_profile: none
+  skip_fusion: concat
+  downsample: max_pool
+  activation: PReLU
+  norm: instance
+  optimizer: Adam
+  lr_schedule: polynomial
+  loss_variant: dice_focal
+  learning_rate: 0.00014676947772184417
+  weight_decay: 0.000009170939006065463
+  dropout: 0.08363354043325907
+  dice_weight: 1.2833957004567855
+  positive_negative_ratio: "2:1"
+  augmentation_policy: intensity
+  openevolve:
+    population_size: 1
+    maximum_generations: 3
+    maximum_candidate_evaluations: 4
+    maximum_wall_time_seconds: 115200
+    maximum_model_calls: 3
+    maximum_failed_candidates: 4
+    maximum_consecutive_failures: 4
+    maximum_artefact_bytes: 20000000
+    random_seed: 20260823
+    objective_direction: MAXIMIZE
+    objective_threshold: null
+    sandbox_policy_id: openevolve-sandbox-v1
+    candidate_cpu_time_seconds: 2
+    candidate_wall_time_seconds: 3.0
+    candidate_memory_bytes: 268435456
+    candidate_process_limit: 1
+    candidate_output_bytes: 64000
+    candidate_log_bytes: 8000
+    candidate_file_count_limit: 8
+    candidate_workspace_bytes: 1048576
+    candidate_file_size_bytes: 64000
+
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: /absolute/path/to/runtime/output
+  workspace_dir: /absolute/path/to/runtime/workspace
+  environment: {CUDA_VISIBLE_DEVICES: "1"}
+  options:
+    protected_storage_acknowledged: true
+    workspace_namespace: feta_unet_campaign_v8
+    shared_preprocessing_cache: true
+    openevolve_fidelity: 10
+    campaign_seconds_per_epoch: 145.0
+    campaign_seconds_per_epoch_by_model_variant: {basic_unet: 70.0, unet_plain: 70.0, unet_residual: 70.0, structural_basic_unet: 80.0, dynunet: 105.0}
+    campaign_seconds_per_epoch_by_feature_width: {v8_dyn_compact_5: 105.0, v8_dyn_balanced_5: 95.0, v8_dyn_context_5: 145.0, v8_dyn_deep_6: 95.0}
+    campaign_runtime_rates_finalised: true
+    campaign_runtime_calibration:
+      schema_version: feta-unet-v8-runtime-calibration-v1
+      holdout_subjects_evaluated: 0
+      structural_basic_unet:
+        source_run_id: feta-unet-campaign-22h-v7-v2-20260822
+        observed_median_total_seconds_per_epoch: 59.03
+        observed_p90_total_seconds_per_epoch: 76.37
+        observed_maximum_total_seconds_per_epoch: 155.88
+        selected_seconds_per_epoch: 80.0
+      dynunet:
+        source_reference: runtime:v8-dynunet-calibration-v2-20260823
+        source_log_sha256: 975a5d4cda820644957086e82a50230c17ad90862598b6fdd36f82e18d692ee1
+        roots:
+          - {feature_width: v8_dyn_compact_5, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 10.16105604171753, primary_score: 0.47390042093352713, root_index: 0, total_duration_seconds: 482.05821499973536, total_seconds_per_epoch: 96.41164299994708, trainable_parameters: 50795297, training_duration_seconds: 257.4469405002892, training_seconds_per_epoch: 51.48938810005784, wall_seconds: 486.1315786652267}
+          - {feature_width: v8_dyn_balanced_5, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 14.023687362670898, primary_score: 0.6458283332628721, root_index: 1, total_duration_seconds: 442.69691245257854, total_seconds_per_epoch: 88.5393824905157, trainable_parameters: 74300688, training_duration_seconds: 315.93435503169894, training_seconds_per_epoch: 63.186871006339786, wall_seconds: 444.7519389279187}
+          - {feature_width: v8_dyn_context_5, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 19.394338130950928, primary_score: 0.4985619173893397, root_index: 2, total_duration_seconds: 689.8473020531237, total_seconds_per_epoch: 137.96946041062475, trainable_parameters: 126572833, training_duration_seconds: 410.5982269048691, training_seconds_per_epoch: 82.11964538097382, wall_seconds: 693.7112964466214}
+          - {feature_width: v8_dyn_deep_6, holdout_subjects_evaluated: 0, peak_gpu_memory_gib: 13.468255043029785, primary_score: 0.5198129917066531, root_index: 3, total_duration_seconds: 446.58433309569955, total_seconds_per_epoch: 89.31686661913992, trainable_parameters: 115738656, training_duration_seconds: 250.48005563765764, training_seconds_per_epoch: 50.096011127531526, wall_seconds: 449.3632572442293}
+        selected_seconds_per_epoch: 105.0
+        non_promotable_feature_widths: [v8_dyn_context_5]
+    campaign_runtime_calibration_sha256: 34c94d0eb7736de23549cf57023071b282b92ae555f8708b761750c7b421725f
+    campaign_portfolio_controller_implemented: true
+    v8_parent_reuse_imported: false
+    research_director_controller_implemented: true
+    research_director_shadow_evaluation_implementation_ready: true
+    research_director_resume_replay_implementation_ready: true
+    research_director_gate: null
+    research_director_gate_sha256: null
+    research_director_evidence:
+      - evidence_id: v7-final-evidence
+        evidence_type: V7
+        evidence_hash: 5e29677843a1fdacabc9e2913f1fce37b0cf9a2d22a10c0ac6498ff44f958126
+        source_reference: artifact:v7-postmortem:7073471a39109144859e7e10c78ded580a70a26359b8c7f98a780997a43ec683
+        summary: "V7 produced two verified 150-epoch structural BasicUNet finalists; the 0.8238575 champion and distinct OpenEvolve lineage are the mandatory V8 parents."
+        reference_ids: [experiment:52cd44ef6ffd1335, experiment:01c8e668f0f9a588]
+        safe_payload:
+          run_id: feta-unet-campaign-22h-v7-v2-20260822
+          champion_experiment_id: experiment-52cd44ef6ffd1335
+          champion_best_score: 0.8238575030304831
+          champion_rung_score: 0.8230719541966351
+          second_finalist_experiment_id: experiment-01c8e668f0f9a588
+          second_finalist_best_score: 0.8202516462120728
+          verified_execution_count: 27
+          unique_25_epoch_trajectories: 24
+          rank_correlation_25_to_150: 1.0
+          sealed_holdout_evaluations: 0
+        verification_status: VERIFIED
+      - evidence_id: req11-diagnostic-panel
+        evidence_type: REQ11
+        evidence_hash: 215f9df55aaa3e75bdd2814e861b7ef4da15a5a5d5178884001f1c0c88454514
+        source_reference: artifact:req11-panel:c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871
+        summary: "REQ-11 prioritises topology continuity, deep-grey boundaries, external-CSF retention and complementary tissue errors for parent selection and close ties."
+        reference_ids: [req11:topology-continuity, req11:deep-grey-boundary, req11:external-csf-retention, req11:tissue-complementarity]
+        safe_payload:
+          panel_identity: c2d6839bd16b292322fe97bbc71cb4f0333305b5a379bd2c8e4d3544e232b871
+          priorities: [topology_continuity, deep_grey_boundary, external_csf_retention, tissue_complementarity]
+          baseline_experiment_id: experiment-fc2d8d2a371ddba0
+          candidate_experiment_ids: [experiment-643b2c5f65b4bc25, experiment-ccc5fcf318cf2eb1]
+          candidate_macro_dice_deltas: [0.001136112933560011, 0.000035058287334012915]
+          objective_role: parent_selection_and_close_tie_evidence_only
+        verification_status: VERIFIED
+      - evidence_id: ensemble-complementarity
+        evidence_type: ENSEMBLE
+        evidence_hash: 9a2760e0e3993c5be17ea0e8148902e7c38b55b3b5ed6b92353a00fffd0b2c04
+        source_reference: artifact:ensemble-report:db7b948273e1bfcb9b7c020597d9c9dd6a2994adb682c23c2e6b798fe39e4a92
+        summary: "The pre-specified four-model development-fold ensemble reached 0.8281023, a +0.0074611 gain over its best single model, supporting explicit diversity evidence."
+        reference_ids: [ensemble:99c0e58258c7e5e4d895dfd904ddfa6212725f23ac0100758df04674cced1f8b]
+        safe_payload:
+          ensemble_id: 99c0e58258c7e5e4d895dfd904ddfa6212725f23ac0100758df04674cced1f8b
+          mean_subject_macro_dice: 0.8281023433772676
+          delta_vs_best_single: 0.007461078759534057
+          best_single_score: 0.8206412646177336
+          member_experiment_ids: [experiment-d481b6e38a21f5c5, experiment-fc2d8d2a371ddba0, experiment-643b2c5f65b4bc25, experiment-ccc5fcf318cf2eb1]
+          development_subject_count: 14
+          sealed_holdout_evaluations: 0
+          selection_role: complementarity_and_close_tie_evidence_only
+        verification_status: VERIFIED
+      - evidence_id: v7-a6000-runtime-envelope
+        evidence_type: RUNTIME
+        evidence_hash: 7c8c9ecafc6dd121a1a99d9609dd00f29a3d4d11cbaccefac07e0893a66aaacc
+        source_reference: artifact:v7-runtime-envelope:bfa11514baf5d7502d70d7215ffe9ce07c1923c960f915754fb1711163cbca96
+        summary: "Measured A6000 structural and DynUNet timing is bound; the context-heavy root remains a non-promotable 10-epoch probe so V8 retains a protected graduation reserve."
+        reference_ids: [checkpoint:763a397ac029d6d3efffe2d0e77b0c7bc9f61ee8baef937689a975677239c811, evaluation:fe388bcaf4b789e78feab1da88e0720093b98a0a0c3a423adf5d55b89a73550f]
+        safe_payload:
+          gpu: NVIDIA RTX A6000
+          device_total_gib: 47.529052734375
+          campaign_memory_ceiling_gib: 44.0
+          v7_champion_trainable_parameters: 35825440
+          v7_second_finalist_trainable_parameters: 34556853
+          measured_peak_cuda_allocated_mib: 2338
+          measured_peak_cuda_reserved_mib: 3076
+          measured_full_step_passed: true
+          runtime_coefficients_finalised: true
+          runtime_calibration_sha256: 34c94d0eb7736de23549cf57023071b282b92ae555f8708b761750c7b421725f
+          selected_seconds_per_epoch: {structural_basic_unet: 80.0, dynunet: 105.0}
+          context_probe_seconds_per_epoch: 145.0
+        verification_status: VERIFIED
+      - evidence_id: v7-invalid-wildcard-loop
+        evidence_type: FAILURE
+        evidence_hash: 64134d0fb9c0c473980c71d7ba50bd497a79828491fafe0e27d430ee744cd877
+        source_reference: artifact:v7-failure-identity:5218b3497be0f214e401cb4a0db748da82f25723c57e9e46eb00da47c7fd79ef
+        summary: "V7 repeated one 152.6M-parameter wildcard 23 times because validation omitted the 150M architecture envelope; no failed result entered verified evidence."
+        reference_ids: [failure:feta-unet-evaluation-failed-valueerror, remediation:v8-prevalidate-wildcard-parameter-envelope]
+        safe_payload:
+          scientific_identity: 5218b3497be0f214e401cb4a0db748da82f25723c57e9e46eb00da47c7fd79ef
+          repeated_failed_executions: 23
+          trainable_parameters: 152621240
+          maximum_trainable_parameters: 150000000
+          failure: feta_unet_evaluation_failed:ValueError
+          cause: wildcard_parameter_envelope_not_checked_before_execution
+          remediation: prevalidate_trainable_parameter_count_before_returning_wildcard
+          successful_evidence_affected: false
+        verification_status: VERIFIED
+    research_director_evidence_manifest_sha256: 1b921f2c150317d597c04acf098437d3459005bceb5e5406fffd5984b655671c
+    campaign_finalisation_reserve_seconds: 21600.0
+    campaign_reporting_reserve_seconds: 1800.0
+    campaign_prior_results: 30
+    continue_after_failed_candidate: true
+    maximum_peak_gpu_memory_bytes: 47244640256
+    launch_gate: blocked_pending_v8_validation
+    v7_parent_manifest_sha256: f19e808c05bc2780892f16a4c7e18d8bf665b990e745c36441631935b43303b4
+    cuda_preflight: null
+    cuda_preflight_sha256: null
+    initial_campaign_observations:
+      - "Verified V6 single-model mean macro Dice reached 0.8206412646177336."
+      - "A deterministic four-model ensemble reached mean macro Dice 0.8281023433772676 and showed useful model complementarity."
+      - "V8 reserves separate structural BasicUNet and DynUNet lineages; cross-family mutation is prohibited."
+      - "Verified V7 single-model mean macro Dice reached 0.8238575030304831; its two distinct 150-epoch finalists are bound as mandatory V8 parents."
+      - "V7 exposed a repeated over-budget wildcard failure; V8 prevalidates the 15M-150M parameter envelope before scheduling controlled wildcards."
+    campaign_portfolio:
+      version: feta-unet-v8-exploitation-44-30-18-8-4-3-v1
+      fidelity_targets: {"10": 44, "15": 30, "25": 18, "50": 8, "100": 4, "150": 3}
+      operator_limits: {OPTUNA: 26, OPENEVOLVE: 10, DIRECT: 8}
+      initial_candidate_allocation:
+        v7_structural_children: 8
+        dynunet_roots: 4
+        branch_local_optuna: 26
+        controlled_direct_ablations: 4
+        structural_wildcards: 2
+      architecture_change_target: 14
+      independent_confirmation_count: 1
+      independent_confirmation_execution: l4_sidecar_after_champion_freeze
+      minimum_v7_structural_parents: 2
+      optional_v7_structural_parent_count: 1
+      lineage_rules:
+        cross_family_mutation: false
+        branch_local_optuna: true
+        optuna_fixed_architecture: true
+        openevolve_generation_zero_reuse: true
+        duplicate_scientific_identity_policy: reuse_verified_result
+      local_optuna_allocation:
+        structural_basic_unet: 23
+        dynunet: 3
+      parent_selection:
+        required_parent_count: 2
+        optional_parent_count: 1
+        ranking: [best_25_epoch_score, trajectory_slope, req11_priority_fit, ensemble_complementarity]
+        selected_parents:
+          - experiment_id: experiment-52cd44ef6ffd1335
+            selection_role: mandatory
+            score: 0.8238575030304831
+            rung_score: 0.8230719541966351
+            trajectory_slope: 0.002481718312213107
+            trajectory_identity: 430d478824b9b5899f6a149ebdb0791765f5702019ca710a970ad71b06b56c53
+            v8_seed_trajectory_identity: 430f5e3c9b31707d2977652c3365127d626b0042ab45e0b12709be3d15baea11
+            origin_search_type: DIRECT
+            selection_evidence: [verified_150_epoch_score, distinct_structural_lineage, req11_priority_context, ensemble_complementarity_context]
+            configuration:
+              {maximum_epochs: 150, model_variant: structural_basic_unet, feature_width: v7_deep_6, features: [40, 80, 160, 320, 640, 40], architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, convolutions_per_stage: 2, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+          - experiment_id: experiment-01c8e668f0f9a588
+            selection_role: mandatory
+            score: 0.8202516462120728
+            rung_score: 0.8202516462120728
+            trajectory_slope: 0.0012958057583898272
+            trajectory_identity: 7427be63a6ba98874e797e89940d82754bc9be34ff7e5b0a64da624f369e2ee1
+            v8_seed_trajectory_identity: 27780f532e91fd5c576fe9fed43305d8f50aa431fe1c7ebb8bfec18bd64410c1
+            origin_search_type: OPENEVOLVE
+            selection_evidence: [verified_150_epoch_score, distinct_structural_lineage, req11_priority_context, ensemble_complementarity_context]
+            configuration:
+              {maximum_epochs: 150, model_variant: structural_basic_unet, feature_width: v7_balanced_5, features: [64, 128, 256, 512, 64], architecture_budget: basicunet-structural-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 2, convolutions_per_stage: 3, dilation_profile: none, skip_fusion: gated_concat, downsample: max_pool, activation: PReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+      dynunet_gate:
+        comparison_fidelity: 25
+        absolute_score_gap_maximum: 0.015
+        alternative_evidence: [superior_trajectory_slope, req11_priority_gain, ensemble_complementarity]
+        minimum_alternative_evidence_count: 2
+        maximum_promotions_to_50: 1
+        non_promotable_feature_widths: [v8_dyn_context_5]
+        cross_family_mutation: false
+      controlled_direct_designs:
+        - remove_deep_supervision_from_selected_parent
+        - replace_gated_skip_with_concat
+        - replace_stagewise_blocks_with_uniform_blocks
+        - replace_stagewise_residuals_with_uniform_residuals
+      dynunet_root_configurations:
+        - {maximum_epochs: 10, model_variant: dynunet, feature_width: v8_dyn_compact_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, convolutions_per_stage: 2, stage_block_profile: uniform, residual_profile: uniform, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: PReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.00014676947772184417, weight_decay: 0.000009170939006065463, dropout: 0.08363354043325907, dice_weight: 1.2833957004567855, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+        - {maximum_epochs: 10, model_variant: dynunet, feature_width: v8_dyn_balanced_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, convolutions_per_stage: 2, stage_block_profile: uniform, residual_profile: uniform, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.00018, weight_decay: 0.00001, dropout: 0.05, dice_weight: 1.2, positive_negative_ratio: "2:1", augmentation_policy: combined}
+        - {maximum_epochs: 10, model_variant: dynunet, feature_width: v8_dyn_context_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: context_deep, residual_blocks: true, deep_supervision_heads: 2, convolutions_per_stage: 2, stage_block_profile: uniform, residual_profile: uniform, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: PReLU, norm: group, optimizer: AdamW, lr_schedule: polynomial, loss_variant: dice_tversky, learning_rate: 0.00012, weight_decay: 0.00002, dropout: 0.08, dice_weight: 1.25, positive_negative_ratio: "3:1", augmentation_policy: geometric}
+        - {maximum_epochs: 10, model_variant: dynunet, feature_width: v8_dyn_deep_6, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 1, convolutions_per_stage: 2, stage_block_profile: uniform, residual_profile: uniform, dilation_profile: none, skip_fusion: concat, downsample: max_pool, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: constant, loss_variant: dice_ce, learning_rate: 0.0002, weight_decay: 0.000006, dropout: 0.05, dice_weight: 1.1, positive_negative_ratio: "2:1", augmentation_policy: intensity}

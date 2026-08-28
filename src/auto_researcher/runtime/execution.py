@@ -160,6 +160,92 @@ def start_run(
     return graph.invoke(payload, dict(config))
 
 
+def can_resume_recoverable_planner_failure(values: Mapping[str, Any]) -> bool:
+    """Recognise the narrow legacy checkpoint shape fixed by this release."""
+
+    try:
+        status = RunStatus(values["status"])
+    except (KeyError, ValueError):
+        return False
+    errors = tuple(values.get("errors", ()))
+    stop_reason = values.get("stop_reason")
+    legacy_agent_failure = (
+        stop_reason in {"planner_agent_failed", "agent_context_too_large"}
+        and errors
+        and set(errors).issubset(
+            {"planner_agent_failed", "agent_context_too_large"}
+        )
+    )
+    invalid_structured_planner_failure = (
+        stop_reason == "INVALID_STRUCTURED_OUTPUT"
+        and errors == ("INVALID_STRUCTURED_OUTPUT",)
+        and values.get("planner_failure_code") == "INVALID_STRUCTURED_OUTPUT"
+        and values.get("planner_failure_stage") == "model_call"
+    )
+    directive_projection_failure = (
+        stop_reason == "research_director_openevolve_context_invalid"
+        and errors == ("research_director_openevolve_context_invalid",)
+        and values.get("planner_failure_stage")
+        == "research_directive_projection"
+        and values.get("active_research_directive") is not None
+    )
+    v8_cumulative_directive_projection_recovery = (
+        stop_reason == "research_director_openevolve_context_invalid"
+        and set(errors)
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        }
+        and values.get("planner_failure_stage")
+        == "research_directive_projection"
+        and set(values.get("recovered_error_codes", ()))
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        }
+        and values.get("active_research_directive") is not None
+    )
+    projection_recovery_call_limit = (
+        stop_reason == "maximum_agent_calls_per_cycle_reached"
+        and set(errors)
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+        }
+        and values.get("planner_failure_stage") == "model_call"
+        and set(values.get("recovered_error_codes", ()))
+        == {"research_director_openevolve_context_invalid"}
+        and values.get("active_research_directive") is not None
+    )
+    v8_duplicate_portfolio_recovery = (
+        stop_reason == "planner_agent_failed"
+        and set(errors)
+        == {
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        }
+        and values.get("planner_failure_stage") == "portfolio_policy"
+        and values.get("active_research_directive") is not None
+    )
+    return (
+        status == RunStatus.FAILED
+        and (
+            legacy_agent_failure
+            or invalid_structured_planner_failure
+            or directive_projection_failure
+            or v8_cumulative_directive_projection_recovery
+            or projection_recovery_call_limit
+            or v8_duplicate_portfolio_recovery
+        )
+        and values.get("active_hypothesis") is not None
+        and values.get("search_request") is None
+        and "plan_search" in values.get("executed_nodes", ())
+    )
+
+
 def resume_run(
     graph: Any,
     config: Mapping[str, Any],
@@ -167,7 +253,7 @@ def resume_run(
     *,
     expected_identity: RunExecutionIdentity | None = None,
 ) -> dict[str, Any]:
-    """Continue an existing non-terminal checkpoint without new-run input."""
+    """Continue a checkpoint, including the exact recoverable planner boundary."""
 
     values = _snapshot_values(graph, config)
     if not values:
@@ -176,6 +262,20 @@ def resume_run(
     if expected_identity is not None:
         _compare_identity(stored, expected_identity)
     status = RunStatus(values["status"])
+    if can_resume_recoverable_planner_failure(values):
+        recovered = list(dict.fromkeys(values.get("errors", ())))
+        graph.update_state(
+            dict(config),
+            {
+                "status": RunStatus.RUNNING,
+                "stop_reason": None,
+                "planner_failure_code": None,
+                "planner_failure_stage": None,
+                "recovered_error_codes": recovered,
+            },
+            as_node="generate_hypothesis",
+        )
+        return graph.invoke(None, dict(config))
     if status in TERMINAL_STATUSES:
         raise RunExecutionError("thread_is_terminal_use_inspect")
     continuation: Any = None if resume_value is None else Command(resume=resume_value)

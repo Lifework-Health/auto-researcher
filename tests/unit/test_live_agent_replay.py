@@ -5,10 +5,14 @@ from datetime import UTC, datetime
 import pytest
 
 from auto_researcher.agents.call_store import InMemoryAgentCallStore
-from auto_researcher.agents.live.base import LiveAgentExecutionError
+from auto_researcher.agents.live.base import (
+    BoundedStructuredCall,
+    LiveAgentExecutionError,
+)
 from auto_researcher.agents.live.hypothesis import LiveHypothesisAgent
-from auto_researcher.agents.models import AgentBudgetPolicy
-from auto_researcher.contracts.enums import AgentCallStatus
+from auto_researcher.agents.models import AgentBudgetPolicy, PlannerProposal
+from auto_researcher.agents.prompts import load_prompt
+from auto_researcher.contracts.enums import AgentCallStatus, AgentRole
 from auto_researcher.contracts.enums import ProviderErrorCode
 from auto_researcher.providers.protocols import ProviderCallError
 from auto_researcher.contracts.models import BudgetState
@@ -174,6 +178,110 @@ def test_completed_call_reuses_structured_output_without_second_provider_request
     assert dependencies.hypothesis_agent.consume_telemetry().replayed is True
 
 
+def test_planner_projection_recovery_allows_exactly_one_replacement_call():
+    store = InMemoryAgentCallStore()
+    client = FakeStructuredModelClient(
+        {},
+        {
+            "search_type": "DIRECT",
+            "target": "objective_score",
+            "proposed_search_space": {"complexity": 3, "noise": 0.1},
+            "requested_experiment_budget": 1,
+            "rationale": "Run one bounded direct experiment.",
+            "recommends_human_approval": False,
+        },
+    )
+    call = BoundedStructuredCall(
+        client=client,
+        config=_call_config(),
+        budget_policy=AgentBudgetPolicy(maximum_planner_calls_per_cycle=1),
+        store=store,
+        clock=lambda: NOW,
+    )
+    arguments = {
+        "run_id": "planner-recovery-run",
+        "cycle": 1,
+        "role": AgentRole.PLANNER,
+        "context_json": "{}",
+        "remaining_cost_budget": 1.0,
+        "model_calls_used": 0,
+        "prompt": load_prompt("planner", "1.0.0"),
+        "response_model": PlannerProposal,
+        "reconcile": lambda proposal, _call_id: proposal,
+    }
+
+    call.run(context_hash="first-context", **arguments)
+    call.run(
+        context_hash="recovery-context",
+        recovered_error_codes=(
+            "research_director_openevolve_context_invalid",
+        ),
+        **arguments,
+    )
+
+    assert len(client.calls) == 2
+    with pytest.raises(
+        LiveAgentExecutionError,
+        match="maximum_agent_calls_per_cycle_reached",
+    ):
+        call.run(
+            context_hash="third-context",
+            recovered_error_codes=(
+                "research_director_openevolve_context_invalid",
+            ),
+            **arguments,
+        )
+
+
+def test_recovery_reconciles_latest_completed_planner_call_without_provider():
+    store = InMemoryAgentCallStore()
+    client = FakeStructuredModelClient(
+        {},
+        {
+            "search_type": "DIRECT",
+            "target": "objective_score",
+            "proposed_search_space": {"complexity": 3, "noise": 0.1},
+            "requested_experiment_budget": 1,
+            "rationale": "Run one bounded direct experiment.",
+            "recommends_human_approval": False,
+        },
+    )
+    call = BoundedStructuredCall(
+        client=client,
+        config=_call_config(),
+        budget_policy=AgentBudgetPolicy(maximum_planner_calls_per_cycle=1),
+        store=store,
+        clock=lambda: NOW,
+    )
+    prompt = load_prompt("planner", "1.0.0")
+    first, _ = call.run(
+        run_id="planner-semantic-replay-run",
+        cycle=1,
+        role=AgentRole.PLANNER,
+        context_hash="original-context",
+        context_json="{}",
+        remaining_cost_budget=1.0,
+        model_calls_used=0,
+        prompt=prompt,
+        response_model=PlannerProposal,
+        reconcile=lambda proposal, _call_id: proposal,
+    )
+
+    replayed = call.replay_latest_completed(
+        run_id="planner-semantic-replay-run",
+        cycle=1,
+        role=AgentRole.PLANNER,
+        response_model=PlannerProposal,
+        reconcile=lambda proposal, _call_id: proposal,
+    )
+
+    assert replayed is not None
+    proposal, telemetry = replayed
+    assert proposal == first
+    assert telemetry.replayed is True
+    assert len(client.calls) == 1
+
+
 def test_conflicting_completed_snapshots_fail_closed():
     contract = default_synthetic_contract()
     store = InMemoryAgentCallStore()
@@ -211,7 +319,7 @@ def test_conflicting_completed_snapshots_fail_closed():
         dependencies.hypothesis_agent.generate(context)
 
 
-def test_timeout_retries_once_but_rate_limit_does_not_auto_retry():
+def test_timeout_retries_once_but_rate_limit_does_not_auto_retry(capsys):
     contract = default_synthetic_contract()
     timeout_client = ErrorThenSuccessClient(
         _proposal(contract.contract_id),
@@ -236,6 +344,10 @@ def test_timeout_retries_once_but_rate_limit_does_not_auto_retry():
     assert timeout_telemetry.cache_creation_input_tokens == 3
     assert timeout_telemetry.cache_read_input_tokens == 2
     assert timeout_telemetry.estimated_cost > 0.00001
+    assert (
+        "AUTO_RESEARCHER_AGENT_RETRY role=HYPOTHESIS attempt=1 reason=TIMEOUT"
+        in capsys.readouterr().out
+    )
 
     rate_client = ErrorThenSuccessClient(
         _proposal(contract.contract_id),

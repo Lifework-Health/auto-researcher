@@ -1,0 +1,38 @@
+# Post-merge PR 11.7 acceptance: six short fold-0 SegResNet trials.
+# The standard CLI runs this sequentially. A coordinated acceptance launcher may
+# run at most three workers against one PostgreSQL study and one ResourceBroker.
+task: {id: feta_seg_search, version: "1.0"}
+agents: {mode: mock}
+search:
+  type: OPTUNA
+  schema_version: "2.0"
+  trial_budget: 6
+  seed: 20260814
+  sampler:
+    type: random
+  pruner: {type: none}
+  objectives:
+    - name: mean_subject_macro_dice
+      direction: MAXIMIZE
+      metric: mean_subject_macro_dice
+  diagnostics:
+    parameter_importance: true
+    importance_evaluators: [native_default, fanova]
+  fixed:
+    fold: 0
+    maximum_epochs: 25
+acceptance:
+  maximum_coordinated_workers: 3
+  equivalent_resource_ids: ["gpu:0", "gpu:1", "gpu:2"]
+  resource_allocation: whole_candidate
+  evaluation_reuse_protocol: evaluation-reuse-v2
+  restart_required: true
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: .auto-researcher/feta-optuna-11-7-acceptance
+  workspace_dir: .auto-researcher/feta-optuna-11-7-workspace
+  options:
+    gpu_scheduler:
+      mode: primary
+      physical_gpu_index: 0
+      allowed_fidelities: [25, 50, 100]

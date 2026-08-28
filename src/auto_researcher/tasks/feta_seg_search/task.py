@@ -11,6 +11,10 @@ from auto_researcher.search.optuna.models import (
     CategoricalParameterSpec,
     FloatParameterSpec,
     OptimisationDirection,
+    OptunaDiagnosticsSpec,
+    OptunaObjectiveSpec,
+    OptunaPrunerSpec,
+    OptunaSamplerSpec,
     OptunaStudySpec,
 )
 from auto_researcher.search.optuna.narrowing import narrow_study_spec
@@ -75,9 +79,7 @@ class FeTASegSearchTask:
                 "Bounded DIRECT and Optuna search on FeTA development fold 0 with "
                 "the sealed hold-out excluded."
             ),
-            supported_search_types=frozenset(
-                {SearchType.DIRECT, SearchType.OPTUNA}
-            ),
+            supported_search_types=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
             evaluator_id=EVALUATOR_ID,
             verification_policy_id=FeTASegSearchVerificationPolicy.policy_id,
             configuration_schema_version=CONFIGURATION_SCHEMA_VERSION,
@@ -169,7 +171,9 @@ class FeTASegSearchTask:
             "holdout_policy": "sealed-no-evaluation",
             "search_scope": "development-fold-0-only",
         }
-        if any(contract.constraints.get(key) != value for key, value in expected.items()):
+        if any(
+            contract.constraints.get(key) != value for key, value in expected.items()
+        ):
             raise ValueError("feta_search_contract_scientific_identity_mismatch")
 
     def normalise_configuration(
@@ -213,6 +217,65 @@ class FeTASegSearchTask:
         if request.search_type != SearchType.OPTUNA:
             raise ValueError("FeTA search Optuna study requires an OPTUNA request")
         proposed = dict(request.search_space)
+        raw_schema_version = proposed.pop("schema_version", "1.0")
+        if not isinstance(raw_schema_version, str):
+            raise ValueError("feta_search_optuna_schema_version_must_be_text")
+        schema_version = raw_schema_version
+        raw_sampler = proposed.pop("sampler", None)
+        raw_pruner = proposed.pop("pruner", None)
+        raw_objectives = proposed.pop("objectives", None)
+        raw_constraints = proposed.pop("constraints", None)
+        raw_diagnostics = proposed.pop("diagnostics", None)
+        raw_intermediate = proposed.pop("intermediate_reporting", None)
+        if schema_version not in {"1.0", "2.0"}:
+            raise ValueError("feta_search_optuna_schema_version_unsupported")
+        if schema_version == "1.0" and any(
+            item is not None
+            for item in (
+                raw_sampler,
+                raw_pruner,
+                raw_objectives,
+                raw_constraints,
+                raw_diagnostics,
+                raw_intermediate,
+            )
+        ):
+            raise ValueError("feta_search_optuna_v2_configuration_requires_schema_2")
+        sampler = OptunaSamplerSpec(type="tpe")
+        pruner = OptunaPrunerSpec(type="none")
+        objectives: tuple[OptunaObjectiveSpec, ...] = ()
+        diagnostics = OptunaDiagnosticsSpec()
+        if schema_version == "2.0":
+            sampler = OptunaSamplerSpec.model_validate(
+                raw_sampler or {"type": "native_default"}
+            )
+            if sampler.type not in {"native_default", "tpe", "random"}:
+                raise ValueError("feta_search_sampler_not_in_approved_acceptance_set")
+            pruner = OptunaPrunerSpec.model_validate(raw_pruner or {"type": "none"})
+            if pruner.type != "none" or (
+                raw_intermediate is not None and raw_intermediate is not False
+            ):
+                raise ValueError("feta_search_evaluator_has_no_intermediate_reporting")
+            if raw_constraints is not None and raw_constraints not in ([], ()):
+                raise ValueError(
+                    "feta_search_has_no_approved_native_constraint_projection"
+                )
+            expected_objective = OptunaObjectiveSpec(
+                name=contract.primary_metric,
+                direction=OptimisationDirection.MAXIMIZE,
+                metric=contract.primary_metric,
+            )
+            if raw_objectives is not None and not isinstance(
+                raw_objectives, (list, tuple)
+            ):
+                raise ValueError("feta_search_objectives_must_be_a_sequence")
+            objectives = tuple(
+                OptunaObjectiveSpec.model_validate(item)
+                for item in (raw_objectives or (expected_objective,))
+            )
+            if objectives != (expected_objective,):
+                raise ValueError("feta_search_objective_projection_not_approved")
+            diagnostics = OptunaDiagnosticsSpec.model_validate(raw_diagnostics or {})
         raw_fixed = proposed.get("fixed", {})
         if not isinstance(raw_fixed, dict):
             raise ValueError("FeTA search Optuna fixed section must be a mapping")
@@ -262,7 +325,7 @@ class FeTASegSearchTask:
             **{name: raw_fixed[name] for name in hpo_names if name in raw_fixed},
         }
         registered = OptunaStudySpec(
-            schema_version="1.0",
+            schema_version=schema_version,
             task_id=self.task_id,
             task_version=self.task_version,
             search_space_version=CONFIGURATION_SCHEMA_VERSION,
@@ -299,9 +362,12 @@ class FeTASegSearchTask:
             fixed_configuration=fixed,
             trial_budget=request.experiment_budget,
             seed=20260807,
-            sampler="TPE",
+            sampler="TPE" if schema_version == "1.0" else sampler,
             n_startup_trials=12,
             objective_metric=contract.primary_metric,
+            objectives=objectives,
+            pruner=pruner,
+            diagnostics=diagnostics,
             study_metadata={
                 "dataset_manifest_hash": EXPECTED_MANIFEST_HASH,
                 "split_hash": EXPECTED_SPLIT_HASH,
@@ -413,9 +479,7 @@ class FeTASegSearchTask:
         )
 
 
-def default_feta_search_contract(
-    *, maximum_experiments: int = 64
-) -> ResearchContract:
+def default_feta_search_contract(*, maximum_experiments: int = 64) -> ResearchContract:
     return ResearchContract(
         contract_id="feta-segresnet-fold0-search-contract",
         schema_version="1.0",

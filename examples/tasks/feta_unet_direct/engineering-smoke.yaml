@@ -1,0 +1,14 @@
+task: {id: feta_unet_direct, version: "1.0"}
+agents: {mode: mock}
+experiment:
+  profile: engineering_smoke
+  maximum_epochs: 1
+  validation_every: 1
+  fold_count: 1
+runtime:
+  # Replace these examples with absolute, access-controlled runtime paths.
+  data_dir: /absolute/protected/feta-2.1
+  workspace_dir: /absolute/protected/feta-unet-smoke-workspace
+  output_dir: /absolute/protected/feta-unet-smoke-results
+  options:
+    protected_storage_acknowledged: true

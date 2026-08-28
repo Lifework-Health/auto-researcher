@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
+from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import EvaluationResult
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.graph.nodes.evaluate import evaluate_experiment
@@ -249,6 +251,34 @@ def test_conflicting_experiment_spec_prevents_result_reuse(tmp_path):
     assert evaluator.calls == 1
 
 
+def test_generation_zero_resume_restores_published_cross_method_experiment(tmp_path):
+    dependencies, evaluator, _, graph, initial, config = _runtime(tmp_path)
+    final = start_run(graph, initial, config)
+    published = final["experiment_spec"]
+    proposed = published.model_copy(
+        update={
+            "hypothesis_id": "openevolve-hypothesis",
+            "search_request_id": "openevolve-request",
+        }
+    )
+    request = final["search_request"].model_copy(
+        update={"search_type": SearchType.OPENEVOLVE}
+    )
+    state = {
+        **final,
+        "experiment_spec": proposed,
+        "search_request": request,
+        "openevolve_current_candidate": SimpleNamespace(generation=0),
+    }
+
+    update = evaluate_experiment(state, dependencies)
+
+    assert update["experiment_spec"] == published
+    assert update["evaluation_result"] == final["evaluation_result"]
+    assert update["optuna_evaluation_reused"] is True
+    assert evaluator.calls == 1
+
+
 def test_changed_verifier_policy_prevents_verification_reuse(tmp_path):
     dependencies, _, verifier, graph, initial, config = _runtime(tmp_path)
     final = start_run(graph, initial, config)
@@ -301,6 +331,43 @@ def test_failed_evaluation_never_creates_reuse_record(tmp_path):
         )
         is None
     )
+    assert failed.calls == 1
+
+
+def test_campaign_can_record_one_failed_direct_candidate_and_continue(tmp_path):
+    dependencies, evaluator, _, _, initial, config = _runtime(tmp_path)
+
+    class FailedEvaluator(CountingEvaluator):
+        def evaluate(self, experiment, contract):
+            self.calls += 1
+            return EvaluationResult(
+                experiment_id=experiment.experiment_id,
+                success=False,
+                primary_score=None,
+                metrics={},
+                constraint_results={},
+                artefact_references=(),
+                evaluator_version=self.version,
+                provenance=experiment.provenance,
+                error="controlled_candidate_failure",
+            )
+
+    failed = FailedEvaluator(evaluator.inner)
+    tolerant_context = dependencies.runtime_context.model_copy(
+        update={"task_options": {"continue_after_failed_candidate": True}}
+    )
+    tolerant = replace(
+        dependencies,
+        evaluator=failed,
+        runtime_context=tolerant_context,
+    )
+    final = start_run(build_graph(tolerant), initial, config)
+
+    assert final["status"].value == "COMPLETED"
+    assert final["evaluation_result"].success is False
+    assert final["evaluation_result"].error == "controlled_candidate_failure"
+    assert final["verification_result"].verified is False
+    assert final["errors"] == []
     assert failed.calls == 1
 
 

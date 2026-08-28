@@ -1,0 +1,33 @@
+{
+  "schema_version": "feta-unet-v9-parent-checkpoints-v1",
+  "source_run_id": "feta-unet-campaign-32h-v8-20260823",
+  "workspace_namespace": "feta_unet_campaign_v8",
+  "development_fold": 0,
+  "sealed_holdout_evaluations": 0,
+  "parents": [
+    {
+      "role": "v8_champion",
+      "experiment_id": "experiment-fd7420c452e1982d",
+      "files": {
+        "checkpoints/fold-0/best.pt": "ca0353ca734aa0f690ab808b1c6bb136a7116291ef51c86fa24cfc52032ccae7",
+        "checkpoints/fold-0/validation-history.json": "2c4ad0729064295030688a63f422af1a05ca6638108f3f1f44d286e71c008545",
+        "checkpoints/fold-0/continuation.json": "9a17468e148ca3ee0f6080230187f93ec923427549963e8d616cf5967eea1599",
+        "fold-results/fold-0.json": "d58ddbe4a54ff06fa97c668c9928c6ea33a318e0f9868b6dd94420fc7dc5a93a",
+        "experiment_spec.json": "17defc9ca0a59b1d3003b63d2ce206153035159190f61f9048b9fb751c0d0be2",
+        "evaluation_result.json": "c735a51b2a27464f9130ef2fe9250bdbe36823f12bbe0cbc53ad6e69b2a8ea4f"
+      }
+    },
+    {
+      "role": "v8_alternate",
+      "experiment_id": "experiment-2cfeba2972f24ed4",
+      "files": {
+        "checkpoints/fold-0/best.pt": "6d412b613176852ad5e7a3875bf7c3f002f928f36e7d30030fa76689cfab4f85",
+        "checkpoints/fold-0/validation-history.json": "d0b2ae3ab2a8d6474be94c5e5e6484d48e13a45aa98dbb15cac27f1020e89cd6",
+        "checkpoints/fold-0/continuation.json": "e751979d20299ea5959adf4332dd0ba7b8b88f99449854984f1af4e4f45bd712",
+        "fold-results/fold-0.json": "8fc4665d9262e32e8b85edbb72234ba7cd4ee5308af66458075385a9ded0035b",
+        "experiment_spec.json": "6dc3c8103a7974b0ce8380c0b2f06eb9026f312e1b6f7d2c97c9b50915a0382a",
+        "evaluation_result.json": "7ee17cef283b2c49cd6abde40122777c08dbd480e855c1d2aee6f3e2b5eada35"
+      }
+    }
+  ]
+}

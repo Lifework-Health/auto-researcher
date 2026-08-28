@@ -1,0 +1,465 @@
+"""Generic courteous admission policy and polling resource broker."""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+
+from auto_researcher.resources.leases import ResourceLeaseConflict
+from auto_researcher.resources.models import (
+    AdmissionOutcome,
+    PreemptionPolicy,
+    ResourceAdmission,
+    ResourceAdmissionDecision,
+    ResourceAdmissionTelemetry,
+    ResourceCandidate,
+    ResourceLease,
+    ResourceRequest,
+)
+from auto_researcher.resources.protocols import (
+    ResourceAdmissionPolicy,
+    ResourceLeaseStore,
+    ResourceProvider,
+)
+
+
+class ResourceBrokerError(RuntimeError):
+    pass
+
+
+class ResourceInspectionError(ResourceBrokerError):
+    pass
+
+
+class InvalidResourceRequest(ResourceBrokerError):
+    pass
+
+
+class InvalidResourceState(ResourceBrokerError):
+    pass
+
+
+class ResourceWaitTimeout(ResourceBrokerError):
+    pass
+
+
+class CourtesyResourceAdmissionPolicy:
+    """Task-neutral busy/foreign-owner/capacity/stability admission semantics."""
+
+    def __init__(self, *, maximum_utilization_percent: float | None = None) -> None:
+        if maximum_utilization_percent is not None and not (
+            0 <= maximum_utilization_percent <= 100
+        ):
+            raise ValueError("maximum utilization must be between 0 and 100")
+        self.maximum_utilization_percent = maximum_utilization_percent
+
+    def decide(
+        self,
+        request: ResourceRequest,
+        candidate: ResourceCandidate,
+        *,
+        worker_id: str | None,
+        stable_idle_seconds: float,
+    ) -> ResourceAdmissionDecision:
+        del worker_id  # Worker IDs belong to lease ownership, not provider namespaces.
+
+        def decision(
+            outcome: AdmissionOutcome,
+            reason: str,
+            *,
+            continuously_idle: bool = False,
+        ) -> ResourceAdmissionDecision:
+            return ResourceAdmissionDecision(
+                outcome=outcome,
+                request_id=request.request_id,
+                resource_id=candidate.resource_id,
+                reason=reason,
+                stable_idle_seconds=stable_idle_seconds,
+                continuously_idle=continuously_idle,
+            )
+
+        if not candidate.state_valid:
+            return decision(
+                AdmissionOutcome.REJECTED, candidate.state_reason or "invalid_state"
+            )
+        matching = tuple(
+            requirement
+            for requirement in request.requirements
+            if requirement.resource_type == candidate.resource_type
+        )
+        if len(matching) != 1:
+            return decision(AdmissionOutcome.REJECTED, "resource_type_mismatch")
+        requirement = matching[0]
+        if not request.equivalence_requirements.issubset(candidate.equivalence_tags):
+            return decision(AdmissionOutcome.REJECTED, "equivalence_mismatch")
+        if candidate.quantity < requirement.quantity:
+            return decision(AdmissionOutcome.REJECTED, "insufficient_quantity")
+        for minimum in requirement.minimum_capacities:
+            observed = candidate.capacity(minimum.name)
+            if observed is None:
+                return decision(AdmissionOutcome.REJECTED, "capacity_state_missing")
+            if observed < minimum.value:
+                return decision(AdmissionOutcome.WAIT, f"low_{minimum.name}")
+        if candidate.foreign_owners:
+            return decision(AdmissionOutcome.WAIT, "foreign_owner")
+        if not candidate.available:
+            return decision(AdmissionOutcome.WAIT, "resource_busy")
+        if (
+            self.maximum_utilization_percent is not None
+            and candidate.utilization_percent is None
+        ):
+            return decision(AdmissionOutcome.REJECTED, "utilization_state_missing")
+        if (
+            self.maximum_utilization_percent is not None
+            and candidate.utilization_percent is not None
+            and candidate.utilization_percent > self.maximum_utilization_percent
+        ):
+            return decision(AdmissionOutcome.WAIT, "high_utilization")
+        if stable_idle_seconds < request.stable_idle_seconds:
+            return decision(
+                AdmissionOutcome.WAIT,
+                "stability_window",
+                continuously_idle=True,
+            )
+        return decision(AdmissionOutcome.ADMITTED, "eligible", continuously_idle=True)
+
+
+DecisionObserver = Callable[[ResourceAdmissionDecision, ResourceCandidate, float], None]
+
+
+class ResourceBroker:
+    """Re-check a provider until policy admits, optionally claiming an atomic lease."""
+
+    def __init__(
+        self,
+        provider: ResourceProvider,
+        policy: ResourceAdmissionPolicy,
+        *,
+        lease_store: ResourceLeaseStore | None = None,
+        poll_seconds: float = 20,
+        sleeper: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        decision_observer: DecisionObserver | None = None,
+    ) -> None:
+        if poll_seconds <= 0:
+            raise ValueError("resource broker poll_seconds must be positive")
+        self.provider = provider
+        self.policy = policy
+        self.lease_store = lease_store
+        self.poll_seconds = poll_seconds
+        self.sleeper = sleeper
+        self.clock = clock
+        self.wall_clock = wall_clock
+        self.decision_observer = decision_observer
+
+    def wait_for_admission(self, request: ResourceRequest) -> ResourceAdmission:
+        return self._wait(request, worker_id=None, lease_ttl=None)
+
+    def acquire(
+        self,
+        request: ResourceRequest,
+        *,
+        worker_id: str,
+        lease_ttl: timedelta,
+    ) -> ResourceAdmission:
+        if self.lease_store is None:
+            raise ResourceBrokerError("resource_lease_store_not_configured")
+        if not worker_id or lease_ttl <= timedelta(0):
+            raise ValueError("worker_id and a positive lease ttl are required")
+        return self._wait(request, worker_id=worker_id, lease_ttl=lease_ttl)
+
+    def renew_lease(
+        self,
+        lease_id: str,
+        *,
+        worker_id: str,
+        lease_ttl: timedelta,
+    ) -> ResourceLease:
+        if self.lease_store is None:
+            raise ResourceBrokerError("resource_lease_store_not_configured")
+        return self.lease_store.renew(
+            lease_id,
+            worker_id=worker_id,
+            now=self.wall_clock(),
+            ttl=lease_ttl,
+        )
+
+    def release_lease(self, lease_id: str, *, worker_id: str) -> ResourceLease:
+        if self.lease_store is None:
+            raise ResourceBrokerError("resource_lease_store_not_configured")
+        return self.lease_store.release(
+            lease_id, worker_id=worker_id, now=self.wall_clock()
+        )
+
+    def recover_stale_leases(self) -> tuple[ResourceLease, ...]:
+        if self.lease_store is None:
+            raise ResourceBrokerError("resource_lease_store_not_configured")
+        return self.lease_store.recover_stale(now=self.wall_clock())
+
+    def _observe(
+        self,
+        decision: ResourceAdmissionDecision,
+        candidate: ResourceCandidate,
+        now: float,
+    ) -> None:
+        if self.decision_observer is not None:
+            self.decision_observer(decision, candidate, now)
+
+    @staticmethod
+    def _validate_request(request: ResourceRequest) -> None:
+        if len(request.requirements) != 1:
+            raise InvalidResourceRequest("resource_bundle_not_implemented")
+        if request.preemption is not PreemptionPolicy.NEVER:
+            raise InvalidResourceRequest("resource_preemption_not_implemented")
+
+    @staticmethod
+    def _telemetry(
+        request: ResourceRequest,
+        candidate: ResourceCandidate,
+        *,
+        started: float,
+        now: float,
+        poll_count: int,
+        observed_continuous_idle_seconds: float,
+    ) -> ResourceAdmissionTelemetry:
+        return ResourceAdmissionTelemetry(
+            request_id=request.request_id,
+            resource_id=candidate.resource_id,
+            resource_type=candidate.resource_type,
+            admission_class=request.admission_class,
+            wait_seconds=max(0.0, now - started),
+            poll_count=poll_count,
+            observed_continuous_idle_seconds=observed_continuous_idle_seconds,
+            required_stable_idle_seconds=request.stable_idle_seconds,
+            observed_capacities=candidate.capacities,
+            utilization_percent=candidate.utilization_percent,
+            foreign_owner_count=len(candidate.foreign_owners),
+        )
+
+    def _wait(
+        self,
+        request: ResourceRequest,
+        *,
+        worker_id: str | None,
+        lease_ttl: timedelta | None,
+    ) -> ResourceAdmission:
+        self._validate_request(request)
+        started = self.clock()
+        deadline = (
+            None
+            if request.maximum_wait_seconds is None
+            else started + request.maximum_wait_seconds
+        )
+        idle_started: dict[str, float] = {}
+        poll_count = 0
+        while True:
+            try:
+                candidates = tuple(self.provider.candidates(request))
+            except ResourceBrokerError:
+                raise
+            except Exception as exc:
+                raise ResourceInspectionError("resource_inspection_failed") from exc
+            poll_count += 1
+            now = self.clock()
+            if deadline is not None and now > deadline:
+                raise ResourceWaitTimeout("resource_maximum_wait_exceeded")
+            if any(
+                not isinstance(candidate, ResourceCandidate) for candidate in candidates
+            ):
+                raise ResourceInspectionError("resource_snapshot_invalid")
+            observed_ids = {candidate.resource_id for candidate in candidates}
+            if len(observed_ids) != len(candidates):
+                raise ResourceInspectionError("resource_snapshot_duplicate_ids")
+            for absent_id in set(idle_started) - observed_ids:
+                idle_started.pop(absent_id, None)
+
+            request_lease = (
+                None
+                if self.lease_store is None
+                else self.lease_store.active_for_request(
+                    request.request_id, now=self.wall_clock()
+                )
+            )
+            if request_lease is not None:
+                idle_started.clear()
+                leased_candidate = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if candidate.resource_id == request_lease.resource_id
+                    ),
+                    None,
+                )
+                if (
+                    worker_id == request_lease.worker_id
+                    and leased_candidate is not None
+                ):
+                    decision = ResourceAdmissionDecision(
+                        outcome=AdmissionOutcome.ADMITTED,
+                        request_id=request.request_id,
+                        resource_id=leased_candidate.resource_id,
+                        reason="lease_recovered",
+                    )
+                    self._observe(decision, leased_candidate, now)
+                    return ResourceAdmission(
+                        decision=decision,
+                        telemetry=self._telemetry(
+                            request,
+                            leased_candidate,
+                            started=started,
+                            now=now,
+                            poll_count=poll_count,
+                            observed_continuous_idle_seconds=0,
+                        ),
+                        lease=request_lease,
+                    )
+                if leased_candidate is not None:
+                    decision = ResourceAdmissionDecision(
+                        outcome=AdmissionOutcome.WAIT,
+                        request_id=request.request_id,
+                        resource_id=leased_candidate.resource_id,
+                        reason="request_already_leased",
+                    )
+                    self._observe(decision, leased_candidate, now)
+
+            rejected_reasons: list[str] = []
+            candidates_to_consider = (
+                ()
+                if request_lease is not None
+                else tuple(sorted(candidates, key=lambda item: item.resource_id))
+            )
+            for candidate in candidates_to_consider:
+                active_lease = (
+                    None
+                    if self.lease_store is None
+                    else self.lease_store.active_for(
+                        candidate.resource_id, now=self.wall_clock()
+                    )
+                )
+                if active_lease is not None:
+                    idle_started.pop(candidate.resource_id, None)
+                    if (
+                        worker_id is not None
+                        and active_lease.worker_id == worker_id
+                        and active_lease.request_id == request.request_id
+                    ):
+                        assert self.lease_store is not None and lease_ttl is not None
+                        recovered = self.lease_store.acquire(
+                            request,
+                            candidate,
+                            worker_id=worker_id,
+                            now=self.wall_clock(),
+                            ttl=lease_ttl,
+                        )
+                        decision = ResourceAdmissionDecision(
+                            outcome=AdmissionOutcome.ADMITTED,
+                            request_id=request.request_id,
+                            resource_id=candidate.resource_id,
+                            reason="lease_recovered",
+                        )
+                        self._observe(decision, candidate, now)
+                        return ResourceAdmission(
+                            decision=decision,
+                            telemetry=self._telemetry(
+                                request,
+                                candidate,
+                                started=started,
+                                now=now,
+                                poll_count=poll_count,
+                                observed_continuous_idle_seconds=0,
+                            ),
+                            lease=recovered,
+                        )
+                    decision = ResourceAdmissionDecision(
+                        outcome=AdmissionOutcome.WAIT,
+                        request_id=request.request_id,
+                        resource_id=candidate.resource_id,
+                        reason="resource_already_leased",
+                    )
+                    self._observe(decision, candidate, now)
+                    continue
+
+                initial = self.policy.decide(
+                    request,
+                    candidate,
+                    worker_id=worker_id,
+                    stable_idle_seconds=0,
+                )
+                if initial.outcome is AdmissionOutcome.REJECTED:
+                    idle_started.pop(candidate.resource_id, None)
+                    rejected_reasons.append(initial.reason)
+                    self._observe(initial, candidate, now)
+                    continue
+                if not initial.continuously_idle:
+                    idle_started.pop(candidate.resource_id, None)
+                    self._observe(initial, candidate, now)
+                    continue
+                candidate_idle_started = idle_started.setdefault(
+                    candidate.resource_id, now
+                )
+                stable_idle_seconds = max(0.0, now - candidate_idle_started)
+                decision = self.policy.decide(
+                    request,
+                    candidate,
+                    worker_id=worker_id,
+                    stable_idle_seconds=stable_idle_seconds,
+                )
+                self._observe(decision, candidate, now)
+                if decision.outcome is AdmissionOutcome.REJECTED:
+                    idle_started.pop(candidate.resource_id, None)
+                    rejected_reasons.append(decision.reason)
+                    continue
+                if decision.outcome is not AdmissionOutcome.ADMITTED:
+                    continue
+
+                lease = None
+                if worker_id is not None:
+                    assert self.lease_store is not None and lease_ttl is not None
+                    try:
+                        lease = self.lease_store.acquire(
+                            request,
+                            candidate,
+                            worker_id=worker_id,
+                            now=self.wall_clock(),
+                            ttl=lease_ttl,
+                        )
+                    except ResourceLeaseConflict:
+                        idle_started.pop(candidate.resource_id, None)
+                        conflict = decision.model_copy(
+                            update={
+                                "outcome": AdmissionOutcome.WAIT,
+                                "reason": "resource_already_leased",
+                            }
+                        )
+                        self._observe(conflict, candidate, now)
+                        continue
+                return ResourceAdmission(
+                    decision=decision,
+                    telemetry=self._telemetry(
+                        request,
+                        candidate,
+                        started=started,
+                        now=now,
+                        poll_count=poll_count,
+                        observed_continuous_idle_seconds=decision.stable_idle_seconds,
+                    ),
+                    lease=lease,
+                )
+
+            if (
+                request_lease is None
+                and candidates
+                and len(rejected_reasons) == len(candidates)
+            ):
+                raise InvalidResourceState(
+                    "no_eligible_resource_candidates:" + ",".join(rejected_reasons)
+                )
+            if deadline is None:
+                self.sleeper(self.poll_seconds)
+                continue
+            remaining = deadline - now
+            if remaining <= 0:
+                raise ResourceWaitTimeout("resource_maximum_wait_exceeded")
+            self.sleeper(min(self.poll_seconds, remaining))

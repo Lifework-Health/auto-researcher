@@ -53,7 +53,15 @@ def test_pinned_dependency_and_adapter_contract_are_valid():
     validate_upstream_dependency(contract)
     assert contract.upstream_commit == "411fb59c886c18704caaffb611e17cf9e7d824d2"
     assert contract.evaluator_owner == contract.model_client_owner == "AUTO_RESEARCHER"
-    assert "provider_clients" in contract.unsupported_features
+    assert "provider_clients" not in contract.unsupported_features
+    assert set(contract.unsupported_features) == {
+        "arbitrary_package_installation",
+        "cascade_evaluation",
+        "direct_provider_credential_access",
+        "embedding_novelty",
+        "arbitrary_network_access",
+        "unrestricted_host_filesystem",
+    }
 
 
 @pytest.mark.parametrize(
@@ -174,6 +182,48 @@ def test_synthetic_v2_request_exposes_machine_derived_constraints():
         "evaluator, verifier, framework, or orchestration",
     ):
         assert rule in prompt
+
+
+def test_development_v2_request_includes_bounded_campaign_feedback():
+    captured = []
+
+    class CapturingClient(FakeUpstreamClient):
+        def propose_mutation(self, request):
+            captured.append(request)
+            return super().propose_mutation(request)
+
+    backend = _backend()
+    bridge = AutoResearcherOpenEvolveModelBridge(CapturingClient())
+    bridge.development_dynamic_feedback = True
+    adapter = UpstreamOpenEvolveAdapter(default_adapter_contract(LOCK), bridge)
+    search = backend.create_search_contract(_request(), _contract())
+    seed = backend.seed_candidate(search)
+    reservation = backend.reserve_mutation(
+        search, backend.initialise_population(search), seed
+    ).model_copy(
+        update={
+            "campaign_context": {"incumbent_primary_score": 0.8},
+            "parent_feedback": {
+                "objective_value": 0.8,
+                "constraint_compliant": True,
+            },
+        }
+    )
+
+    adapter.mutate(reservation, seed, backend.component_spec)
+
+    assert captured[0]["campaign_context"] == {"incumbent_primary_score": 0.8}
+    assert captured[0]["parent_feedback"] == {
+        "objective_value": 0.8,
+        "constraint_compliant": True,
+    }
+    rules = captured[0]["static_validation_rules"]
+    assert any(
+        "exactly one synchronous `def evolve(configuration)`" in rule
+        for rule in rules
+    )
+    assert any("Never assign or augmented-assign through" in rule for rule in rules)
+    assert any("return a new dictionary" in rule for rule in rules)
 
 
 def test_historical_v1_request_preserves_the_documented_constraint_omissions():

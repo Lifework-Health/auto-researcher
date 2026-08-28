@@ -394,6 +394,27 @@ def test_mutation_context_is_metadata_only_and_reaches_generic_constraints():
     )
 
 
+def test_mutation_context_uses_runtime_observations_for_hpo_outcomes():
+    observation = (
+        "Six 25-epoch trials completed; trial 3 achieved mean macro Dice 0.661794."
+    )
+    component = FeTASegEvolvableComponent(
+        EvolveBaseConfiguration(),
+        "optuna",
+        task_options={"hpo_observations": [observation]},
+    )
+    context = component.component_spec().task_mutation_context
+
+    assert context["aggregate_hpo_observations"] == [observation]
+    assert context["domain_guidance"][0] == (
+        "Treat aggregate_hpo_observations as the only evidence about preceding "
+        "search outcomes."
+    )
+    encoded_guidance = json.dumps(context["domain_guidance"]).casefold()
+    assert "underperformed" not in encoded_guidance
+    assert "outperformed" not in encoded_guidance
+
+
 @pytest.mark.parametrize(
     "observation",
     (
@@ -483,6 +504,24 @@ def test_examples_parse_and_build_real_search_contracts():
             contract.selection_policy.policy_id
             == "constraint-verification-objective-v2"
         )
+
+
+def test_live_metadata_only_example_preserves_science_and_selects_hardened_runtime():
+    root = Path(__file__).parents[2] / "examples" / "tasks" / "feta_seg_evolve"
+    search, runtime = _load_task_configuration(
+        root / "openevolve-live-metadata-only-template.yaml",
+        "feta_seg_evolve",
+        "1.0",
+    )
+    assert search["openevolve"]["maximum_model_calls"] == 2
+    assert search["openevolve"]["sandbox_policy_id"] == (
+        "openevolve-hardened-executor-v2"
+    )
+    assert search["openevolve"]["random_seed"] == 20260810
+    assert runtime["options"]["gpu_scheduler"]["allowed_fidelities"] == [25, 50, 100]
+    assert FeTASegEvolveTask().live_mutation_boundary().underlying_dataset_class == (
+        "mri"
+    )
 
 
 def test_active_feta_search_scientific_and_continuation_identity_is_unchanged():

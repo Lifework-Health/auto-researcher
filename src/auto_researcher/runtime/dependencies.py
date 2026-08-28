@@ -8,24 +8,33 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import importlib.util
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from auto_researcher.agents.mock import (
     ConfiguredPlannerAgent,
     MockHypothesisAgent,
 )
-from auto_researcher.agents.protocols import HypothesisAgent, PlannerAgent
+from auto_researcher.agents.protocols import (
+    HypothesisAgent,
+    PlannerAgent,
+    ResearchDirectorAgent,
+)
 from auto_researcher.agents.call_store import (
     AgentCallStore,
     InMemoryAgentCallStore,
     SQLiteAgentCallStore,
 )
-from auto_researcher.agents.context import AgentContextAssembler
-from auto_researcher.agents.live import LiveHypothesisAgent, LivePlannerAgent
+from auto_researcher.agents.context import AgentContextAssembler, AgentContextLimits
+from auto_researcher.agents.live import (
+    LiveHypothesisAgent,
+    LivePlannerAgent,
+    LiveResearchDirectorAgent,
+)
 from auto_researcher.agents.models import (
     AgentBudgetPolicy,
     ModelCallConfig,
+    ResearchLandscapeEvidence,
     TaskAgentContext,
 )
 from auto_researcher.providers.protocols import StructuredModelClient
@@ -49,11 +58,31 @@ from auto_researcher.evaluation.protocols import Evaluator
 from auto_researcher.provenance.protocols import ProvenanceStore
 from auto_researcher.provenance.sqlite_store import SQLiteProvenanceStore
 from auto_researcher.runtime.checkpoints import memory_checkpointer, sqlite_checkpointer
+from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.search.direct import DirectSearchBackend
 from auto_researcher.search.openevolve.backend import OpenEvolveBackend
+from auto_researcher.search.openevolve.live_runtime import (
+    MetadataOnlyLiveOpenEvolveRuntime,
+    assemble_metadata_only_live_openevolve,
+)
+from auto_researcher.search.openevolve.native_engine import (
+    ApprovedModel,
+    ScientificCandidateIdentity,
+)
+from auto_researcher.search.openevolve.native_runtime import (
+    StandardNativeOpenEvolveRuntime,
+)
 from auto_researcher.search.openevolve.protocols import MutationOperator
 from auto_researcher.search.openevolve.mutation import DeterministicMutationOperator
 from auto_researcher.search.openevolve.sandbox import LocalSandboxRunner
+from auto_researcher.resources import (
+    CourtesyResourceAdmissionPolicy,
+    InMemoryResourceLeaseStore,
+    NvidiaGPUResourceProvider,
+    ResourceBroker,
+    ResourceRequest,
+    ResourceRequirement,
+)
 from auto_researcher.search.protocols import SearchBackend, SearchCapability
 from auto_researcher.search.registry import SearchBackendRegistry
 from auto_researcher.search.optuna.backend import OptunaAskTellBackend
@@ -72,6 +101,7 @@ from auto_researcher.tasks.models import (
 )
 from auto_researcher.tasks.protocols import (
     AgentContextCapableTask,
+    IntermediateReportingEvaluator,
     OpenEvolveCapableTask,
     OptunaCapableTask,
     ResearchTask,
@@ -113,6 +143,8 @@ class RuntimeDependencies:
     optuna_backend: OptunaAskTellBackend | None = None
     optuna_storage_handle: OptunaStorageHandle | None = None
     openevolve_backend: OpenEvolveBackend | None = None
+    native_openevolve_runtime: StandardNativeOpenEvolveRuntime | None = None
+    research_director_agent: ResearchDirectorAgent | None = None
 
 
 def utc_now() -> datetime:
@@ -140,6 +172,46 @@ def _context_for_contract(
     return TaskRuntimeContext.model_validate(payload)
 
 
+def _research_director_landscape(
+    context: TaskRuntimeContext,
+) -> tuple[ResearchLandscapeEvidence, ...]:
+    """Load only explicitly verified, hash-bound external campaign evidence."""
+
+    raw = context.task_options.get("research_director_evidence", [])
+    if not isinstance(raw, list) or len(raw) > 32:
+        raise ValueError("research_director_evidence_invalid")
+    try:
+        evidence = tuple(ResearchLandscapeEvidence.model_validate(item) for item in raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("research_director_evidence_invalid") from exc
+    if len({item.evidence_id for item in evidence}) != len(evidence):
+        raise ValueError("research_director_evidence_duplicate_id")
+    references = [
+        reference
+        for item in evidence
+        for reference in (item.source_reference, *item.reference_ids)
+    ]
+    if len(set(references)) != len(references):
+        raise ValueError("research_director_evidence_duplicate_reference")
+    raw_manifest = context.task_options.get(
+        "research_director_evidence_manifest_sha256"
+    )
+    if not evidence:
+        if raw_manifest is not None:
+            raise ValueError("research_director_evidence_manifest_without_evidence")
+        return ()
+    if (
+        not isinstance(raw_manifest, str)
+        or len(raw_manifest) != 64
+        or any(character not in "0123456789abcdef" for character in raw_manifest)
+    ):
+        raise ValueError("research_director_evidence_manifest_invalid")
+    actual = payload_hash([item.model_dump(mode="json") for item in evidence])
+    if actual != raw_manifest:
+        raise ValueError("research_director_evidence_manifest_mismatch")
+    return evidence
+
+
 def _assemble_task_dependencies(
     *,
     task: ResearchTask,
@@ -155,8 +227,10 @@ def _assemble_task_dependencies(
     agent_call_store: AgentCallStore | None,
     model_client: StructuredModelClient | None,
     planner_model_client: StructuredModelClient | None,
+    research_director_model_client: StructuredModelClient | None,
     hypothesis_call_config: ModelCallConfig | None,
     planner_call_config: ModelCallConfig | None,
+    research_director_call_config: ModelCallConfig | None,
     agent_budget_policy: AgentBudgetPolicy | None,
     knowledge_provider: KnowledgeProvider | None,
     knowledge_configuration: KnowledgeProviderConfiguration | None,
@@ -168,6 +242,9 @@ def _assemble_task_dependencies(
     optuna_storage_handle: OptunaStorageHandle | None = None,
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
+    openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
+    native_openevolve_models: tuple[ApprovedModel, ...] = (),
+    native_openevolve_resource_broker: ResourceBroker | None = None,
 ) -> RuntimeDependencies:
     task.validate_contract(contract)
     context = _context_for_contract(runtime_context, contract, clock())
@@ -188,11 +265,16 @@ def _assemble_task_dependencies(
         raise ValueError("task experiment metadata does not match contract provenance")
     if metadata.dataset_version != manifest.dataset_version:
         raise ValueError("task experiment metadata does not match dataset manifest")
-    normalised = (
-        task.normalise_configuration(experiment_configuration)
-        if search_type == SearchType.DIRECT
-        else experiment_configuration
-    )
+    if search_type == SearchType.DIRECT:
+        # Runtime controls can accompany a Direct scientific seed so an
+        # adaptive campaign may route to OpenEvolve or a resource broker later.
+        # They must not become part of the task's scientific configuration.
+        direct_configuration = dict(experiment_configuration)
+        direct_configuration.pop("openevolve", None)
+        direct_configuration.pop("resources", None)
+        normalised = task.normalise_configuration(direct_configuration)
+    else:
+        normalised = experiment_configuration
     policy = task.create_verification_policy(contract)
     if policy.policy_id != descriptor.verification_policy_id:
         raise ValueError("task verification policy does not match its descriptor")
@@ -216,7 +298,14 @@ def _assemble_task_dependencies(
             ),
             rationale="Validate the task capability before graph execution.",
         )
-        task.create_optuna_study_spec(contract, validation_request)
+        validation_spec = cast(OptunaCapableTask, task).create_optuna_study_spec(
+            contract,
+            validation_request,
+        )
+        if validation_spec.pruner.type != "none" and not isinstance(
+            task_evaluator, IntermediateReportingEvaluator
+        ):
+            raise ValueError("optuna_pruner_requires_intermediate_reporting_evaluator")
     if (
         search_type == SearchType.OPTUNA
         and optuna_installed
@@ -233,15 +322,55 @@ def _assemble_task_dependencies(
     )
     openevolve_capable = isinstance(task, OpenEvolveCapableTask)
     openevolve_permitted = SearchType.OPENEVOLVE in contract.allowed_search_types
+    raw_openevolve = experiment_configuration.get("openevolve", {})
+    if not isinstance(raw_openevolve, dict):
+        raise ValueError("openevolve_finite_configuration_required")
+    native_mode_value = raw_openevolve.get("native_controller")
+    if native_mode_value is not None and type(native_mode_value) is not bool:
+        raise ValueError("openevolve_native_controller_must_be_boolean")
+    native_mode = search_type == SearchType.OPENEVOLVE and native_mode_value is True
     openevolve_backend: OpenEvolveBackend | None = None
+    call_store = agent_call_store or InMemoryAgentCallStore()
     if openevolve_capable and openevolve_permitted:
-        component = task.create_evolvable_component(contract, context)
+        component = cast(OpenEvolveCapableTask, task).create_evolvable_component(
+            contract,
+            context,
+        )
         verifier_identity = f"{selected_verifier.version}@{policy.policy_id}"
         workspace_root = (
             context.workspace_dir / "openevolve-sandboxes"
             if context.workspace_dir is not None
             else None
         )
+        if openevolve_live_runtime is not None:
+            if search_type != SearchType.OPENEVOLVE:
+                raise ValueError("live_mutation_requires_openevolve_search")
+            if (
+                openevolve_mutation_operator is not None
+                or openevolve_sandbox_runner is not None
+            ):
+                raise ValueError("live_mutation_runtime_injection_conflict")
+            if context.workspace_dir is None:
+                raise ValueError("live_mutation_workspace_required")
+            if context.run_id is None:
+                raise ValueError("live_mutation_runtime_run_required")
+            (
+                openevolve_mutation_operator,
+                openevolve_sandbox_runner,
+            ) = assemble_metadata_only_live_openevolve(
+                runtime=openevolve_live_runtime,
+                task=task,
+                component=component,
+                research_contract=contract,
+                run_id=context.run_id,
+                experiment_configuration=experiment_configuration,
+                call_store=call_store,
+                workspace_root=(
+                    context.workspace_dir.expanduser().resolve()
+                    / "openevolve-sandboxes"
+                ),
+                now=clock,
+            )
         openevolve_backend = OpenEvolveBackend(
             component,
             metadata,
@@ -264,6 +393,103 @@ def _assemble_task_dependencies(
                 rationale="Validate finite OpenEvolve configuration before execution.",
             )
             openevolve_backend.create_search_contract(validation_request, contract)
+    native_runtime: StandardNativeOpenEvolveRuntime | None = None
+    if native_mode:
+        if openevolve_backend is None or context.run_id is None:
+            raise ValueError("native_openevolve_runtime_context_invalid")
+        approved_bridge = getattr(openevolve_mutation_operator, "bridge", None)
+        if approved_bridge is None and not native_openevolve_models:
+            raise ValueError("native_openevolve_approved_model_bridge_required")
+        resource_configuration = experiment_configuration.get("resources")
+        request_factory = None
+        if resource_configuration is not None:
+            if not isinstance(resource_configuration, dict):
+                raise ValueError("openevolve_resource_configuration_invalid")
+            if resource_configuration.get("resource_type", "gpu") != "gpu":
+                raise ValueError("openevolve_resource_type_not_supported")
+            equivalence = frozenset(
+                str(item)
+                for item in resource_configuration.get(
+                    "equivalence_requirements",
+                    ("nvidia-cuda", "whole-physical-gpu"),
+                )
+            )
+            native_openevolve_resource_broker = (
+                native_openevolve_resource_broker
+                or ResourceBroker(
+                    NvidiaGPUResourceProvider(equivalence_tags=equivalence),
+                    CourtesyResourceAdmissionPolicy(
+                        maximum_utilization_percent=float(
+                            resource_configuration.get(
+                                "maximum_utilization_percent",
+                                100,
+                            )
+                        )
+                    ),
+                    lease_store=InMemoryResourceLeaseStore(),
+                )
+            )
+
+            def request_factory(
+                identity: ScientificCandidateIdentity,
+            ) -> ResourceRequest:
+                return ResourceRequest(
+                    request_id=f"native-{identity.evaluation_identity}",
+                    requirements=(
+                        ResourceRequirement(
+                            resource_type="gpu",
+                            quantity=int(
+                                resource_configuration.get(
+                                    "quantity_per_candidate",
+                                    1,
+                                )
+                            ),
+                        ),
+                    ),
+                    maximum_wait_seconds=float(
+                        resource_configuration.get(
+                            "maximum_wait_seconds",
+                            14_400,
+                        )
+                    ),
+                    stable_idle_seconds=float(
+                        resource_configuration.get("stable_idle_seconds", 0)
+                    ),
+                    equivalence_requirements=equivalence,
+                )
+
+        if native_openevolve_resource_broker is not None and request_factory is None:
+            raise ValueError("native_openevolve_resource_configuration_required")
+        if context.output_dir is None:
+            raise ValueError("native_openevolve_output_directory_required")
+        model_name = None
+        if approved_bridge is not None:
+            model_name = approved_bridge.contract.model_config_contract.model_id
+        native_runtime = StandardNativeOpenEvolveRuntime(
+            backend=openevolve_backend,
+            component=openevolve_backend.component,
+            metadata=metadata,
+            contract=contract,
+            run_id=context.run_id,
+            output_root=(
+                context.output_dir.expanduser().resolve()
+                / "runs"
+                / context.run_id
+                / "openevolve-native"
+            ),
+            evaluator=task_evaluator,
+            verifier=selected_verifier,
+            provenance_store=provenance_store,
+            runtime_context=context,
+            dataset_manifest=manifest,
+            verification_policy=policy,
+            clock=clock,
+            approved_models=native_openevolve_models,
+            approved_bridge=approved_bridge,
+            approved_bridge_model_name=model_name,
+            resource_broker=native_openevolve_resource_broker,
+            resource_request_factory=request_factory,
+        )
     openevolve_available = openevolve_backend is not None
     direct_backend = DirectSearchBackend(
         metadata,
@@ -307,7 +533,6 @@ def _assemble_task_dependencies(
         openevolve_backend,
     )
     capabilities = registry.capabilities()
-    call_store = agent_call_store or InMemoryAgentCallStore()
     retrieval_store = knowledge_retrieval_store or InMemoryKnowledgeRetrievalStore()
     template_registry = knowledge_template_registry or default_template_registry()
     provider_registry = KnowledgeProviderRegistry()
@@ -362,9 +587,23 @@ def _assemble_task_dependencies(
         context,
         capabilities,
     )
+    raw_prior_results = context.task_options.get("campaign_prior_results", 5)
+    if (
+        isinstance(raw_prior_results, bool)
+        or not isinstance(raw_prior_results, int)
+        or not 1 <= raw_prior_results <= 30
+    ):
+        raise ValueError("campaign_prior_results_invalid")
     context_assembler = AgentContextAssembler(
         provenance_store,
         knowledge_retrieval_store=retrieval_store,
+        clock=clock,
+        limits=AgentContextLimits(
+            maximum_prior_hypotheses=min(12, raw_prior_results),
+            maximum_prior_results=raw_prior_results,
+            maximum_context_characters=budget_policy.maximum_input_context_size,
+        ),
+        research_landscape=_research_director_landscape(context),
     )
     knowledge_coordinator = KnowledgeRetrievalCoordinator(
         store=retrieval_store,
@@ -377,8 +616,10 @@ def _assemble_task_dependencies(
         for item in (
             model_client,
             planner_model_client,
+            research_director_model_client,
             hypothesis_call_config,
             planner_call_config,
+            research_director_call_config,
         )
     )
     if live_configured and not all(
@@ -394,6 +635,7 @@ def _assemble_task_dependencies(
         )
     selected_hypothesis_agent = hypothesis_agent
     selected_planner_agent = planner_agent
+    selected_research_director_agent = None
     if live_configured:
         assert model_client and hypothesis_call_config and planner_call_config
         selected_hypothesis_agent = LiveHypothesisAgent(
@@ -412,6 +654,14 @@ def _assemble_task_dependencies(
             task=task,
             contract=contract,
         )
+        if research_director_call_config is not None:
+            selected_research_director_agent = LiveResearchDirectorAgent(
+                client=research_director_model_client or model_client,
+                call_config=research_director_call_config,
+                budget_policy=budget_policy,
+                call_store=call_store,
+                clock=clock,
+            )
     return RuntimeDependencies(
         hypothesis_agent=selected_hypothesis_agent or MockHypothesisAgent(),
         planner_agent=selected_planner_agent
@@ -461,6 +711,8 @@ def _assemble_task_dependencies(
         ),
         optuna_storage_handle=optuna_storage_handle,
         openevolve_backend=openevolve_backend,
+        native_openevolve_runtime=native_runtime,
+        research_director_agent=selected_research_director_agent,
     )
 
 
@@ -478,8 +730,10 @@ def task_memory_dependencies(
     agent_call_store: AgentCallStore | None = None,
     model_client: StructuredModelClient | None = None,
     planner_model_client: StructuredModelClient | None = None,
+    research_director_model_client: StructuredModelClient | None = None,
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
+    research_director_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
     knowledge_provider: KnowledgeProvider | None = None,
     knowledge_configuration: KnowledgeProviderConfiguration | None = None,
@@ -490,7 +744,12 @@ def task_memory_dependencies(
     search_type: SearchType = SearchType.DIRECT,
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
+    openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
+    native_openevolve_models: tuple[ApprovedModel, ...] = (),
+    native_openevolve_resource_broker: ResourceBroker | None = None,
 ) -> RuntimeDependencies:
+    if openevolve_live_runtime is not None:
+        raise ValueError("live_mutation_durable_runtime_required")
     return _assemble_task_dependencies(
         task=task,
         runtime_context=runtime_context,
@@ -505,8 +764,10 @@ def task_memory_dependencies(
         agent_call_store=agent_call_store,
         model_client=model_client,
         planner_model_client=planner_model_client,
+        research_director_model_client=research_director_model_client,
         hypothesis_call_config=hypothesis_call_config,
         planner_call_config=planner_call_config,
+        research_director_call_config=research_director_call_config,
         agent_budget_policy=agent_budget_policy,
         knowledge_provider=knowledge_provider,
         knowledge_configuration=knowledge_configuration,
@@ -517,6 +778,9 @@ def task_memory_dependencies(
         search_type=search_type,
         openevolve_mutation_operator=openevolve_mutation_operator,
         openevolve_sandbox_runner=openevolve_sandbox_runner,
+        openevolve_live_runtime=openevolve_live_runtime,
+        native_openevolve_models=native_openevolve_models,
+        native_openevolve_resource_broker=native_openevolve_resource_broker,
     )
 
 
@@ -538,8 +802,10 @@ def task_sqlite_dependencies(
     verifier: Verifier | None = None,
     model_client: StructuredModelClient | None = None,
     planner_model_client: StructuredModelClient | None = None,
+    research_director_model_client: StructuredModelClient | None = None,
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
+    research_director_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
     knowledge_provider: KnowledgeProvider | None = None,
     knowledge_configuration: KnowledgeProviderConfiguration | None = None,
@@ -549,6 +815,9 @@ def task_sqlite_dependencies(
     search_type: SearchType = SearchType.DIRECT,
     openevolve_mutation_operator: MutationOperator | None = None,
     openevolve_sandbox_runner: Any | None = None,
+    openevolve_live_runtime: MetadataOnlyLiveOpenEvolveRuntime | None = None,
+    native_openevolve_models: tuple[ApprovedModel, ...] = (),
+    native_openevolve_resource_broker: ResourceBroker | None = None,
 ) -> Iterator[RuntimeDependencies]:
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     provenance = Path(provenance_path).expanduser().resolve()
@@ -598,9 +867,10 @@ def task_sqlite_dependencies(
     optuna_handle = (
         sqlite_storage(optuna_file)
         if (
-            search_type == SearchType.OPTUNA
-            and optuna_file is not None
+            optuna_file is not None
             and importlib.util.find_spec("optuna") is not None
+            and isinstance(task, OptunaCapableTask)
+            and SearchType.OPTUNA in contract.allowed_search_types
         )
         else None
     )
@@ -619,8 +889,10 @@ def task_sqlite_dependencies(
             agent_call_store=call_store,
             model_client=model_client,
             planner_model_client=planner_model_client,
+            research_director_model_client=research_director_model_client,
             hypothesis_call_config=hypothesis_call_config,
             planner_call_config=planner_call_config,
+            research_director_call_config=research_director_call_config,
             agent_budget_policy=agent_budget_policy,
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
@@ -632,6 +904,9 @@ def task_sqlite_dependencies(
             optuna_storage_handle=optuna_handle,
             openevolve_mutation_operator=openevolve_mutation_operator,
             openevolve_sandbox_runner=openevolve_sandbox_runner,
+            openevolve_live_runtime=openevolve_live_runtime,
+            native_openevolve_models=native_openevolve_models,
+            native_openevolve_resource_broker=(native_openevolve_resource_broker),
         )
     finally:
         if optuna_handle is not None:
@@ -657,8 +932,10 @@ def memory_dependencies(
     agent_call_store: AgentCallStore | None = None,
     model_client: StructuredModelClient | None = None,
     planner_model_client: StructuredModelClient | None = None,
+    research_director_model_client: StructuredModelClient | None = None,
     hypothesis_call_config: ModelCallConfig | None = None,
     planner_call_config: ModelCallConfig | None = None,
+    research_director_call_config: ModelCallConfig | None = None,
     agent_budget_policy: AgentBudgetPolicy | None = None,
     clock: Callable[[], datetime] = utc_now,
     id_generator: Callable[[str], str] = random_id,
@@ -699,8 +976,10 @@ def memory_dependencies(
         agent_call_store=agent_call_store,
         model_client=model_client,
         planner_model_client=planner_model_client,
+        research_director_model_client=research_director_model_client,
         hypothesis_call_config=hypothesis_call_config,
         planner_call_config=planner_call_config,
+        research_director_call_config=research_director_call_config,
         agent_budget_policy=agent_budget_policy,
         clock=clock,
         id_generator=id_generator,

@@ -11,6 +11,7 @@ import ormsgpack
 import pytest
 from langgraph.checkpoint.base import empty_checkpoint
 
+from auto_researcher.agents.models import ResearchDirective
 from auto_researcher.contracts.enums import (
     EvidenceStatus,
     KnowledgeGroundingMode,
@@ -105,6 +106,30 @@ def _operator_contract() -> ResearchContract:
         ),
         provenance=ProvenanceKind.REAL,
     )
+
+
+def test_research_directive_round_trips_through_checkpoint_serializer():
+    directive = ResearchDirective(
+        directive_id="directive-checkpoint-roundtrip",
+        trigger="campaign_start",
+        mechanism_hypothesis="A bounded mechanism may improve Dice.",
+        rationale="Use the registered search envelope.",
+        selected_operators=("OPENEVOLVE",),
+        experiment_allocation={"OPENEVOLVE": 1},
+        targeted_dimensions=("feature_width",),
+        expected_observation="objective score improves",
+        falsification_condition="objective score does not improve",
+        confidence=0.6,
+        agent_call_id="model-call-checkpoint-roundtrip",
+        prompt_version="2.0.0",
+        context_hash="context-checkpoint-roundtrip",
+    )
+    serializer = checkpoint_serializer()
+
+    restored = serializer.loads_typed(serializer.dumps_typed(directive))
+
+    assert restored == directive
+    assert isinstance(restored, ResearchDirective)
 
 
 def _terminal_fixture() -> tuple[dict, dict, dict]:

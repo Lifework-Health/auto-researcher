@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-researcher"
-version = "2.1.0"
+version = "2.2.0"
 description = "A typed, resumable LangGraph control plane for bounded scientific research."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,7 +25,28 @@ dev = [
     "pytest==9.0.2",
 ]
 hpo = [
-    "optuna>=4.9,<5",
+    "optuna==4.9.0",
+]
+hpo-postgresql = [
+    "optuna==4.9.0",
+    "psycopg[binary]>=3.2,<4",
+]
+hpo-cmaes = [
+    "optuna==4.9.0",
+    "cmaes>=0.12,<1",
+]
+hpo-gp = [
+    "optuna==4.9.0",
+    "scipy>=1.10,<2",
+    "torch>=2.0",
+]
+hpo-qmc = [
+    "optuna==4.9.0",
+    "scipy>=1.10,<2",
+]
+hpo-diagnostics = [
+    "optuna==4.9.0",
+    "scikit-learn>=1.5,<2",
 ]
 agents = [
     "langchain-core==1.5.3",
@@ -37,10 +58,14 @@ agents-anthropic = [
 knowledge-neo4j = [
     "neo4j==6.2.0",
 ]
+secrets-gcp = [
+    "google-cloud-secret-manager==2.30.0",
+]
 openevolve = [
     "openevolve==0.3.2",
 ]
 feta = [
+    "einops==0.8.1",
     "numpy==2.0.2",
     "nibabel==5.3.3",
     "scipy==1.18.0",
@@ -65,6 +90,7 @@ pythonpath = ["src"]
 addopts = "-ra"
 markers = [
     "hpo: optional tests requiring the Optuna hpo extra",
+    "postgresql: opt-in integration tests requiring AUTO_RESEARCHER_TEST_POSTGRESQL_URL",
     "v2: optional contract tests requiring the auto_agent_v2 package",
     "real_data: optional iCCA compatibility gate requiring explicit local data",
     "live_agent: optional paid provider smoke tests requiring explicit environment opt-in",

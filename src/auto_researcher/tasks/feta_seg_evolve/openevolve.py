@@ -113,7 +113,7 @@ class FeTASegEvolvableComponent:
 
     def component_spec(self) -> EvolvableComponentSpec:
         safe_base = self.base_configuration.model_dump(mode="json")
-        safe_context = {
+        safe_context: dict[str, Any] = {
             "objective": "maximise fold-0 validation macro Dice",
             "immutable_architecture": "3D SegResNet 32 filters, blocks 1-2-2-4 / 1-1-1",
             "immutable_preprocessing": "RAS, 0.5 mm, foreground crop, nonzero z-score, 128^3 patches",
@@ -121,7 +121,8 @@ class FeTASegEvolvableComponent:
             "legal_training_policy_schema": TrainingPolicy.model_json_schema(),
             "aggregate_hpo_observations": list(self.hpo_observations),
             "domain_guidance": [
-                "Strong augmentation underperformed in the preceding aggregate HPO screen.",
+                "Treat aggregate_hpo_observations as the only evidence "
+                "about preceding search outcomes.",
                 "Reconstruction-method robustness is important.",
                 "Grey matter is a difficult tissue.",
             ],
@@ -160,6 +161,16 @@ class FeTASegEvolvableComponent:
             "base_configuration": self.base_configuration.model_dump(mode="json"),
             "seed_training_policy": self.seed_policy.model_dump(mode="json"),
         }
+
+    def canonical_scientific_configuration(
+        self,
+        preparation: CandidatePreparationResult,
+    ) -> dict:
+        """Canonical TrainingPolicy identity, independent of generated source."""
+
+        return TrainingPolicy.model_validate(
+            dict(preparation.generated_configuration)
+        ).model_dump(mode="json")
 
     def candidate_to_experiment(
         self,
@@ -230,4 +241,43 @@ def default_feta_evolve_openevolve_configuration() -> dict[str, Any]:
             "candidate_workspace_bytes": 1_048_576,
             "candidate_file_size_bytes": 64_000,
         }
+    }
+
+
+def default_feta_evolve_a4_openevolve_configuration() -> dict[str, Any]:
+    """Bounded full-strength A4 acceptance profile; it performs no work by itself."""
+
+    openevolve = dict(default_feta_evolve_openevolve_configuration()["openevolve"])
+    openevolve.update(
+        {
+            "population_size": 12,
+            "archive_size": 12,
+            "num_islands": 3,
+            "migration_interval": 2,
+            "migration_rate": 0.25,
+            "feature_dimensions": [
+                "primary_score",
+                "policy_complexity",
+            ],
+            "feature_bins": 6,
+            "maximum_generations": 4,
+            "maximum_candidate_evaluations": 24,
+            "maximum_wall_time_seconds": 14_400.0,
+            "maximum_model_calls": 24,
+            "parallel_evaluations": 3,
+            "checkpoint_interval": 2,
+            "random_seed": 20260814,
+            "diff_based_evolution": False,
+            "use_template_stochasticity": True,
+            "semantic_candidate_identity": "TrainingPolicy@feta-training-policy-v1",
+            "evaluation_reuse": "evaluation-reuse-v2",
+            "resource_mode": "equivalent_pool",
+            "resource_quantity": 1,
+            "native_controller": True,
+            "native_checkpoint_resume": True,
+        }
+    )
+    return {
+        "profile": "feta-a4-full-strength-acceptance-v1",
+        "openevolve": openevolve,
     }

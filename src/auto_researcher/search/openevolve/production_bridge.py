@@ -90,6 +90,32 @@ class DurableOpenEvolveModelBridge:
         self.metadata_only_boundary = metadata_only_boundary
         self.crash_after_response = crash_after_response
 
+    @property
+    def creation_provenance(self) -> str:
+        """Truthfully distinguish offline fake-production from a live provider."""
+
+        return (
+            "FAKE_MODEL"
+            if self.contract.model_config_contract.provider == "fake-production"
+            else "LIVE_MODEL"
+        )
+
+    def bind_search_request(self, search_request_id: str) -> None:
+        """Bind the authoritative graph request before computing call identity."""
+
+        if not search_request_id:
+            raise LiveMutationBridgeError("model_call_identity_conflict")
+        self.context = self.context.model_copy(
+            update={"search_request_id": search_request_id}
+        )
+
+    def validate_runtime_approval(self) -> None:
+        """Fail closed during assembly as well as immediately before dispatch."""
+
+        if self.approval is None:
+            raise LiveMutationBridgeError("live_mutation_approval_required")
+        self._validate_approval(self.context)
+
     def complete(
         self, request: dict, mutation_reservation_id: str
     ) -> tuple[dict, ModelBridgeReservation]:

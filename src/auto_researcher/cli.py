@@ -45,6 +45,14 @@ from auto_researcher.search.openevolve.live_models import (
     MetadataOnlyLiveMutationApproval,
     parse_live_mutation_approval,
 )
+from auto_researcher.search.openevolve.live_runtime import (
+    MetadataOnlyLiveOpenEvolveConfiguration,
+    MetadataOnlyLiveOpenEvolveRuntime,
+)
+from auto_researcher.search.openevolve.development_runtime import (
+    DevelopmentLiveOpenEvolveConfiguration,
+    assemble_development_live_openevolve,
+)
 from auto_researcher.runtime.dependencies import (
     task_sqlite_dependencies,
     utc_now,
@@ -52,6 +60,7 @@ from auto_researcher.runtime.dependencies import (
 from auto_researcher.runtime.checkpoints import sqlite_checkpointer
 from auto_researcher.runtime.execution import (
     RunExecutionError,
+    can_resume_recoverable_planner_failure,
     inspect_terminal_run,
     resume_run,
     start_run,
@@ -215,6 +224,17 @@ def _load_task_configuration(
         raise ValueError("task config requires exactly one of experiment or search")
     if not isinstance(runtime, dict):
         raise ValueError("task config runtime section must be a mapping")
+    prohibited_runtime_secrets = {
+        "api_key",
+        "access_token",
+        "credential_value",
+        "credentials",
+        "password",
+        "secret_value",
+        "service_account_json",
+    }
+    if prohibited_runtime_secrets & _nested_keys(runtime):
+        raise ValueError("runtime credentials must be resolved from a secret reference")
     selected = experiment if experiment is not None else search
     if not isinstance(selected, dict):
         raise ValueError("task config experiment/search section must be a mapping")
@@ -241,15 +261,102 @@ def _configured_search_type(path: Path | None) -> SearchType:
         raise ValueError("task config has an unsupported search type") from exc
 
 
+def _load_live_openevolve_runtime(
+    payload: dict[str, Any],
+    *,
+    thread_id: str,
+) -> MetadataOnlyLiveOpenEvolveRuntime | None:
+    configured = payload.get("openevolve_live_mutation")
+    if configured is None:
+        return None
+    if not isinstance(configured, dict):
+        raise ValueError("openevolve_live_mutation section must be a mapping")
+    prohibited = {
+        "api_key",
+        "access_token",
+        "credential_value",
+        "credentials",
+        "password",
+        "secret",
+        "secret_value",
+        "service_account_json",
+        "token",
+        "provider_client",
+        "provider_url",
+    }
+    if prohibited & _nested_keys(configured):
+        raise ValueError("live mutation credentials must use a secret reference")
+    configuration_payload = dict(configured)
+    credential_payload = configuration_payload.get("credential")
+    if credential_payload is not None:
+        if not isinstance(credential_payload, dict):
+            raise ValueError(
+                "openevolve_live_mutation.credential must be a secret reference mapping"
+            )
+        from auto_researcher.secrets import parse_secret_reference
+
+        configuration_payload["credential"] = parse_secret_reference(credential_payload)
+    return MetadataOnlyLiveOpenEvolveRuntime(
+        configuration=MetadataOnlyLiveOpenEvolveConfiguration.model_validate(
+            configuration_payload
+        ),
+        thread_id=thread_id,
+    )
+
+
+def _load_development_openevolve_runtime(
+    payload: dict[str, Any],
+) -> DevelopmentLiveOpenEvolveConfiguration | None:
+    configured = payload.get("openevolve_development_mutation")
+    if configured is None:
+        return None
+    if not isinstance(configured, dict):
+        raise ValueError("openevolve_development_mutation section must be a mapping")
+    prohibited = {
+        "api_key",
+        "access_token",
+        "credential_value",
+        "credentials",
+        "password",
+        "secret",
+        "secret_value",
+        "service_account_json",
+        "token",
+    }
+    if prohibited & _nested_keys(configured):
+        raise ValueError("development mutation credentials must use a secret reference")
+    configuration_payload = dict(configured)
+    credential_payload = configuration_payload.get("credential")
+    if not isinstance(credential_payload, dict):
+        raise ValueError(
+            "openevolve_development_mutation.credential must be a secret reference mapping"
+        )
+    from auto_researcher.secrets import parse_secret_reference
+
+    configuration_payload["credential"] = parse_secret_reference(credential_payload)
+    return DevelopmentLiveOpenEvolveConfiguration.model_validate(configuration_payload)
+
+
 def _load_live_agents(payload: dict[str, Any]):
     configured = payload.get("agents", {"mode": "mock"})
     if not isinstance(configured, dict):
         raise ValueError("agents section must be a mapping")
     mode = configured.get("mode", "mock")
     if mode == "mock":
-        return None, None, None, None, AgentBudgetPolicy(), "mock"
+        return (None, None, None, None, None, None, AgentBudgetPolicy(), "mock")
     if mode != "live":
         raise ValueError("agents.mode must be 'mock' or 'live'")
+    prohibited_secret_fields = {
+        "api_key",
+        "access_token",
+        "credential_value",
+        "credentials",
+        "password",
+        "secret_value",
+        "service_account_json",
+    }
+    if prohibited_secret_fields & _nested_keys(configured):
+        raise ValueError("agents credentials must use a secret reference")
     provider = configured.get("provider")
     model_id = configured.get("model_id")
     if not isinstance(provider, str) or not isinstance(model_id, str):
@@ -257,25 +364,34 @@ def _load_live_agents(payload: dict[str, Any]):
     pricing_payload = configured.get("pricing")
     if not isinstance(pricing_payload, dict):
         raise ValueError("live agents require an explicit versioned pricing mapping")
-    pricing = ModelPricing.model_validate(pricing_payload)
+    ModelPricing.model_validate(pricing_payload)
     policy_payload = configured.get("budget", {})
     if not isinstance(policy_payload, dict):
         raise ValueError("agents.budget must be a mapping")
     policy = AgentBudgetPolicy.model_validate(policy_payload)
 
-    def call_config(role: str, default_temperature: float) -> ModelCallConfig:
+    def call_config(role: str, default_temperature: float | None) -> ModelCallConfig:
         role_payload = configured.get(role, {})
         if not isinstance(role_payload, dict):
             raise ValueError(f"agents.{role} must be a mapping")
+        role_provider = role_payload.get("provider", provider)
+        role_model_id = role_payload.get("model_id", model_id)
+        role_pricing_payload = role_payload.get("pricing", pricing_payload)
+        if not isinstance(role_provider, str) or not isinstance(role_model_id, str):
+            raise ValueError(f"agents.{role} provider and model_id must be strings")
+        if not isinstance(role_pricing_payload, dict):
+            raise ValueError(f"agents.{role}.pricing must be a mapping")
         return ModelCallConfig(
-            provider=provider,
-            model_id=model_id,
+            provider=role_provider,
+            model_id=role_model_id,
             temperature=role_payload.get("temperature", default_temperature),
+            thinking=role_payload.get("thinking"),
+            effort=role_payload.get("effort"),
             maximum_output_tokens=role_payload.get("maximum_output_tokens"),
             timeout_seconds=role_payload.get("timeout_seconds"),
             maximum_attempts=role_payload.get("maximum_attempts"),
             maximum_cost_per_call=role_payload.get("maximum_cost_per_call"),
-            pricing=pricing,
+            pricing=ModelPricing.model_validate(role_pricing_payload),
             prompt_version=role_payload.get("prompt_version", "2.0.0"),
             structured_output_strategy=role_payload.get(
                 "structured_output_strategy",
@@ -285,11 +401,55 @@ def _load_live_agents(payload: dict[str, Any]):
 
     hypothesis_config = call_config("hypothesis", 0.2)
     planner_config = call_config("planner", 0.0)
+    research_director_payload = configured.get("research_director")
+    research_director_enabled = research_director_payload is not None
+    if research_director_payload is not None and not isinstance(
+        research_director_payload, dict
+    ):
+        raise ValueError("agents.research_director must be a mapping")
+    research_director_config = (
+        call_config("research_director", None) if research_director_enabled else None
+    )
     if provider.casefold() == "anthropic":
-        from auto_researcher.providers.anthropic import create_anthropic_client
+        from auto_researcher.providers.anthropic import (
+            ANTHROPIC_ENVIRONMENT_SECRET,
+            create_anthropic_client,
+        )
+        from auto_researcher.secrets import (
+            parse_secret_reference,
+            provider_for_reference,
+        )
 
-        hypothesis_client = create_anthropic_client(hypothesis_config)
-        planner_client = create_anthropic_client(planner_config)
+        credential_payload = configured.get("credential")
+        if credential_payload is None:
+            credential_reference = ANTHROPIC_ENVIRONMENT_SECRET
+        elif not isinstance(credential_payload, dict):
+            raise ValueError("agents.credential must be a secret reference mapping")
+        else:
+            credential_reference = parse_secret_reference(credential_payload)
+        if not credential_reference.required:
+            raise ValueError("live Anthropic credentials must be required")
+        resolver = provider_for_reference(credential_reference)
+        credential = resolver.resolve(credential_reference)
+        if credential is None:
+            raise RuntimeError("required live credential was not resolved") from None
+
+        hypothesis_client = create_anthropic_client(
+            hypothesis_config,
+            credential=credential,
+        )
+        planner_client = create_anthropic_client(
+            planner_config,
+            credential=credential,
+        )
+        research_director_client = (
+            create_anthropic_client(
+                research_director_config,
+                credential=credential,
+            )
+            if research_director_config is not None
+            else None
+        )
     else:
         raise ValueError(
             f"unsupported live provider {provider!r}; live mode implements 'anthropic'"
@@ -297,8 +457,10 @@ def _load_live_agents(payload: dict[str, Any]):
     return (
         hypothesis_client,
         planner_client,
+        research_director_client,
         hypothesis_config,
         planner_config,
+        research_director_config,
         policy,
         "live",
     )
@@ -537,8 +699,10 @@ def run(
         (
             model_client,
             planner_model_client,
+            research_director_model_client,
             hypothesis_call_config,
             planner_call_config,
+            research_director_call_config,
             agent_budget_policy,
             agent_mode,
         ) = _load_live_agents(raw_config)
@@ -552,6 +716,8 @@ def run(
             task_id,
             contract.task_version,
         )
+        if isinstance(raw_config.get("resources"), dict):
+            experiment["resources"] = dict(raw_config["resources"])
         runtime_options = dict(runtime.get("options", {}))
         if isinstance(raw_config.get("grounding"), dict):
             runtime_options["grounding"] = dict(raw_config["grounding"])
@@ -563,6 +729,27 @@ def run(
             environment=runtime.get("environment", {}),
             task_options=runtime_options,
         )
+        openevolve_live_runtime = _load_live_openevolve_runtime(
+            raw_config,
+            thread_id=thread_id,
+        )
+        openevolve_development_configuration = _load_development_openevolve_runtime(
+            raw_config
+        )
+        if (
+            openevolve_live_runtime is not None
+            and openevolve_development_configuration is not None
+        ):
+            raise ValueError("openevolve_mutation_runtime_conflict")
+        openevolve_development_operator = None
+        openevolve_development_client = None
+        if openevolve_development_configuration is not None:
+            (
+                openevolve_development_operator,
+                openevolve_development_client,
+            ) = assemble_development_live_openevolve(
+                openevolve_development_configuration
+            )
         with task_sqlite_dependencies(
             task,
             runtime_context,
@@ -570,17 +757,22 @@ def run(
             experiment,
             checkpoint_db,
             provenance_db,
-            optuna_db if search_type == SearchType.OPTUNA else None,
+            (optuna_db if SearchType.OPTUNA in contract.allowed_search_types else None),
             agent_calls_db,
             knowledge_retrievals_db,
             model_client=model_client,
             planner_model_client=planner_model_client,
+            research_director_model_client=research_director_model_client,
             hypothesis_call_config=hypothesis_call_config,
             planner_call_config=planner_call_config,
+            research_director_call_config=research_director_call_config,
             agent_budget_policy=agent_budget_policy,
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
             search_type=search_type,
+            openevolve_mutation_operator=openevolve_development_operator,
+            openevolve_live_runtime=openevolve_live_runtime,
+            clock=utc_now,
         ) as dependencies:
             graph = build_graph(dependencies)
             final = start_run(
@@ -601,9 +793,26 @@ def run(
     verification = final.get("verification_result")
     evaluation = final.get("evaluation_result")
     typer.echo(f"Task: {contract.task_id}@{contract.task_version}")
-    typer.echo(f"Search type: {search_type.value}")
+    executed_search_type = final.get("last_executed_search_type")
+    if executed_search_type is None and final.get("search_request") is not None:
+        executed_search_type = final["search_request"].search_type
+    if executed_search_type is None:
+        executed_search_type = search_type
+    typer.echo(f"Search type: {executed_search_type.value}")
+    if executed_search_type != search_type:
+        typer.echo(f"Configured initial search type: {search_type.value}")
     typer.echo(f"Agent mode: {agent_mode}")
     typer.echo(f"Grounding mode: {contract.grounding.mode.value}")
+    typer.echo(
+        "OpenEvolve mutation mode: "
+        f"{'metadata_only_live' if openevolve_live_runtime else 'development_native_live' if openevolve_development_configuration else 'default'}"
+    )
+    if openevolve_development_client is not None:
+        typer.echo(
+            "OpenEvolve development model usage: "
+            f"calls={openevolve_development_client.calls_used} "
+            f"cost_usd={openevolve_development_client.total_cost:.6f}"
+        )
     typer.echo(
         "Knowledge provider: "
         f"{knowledge_configuration.provider_id if knowledge_configuration else 'none'}"
@@ -623,6 +832,14 @@ def run(
             f"hypothesis@{hypothesis_call_config.prompt_version}, "
             f"planner@{planner_call_config.prompt_version}"
         )
+        if research_director_call_config is not None:
+            typer.echo(
+                "Research Director: "
+                f"{research_director_call_config.provider}/"
+                f"{research_director_call_config.model_id} "
+                f"effort={research_director_call_config.effort or 'default'} "
+                f"thinking={dict(research_director_call_config.thinking or {})}"
+            )
     typer.echo(f"Run: {run_id}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(
@@ -750,6 +967,9 @@ def inspect_run(
     typer.echo(f"Thread: {identity.thread_id}")
     typer.echo(f"Run: {identity.run_id}")
     typer.echo(f"Task: {identity.task_id}@{identity.task_version}")
+    executed_search_type = final.get("last_executed_search_type")
+    if executed_search_type is not None:
+        typer.echo(f"Search type: {SearchType(executed_search_type).value}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(f"Stop reason: {final.get('stop_reason') or 'none'}")
     typer.echo(f"Primary score: {evaluation.primary_score if evaluation else 'n/a'}")
@@ -799,7 +1019,7 @@ def resume_cli(
             RunStatus.COMPLETED,
             RunStatus.STOPPED,
             RunStatus.FAILED,
-        }:
+        } and not can_resume_recoverable_planner_failure(checkpoint):
             raise RunExecutionError("thread_is_terminal_use_inspect")
         contract = ResearchContract.model_validate(checkpoint["contract"])
         run_id = str(checkpoint["run_id"])
@@ -808,8 +1028,10 @@ def resume_cli(
         (
             model_client,
             planner_model_client,
+            research_director_model_client,
             hypothesis_call_config,
             planner_call_config,
+            research_director_call_config,
             agent_budget_policy,
             _,
         ) = _load_live_agents(raw_config)
@@ -823,6 +1045,8 @@ def resume_cli(
             contract.task_id,
             contract.task_version,
         )
+        if isinstance(raw_config.get("resources"), dict):
+            experiment["resources"] = dict(raw_config["resources"])
         runtime_options = dict(runtime.get("options", {}))
         if isinstance(raw_config.get("grounding"), dict):
             runtime_options["grounding"] = dict(raw_config["grounding"])
@@ -834,6 +1058,23 @@ def resume_cli(
             environment=runtime.get("environment", {}),
             task_options=runtime_options,
         )
+        openevolve_live_runtime = _load_live_openevolve_runtime(
+            raw_config,
+            thread_id=thread_id,
+        )
+        openevolve_development_configuration = _load_development_openevolve_runtime(
+            raw_config
+        )
+        if (
+            openevolve_live_runtime is not None
+            and openevolve_development_configuration is not None
+        ):
+            raise ValueError("openevolve_mutation_runtime_conflict")
+        openevolve_development_operator = None
+        if openevolve_development_configuration is not None:
+            openevolve_development_operator, _ = assemble_development_live_openevolve(
+                openevolve_development_configuration
+            )
         with task_sqlite_dependencies(
             task,
             runtime_context,
@@ -841,17 +1082,22 @@ def resume_cli(
             experiment,
             checkpoint_db,
             provenance_db,
-            optuna_db if search_type == SearchType.OPTUNA else None,
+            (optuna_db if SearchType.OPTUNA in contract.allowed_search_types else None),
             agent_calls_db,
             knowledge_retrievals_db,
             model_client=model_client,
             planner_model_client=planner_model_client,
+            research_director_model_client=research_director_model_client,
             hypothesis_call_config=hypothesis_call_config,
             planner_call_config=planner_call_config,
+            research_director_call_config=research_director_call_config,
             agent_budget_policy=agent_budget_policy,
             knowledge_provider=knowledge_provider,
             knowledge_configuration=knowledge_configuration,
             search_type=search_type,
+            openevolve_mutation_operator=openevolve_development_operator,
+            openevolve_live_runtime=openevolve_live_runtime,
+            clock=utc_now,
         ) as dependencies:
             final = resume_run(
                 build_graph(dependencies),
@@ -868,6 +1114,9 @@ def resume_cli(
         typer.echo(f"Run resume failed: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"Run: {run_id}")
+    executed_search_type = final.get("last_executed_search_type")
+    if executed_search_type is not None:
+        typer.echo(f"Search type: {SearchType(executed_search_type).value}")
     typer.echo(f"Status: {final['status'].value}")
     typer.echo(f"Stop reason: {final.get('stop_reason') or 'none'}")
 

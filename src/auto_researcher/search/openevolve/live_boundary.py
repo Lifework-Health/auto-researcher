@@ -62,6 +62,11 @@ class MetadataOnlyMutationRequest(BoundaryModel):
     interface_contract: str = Field(min_length=1)
     maximum_source_bytes: int = Field(gt=0, le=1_000_000)
     mutation_constraints: MutationConstraints
+    native_evolution_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500_000,
+    )
 
 
 _PROHIBITED_DYNAMIC_KEY_PARTS: Final = frozenset(

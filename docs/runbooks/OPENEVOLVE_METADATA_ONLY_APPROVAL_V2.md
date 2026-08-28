@@ -2,6 +2,27 @@
 
 Use this path only for a trusted task that implements `MetadataOnlyLiveMutationCapableTask`. The task's underlying evaluator class remains truthful; FeTA is `mri`. The only supported provider exposure is `metadata_only`.
 
+## Standard v2.2 runtime path
+
+Use `examples/tasks/feta_seg_evolve/openevolve-live-metadata-only-template.yaml` with the standard CLI. Replace every absolute artifact placeholder with the exact reviewed file for the run. The bridge contract template is only a starting point: its explicit provider/model, pricing and finite limits must match the approval.
+
+```bash
+auto-researcher run start \
+  --task feta_seg_evolve \
+  --contract examples/tasks/feta_seg_evolve/contract.yaml \
+  --task-config /protected/config/openevolve-live-metadata-only.yaml \
+  --run-id approved-run-id \
+  --thread-id approved-thread-id \
+  --checkpoint-db /protected/state/checkpoints.sqlite \
+  --provenance-db /protected/state/provenance.sqlite \
+  --agent-calls-db /protected/state/agent-calls.sqlite \
+  --knowledge-retrievals-db /protected/state/knowledge.sqlite
+```
+
+Resume uses the same configuration and store paths. The runtime rejects relative/missing artifacts, raw credential values, non-metadata-only approval, identity drift, expired approval, a non-durable model-call store, zero live-call budget, local sandbox policy or executor/image mismatch before provider dispatch. Omitting `credential` uses the backwards-compatible `ANTHROPIC_API_KEY` environment reference. Production deployments may instead provide a value-free Google Secret Manager reference with a fully-qualified `projects/<project>/secrets/<secret>` identifier and ADC/attached workload identity. Application code never enables APIs or changes IAM; protected environment loading remains the fallback.
+
+Resolution remains after durable dispatch ownership. Approval or executor preflight failure, completed-call replay, and failure to obtain `DISPATCHING` ownership perform zero secret accesses. The first new dispatch in an assembled runtime resolves once; subsequent calls reuse the same runtime-only `ResolvedSecret` while constructing fresh zero-retry clients. A reconstructed runtime starts with only the `SecretReference`: replay remains credential-free, while its first new dispatch resolves again and observes rotation. The value is never persisted, serialised, written to a disk cache or incorporated into scientific/model-call identity. Fake production is available only through dependency injection in offline tests, never as a CLI fallback.
+
 ## Required identities
 
 Create the approval outside the repository after constructing the exact research contract, component specification, pinned adapter and hardened executor policy. Bind:

@@ -1,0 +1,139 @@
+# Provisional V9 configuration. Static preparation is complete, but launch is
+# fail-closed until the adaptive controller, continuation ladder, checkpoint
+# imports and real-CUDA calibration are bound by the V9 action preflight.
+task: {id: feta_unet_search, version: "1.0"}
+
+agents:
+  mode: live
+  provider: anthropic
+  model_id: claude-sonnet-4-5-20250929
+  credential: {logical_name: anthropic_api_key, provider: linux_kernel_keyring, provider_identifier: auto-researcher/anthropic-api-key, version: null, required: true}
+  pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+  budget:
+    maximum_research_director_calls_per_cycle: 1
+    maximum_research_director_calls_total: 64
+    maximum_research_director_valid_decisions_total: 16
+    maximum_hypothesis_calls_per_cycle: 1
+    maximum_planner_calls_per_cycle: 1
+    maximum_attempts_per_agent_call: 4
+    maximum_input_context_size: 128000
+    maximum_output_tokens: 4096
+    maximum_cost_per_call: 0.75
+    maximum_research_director_output_tokens: 64000
+    maximum_research_director_cost_per_call: 8.0
+    maximum_total_model_calls: 768
+  research_director:
+    provider: anthropic
+    model_id: claude-opus-5
+    pricing: {version: anthropic-opus5-usd-5-25-v1, input_cost_per_million_tokens: 5.0, output_cost_per_million_tokens: 25.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+    temperature: null
+    thinking: {type: adaptive}
+    effort: xhigh
+    maximum_output_tokens: 64000
+    timeout_seconds: 900
+    maximum_attempts: 4
+    maximum_cost_per_call: 8.0
+    prompt_version: 2.0.0
+    structured_output_strategy: pydantic
+  hypothesis: {temperature: 0.0, maximum_output_tokens: 2000, timeout_seconds: 180, maximum_attempts: 4, maximum_cost_per_call: 0.75, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+  planner: {temperature: 0.0, maximum_output_tokens: 3000, timeout_seconds: 180, maximum_attempts: 4, maximum_cost_per_call: 0.75, prompt_version: 2.0.0, structured_output_strategy: pydantic}
+
+openevolve_development_mutation:
+  protocol_version: development-live-openevolve-runtime-v1
+  mode: local_development
+  acknowledgement: public-data-non-production-development
+  maximum_model_calls: 100
+  maximum_total_cost_usd: 50.0
+  usage_log_file: /absolute/path/to/runtime/openevolve-model-usage.jsonl
+  credential: {logical_name: anthropic_api_key, provider: linux_kernel_keyring, provider_identifier: auto-researcher/anthropic-api-key, version: null, required: true}
+  model:
+    provider: anthropic
+    model_id: claude-sonnet-4-5-20250929
+    temperature: 0.25
+    maximum_output_tokens: 4096
+    timeout_seconds: 180
+    maximum_attempts: 1
+    maximum_cost_per_call: 0.50
+    prompt_version: openevolve-mutation-prompt-v2
+    structured_output_strategy: pydantic
+    pricing: {version: anthropic-sonnet45-usd-3-15-v1, input_cost_per_million_tokens: 3.0, output_cost_per_million_tokens: 15.0, cache_write_cost_per_million_tokens: null, cache_read_cost_per_million_tokens: null, currency: USD}
+
+experiment:
+  maximum_epochs: 15
+  model_variant: dynunet
+  feature_width: v8_dyn_balanced_5
+  architecture_budget: dynunet-15m-150m-v1
+  upsample: deconv
+  kernel_profile: large_front
+  residual_blocks: true
+  deep_supervision_heads: 1
+  convolutions_per_stage: 2
+  stage_block_profile: uniform
+  residual_profile: uniform
+  dilation_profile: none
+  skip_fusion: concat
+  downsample: max_pool
+  activation: ReLU
+  norm: instance
+  optimizer: AdamW
+  lr_schedule: cosine
+  loss_variant: dice_focal
+  learning_rate: 0.0001129297960052267
+  weight_decay: 0.00001516410659573061
+  dropout: 0.022853564045494074
+  dice_weight: 1.3287448814674725
+  positive_negative_ratio: "2:1"
+  augmentation_policy: combined
+
+runtime:
+  data_dir: /absolute/path/to/feta
+  output_dir: /absolute/path/to/runtime/output
+  workspace_dir: /absolute/path/to/runtime/workspace
+  environment: {CUDA_VISIBLE_DEVICES: "1"}
+  options:
+    protected_storage_acknowledged: true
+    workspace_namespace: feta_unet_campaign_v9
+    shared_preprocessing_cache: true
+    campaign_duration_seconds: 129600
+    campaign_finalisation_reserve_seconds: 28800
+    campaign_reporting_reserve_seconds: 1800
+    campaign_prior_results: 30
+    openevolve_fidelity: 15
+    continue_after_failed_candidate: true
+    maximum_peak_gpu_memory_bytes: 47244640256
+    launch_gate: blocked_pending_v9_validation
+    v9_portfolio_controller_implemented: false
+    v9_continuation_ladder_implemented: false
+    v9_checkpoint_imports_bound: false
+    v9_research_intelligence_bound: false
+    v9_cuda_calibration:
+      schema_version: feta-unet-v9-cuda-calibration-v1
+      calibration_sha256: fc1e9dbe57e423e308674d81d32e72a9ecafcb5dceee0816f6654ab7ff384d73
+      calibration_file_sha256: 0fb60cf98dd14f9202f331bdd7f4d2fe88a7e70522ecb50c6891e305368ecd38
+      gpu: NVIDIA RTX A6000
+      pilot_count: 4
+      maximum_peak_gpu_memory_bytes: 9176368640
+      holdout_subjects_evaluated: 0
+      model_calls_performed: 0
+      passed: true
+    v9_bound_evidence_file: /absolute/path/to/v9-bound-evidence.json
+    v9_family_budget_fraction: {dynunet: 0.7, attention_unet: 0.2, transformer_pilots: 0.1}
+    v9_fidelity_ladder: [15, 30, 50, 100, 150]
+    v9_fixed_roots: &v9_fixed_roots
+      - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_compact_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, activation: PReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+      - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_compact_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+      - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_balanced_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+      - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_balanced_5, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+      - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_deep_6, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 1, activation: ReLU, norm: instance, optimizer: Adam, lr_schedule: polynomial, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "3:1", augmentation_policy: reference_light}
+      - {maximum_epochs: 15, model_variant: dynunet, feature_width: v8_dyn_deep_6, architecture_budget: dynunet-15m-150m-v1, upsample: deconv, kernel_profile: large_front, residual_blocks: false, deep_supervision_heads: 2, activation: PReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: intensity}
+      - {maximum_epochs: 15, model_variant: attention_unet, feature_width: v9_attn_compact_5, architecture_budget: attention-unet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, skip_fusion: gated_concat, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+      - {maximum_epochs: 15, model_variant: attention_unet, feature_width: v9_attn_balanced_5, architecture_budget: attention-unet-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: false, deep_supervision_heads: 0, skip_fusion: gated_concat, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+      - {maximum_epochs: 15, model_variant: unetr, feature_width: v9_unetr_base_16, architecture_budget: transformer-pilot-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+      - {maximum_epochs: 15, model_variant: swin_unetr, feature_width: v9_swin_tiny_24, architecture_budget: transformer-pilot-15m-150m-v1, upsample: deconv, kernel_profile: standard, residual_blocks: true, deep_supervision_heads: 0, activation: ReLU, norm: instance, optimizer: AdamW, lr_schedule: cosine, loss_variant: dice_focal, learning_rate: 0.0001129297960052267, weight_decay: 0.00001516410659573061, dropout: 0.022853564045494074, dice_weight: 1.3287448814674725, positive_negative_ratio: "2:1", augmentation_policy: combined}
+    campaign_portfolio:
+      version: feta-unet-v9-mixed-24-12-7-4-3-v1
+      roots: *v9_fixed_roots
+      local_optuna_parent_count: 4
+      local_optuna_trials_per_parent: 2
+      openevolve_novel_children: 6
+      fidelity_targets: {"15": 24, "30": 12, "50": 7, "100": 4, "150": 3}

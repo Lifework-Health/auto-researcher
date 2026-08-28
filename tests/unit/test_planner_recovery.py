@@ -1,0 +1,839 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import timedelta
+
+from auto_researcher.agents.context import AgentContextAssemblyError
+from auto_researcher.agents.live.base import LiveAgentExecutionError
+from auto_researcher.contracts.enums import (
+    EventType,
+    GroundingStatus,
+    HypothesisStatus,
+    ProposalSource,
+    ProvenanceKind,
+    RunStatus,
+    SearchType,
+)
+from auto_researcher.contracts.models import (
+    BudgetState,
+    DecisionEvent,
+    Hypothesis,
+    SearchRequest,
+)
+from auto_researcher.graph.nodes.hypothesis import generate_hypothesis
+from auto_researcher.graph.nodes.planner import plan_search
+from auto_researcher.graph.nodes.provenance import record_provenance
+from auto_researcher.tasks.feta_unet_search import FeTAUNetSearchTask
+from auto_researcher.tasks.feta_unet_search.configuration import (
+    normalise_search_configuration,
+)
+from auto_researcher.tasks.models import TaskRuntimeContext
+from auto_researcher.tasks.synthetic import default_synthetic_configuration
+
+
+class _OversizedPlannerContext:
+    def planner_context(self, *_args, **_kwargs):
+        raise AgentContextAssemblyError("agent_context_too_large")
+
+
+class _OversizedHypothesisContext:
+    def hypothesis_context(self, *_args, **_kwargs):
+        raise AgentContextAssemblyError("agent_context_too_large")
+
+
+class _PlannerMustNotRun:
+    def plan(self, _context):
+        raise AssertionError("planner model must not be called")
+
+
+class _InvalidBudgetPlanner:
+    def plan(self, context):
+        return SearchRequest(
+            request_id="search-invalid-budget",
+            hypothesis_id=context.hypothesis.hypothesis_id,
+            search_type=SearchType.DIRECT,
+            target=context.contract.primary_metric,
+            search_space=dict(context.hypothesis.predicted_subspace),
+            experiment_budget=context.contract.maximum_experiments + 1,
+            rationale="Deliberately exceeds the campaign contract.",
+            proposal_source=ProposalSource.MODEL_GENERATED,
+            grounding_status=context.hypothesis.grounding_status,
+        )
+
+
+class _FailingLiveHypothesisAgent:
+    def generate(self, _context):
+        raise LiveAgentExecutionError("invalid_structured_output")
+
+
+class _PortfolioRecoveryTask(FeTAUNetSearchTask):
+    def apply_campaign_portfolio(
+        self,
+        request,
+        *,
+        run_id,
+        cycle,
+        events,
+        runtime_context,
+    ):
+        del run_id, cycle, events, runtime_context
+        return request.model_copy(
+            update={
+                "request_id": "search-controller-recovery",
+                "search_type": SearchType.OPTUNA,
+                "search_space": {
+                    "fixed": {"maximum_epochs": 25},
+                    "parameters": {
+                        "learning_rate": {
+                            "low": 0.0001,
+                            "high": 0.0002,
+                        }
+                    },
+                },
+                "experiment_budget": 1,
+                "rationale": "Controller-owned portfolio recovery request.",
+            }
+        )
+
+
+class _PassThroughPortfolioTask(_PortfolioRecoveryTask):
+    def apply_campaign_portfolio(
+        self,
+        request,
+        *,
+        run_id,
+        cycle,
+        events,
+        runtime_context,
+    ):
+        del run_id, cycle, events, runtime_context
+        return request
+
+
+class _DeadlineRecoveryTask(_PortfolioRecoveryTask):
+    def estimate_search_duration_seconds(self, request, runtime_context):
+        del runtime_context
+        return (
+            1_000.0
+            if "graduation-mode:protected-deadline"
+            in request.evidence_references
+            else 10_000.0
+        )
+
+    def apply_campaign_deadline_policy(
+        self,
+        request,
+        *,
+        run_id,
+        cycle,
+        events,
+        remaining_seconds,
+        runtime_context,
+    ):
+        del run_id, cycle, events, runtime_context
+        assert remaining_seconds == 4_000.0
+        return request.model_copy(
+            update={
+                "request_id": "search-protected-graduation",
+                "search_type": SearchType.DIRECT,
+                "search_space": {
+                    "maximum_epochs": 150,
+                    "learning_rate": 0.0002,
+                    "weight_decay": 0.00001,
+                    "dropout": 0.05,
+                    "dice_weight": 1.2,
+                    "positive_negative_ratio": "2:1",
+                    "augmentation_policy": "intensity",
+                },
+                "experiment_budget": 1,
+                "evidence_references": (
+                    "graduation-mode:protected-deadline",
+                ),
+                "rationale": "Protect one finalist graduation.",
+            }
+        )
+
+
+def test_valid_hypothesis_uses_identity_stable_direct_fallback(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    cycle_four_configuration = {
+        "maximum_epochs": 150,
+        "learning_rate": 0.0004,
+        "weight_decay": 0.000003,
+        "dropout": 0.0,
+        "dice_weight": 1.0,
+        "positive_negative_ratio": "1:1",
+        "augmentation_policy": "reference_light",
+    }
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-cycle-four",
+        statement="The exact bounded configuration may improve the score.",
+        rationale="Cycle-four hypothesis.",
+        predicted_subspace=cycle_four_configuration,
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-cycle-four",
+        "thread_id": "thread-cycle-four",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 4,
+        "budget": BudgetState(
+            maximum_cycles=12,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=4,
+            experiments_used=3,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=FeTAUNetSearchTask(),
+    )
+
+    first = plan_search(state, dependencies)
+    second = plan_search(state, dependencies)
+
+    assert "status" not in first
+    assert first["planner_fallback_code"] == "agent_context_too_large"
+    assert first["planner_failure_stage"] == "context_assembly"
+    assert first["search_request"].search_type == SearchType.DIRECT
+    assert first["search_request"].proposal_source == ProposalSource.DETERMINISTIC
+    assert first["search_request"].search_space == normalise_search_configuration(
+        cycle_four_configuration
+    )
+    assert first["search_request"].request_id == second["search_request"].request_id
+    assert first["errors"] == []
+
+    record_provenance({**state, **first}, dependencies)
+    planned = [
+        event
+        for event in dependencies.provenance_store.list_events(state["run_id"])
+        if event.event_type == EventType.SEARCH_PLANNED
+    ]
+    assert len(planned) == 1
+    assert "fallback:agent_context_too_large" in planned[0].output_references
+
+
+def test_campaign_portfolio_compiles_without_planner_context_or_model_call(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-portfolio-recovery",
+        statement="The controller can continue after planner exhaustion.",
+        rationale="Exercise deterministic portfolio recovery.",
+        predicted_subspace={
+            "maximum_epochs": 25,
+            "learning_rate": 0.0003,
+            "weight_decay": 0.000003,
+            "dropout": 0.0,
+            "dice_weight": 1.0,
+            "positive_negative_ratio": "1:1",
+            "augmentation_policy": "reference_light",
+        },
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-portfolio-recovery",
+        "thread_id": "thread-portfolio-recovery",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_PortfolioRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["planner_fallback_code"] is None
+    assert update["planner_failure_stage"] is None
+    assert update["search_request"].request_id == "search-controller-recovery"
+    assert update["search_request"].search_type == SearchType.OPTUNA
+    assert update["search_request"].proposal_source == ProposalSource.DETERMINISTIC
+    assert update["search_request"].rationale == (
+        "Controller-owned portfolio recovery request."
+    )
+    assert update["errors"] == []
+
+
+def test_campaign_portfolio_compiler_does_not_require_direct_hypothesis_subspace(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-portfolio-placeholder",
+        statement="The controller owns the next executable configuration.",
+        rationale="Exercise portfolio recovery without a valid Direct subspace.",
+        predicted_subspace={"unknown_parameter": 1},
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-portfolio-placeholder",
+        "thread_id": "thread-portfolio-placeholder",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_PortfolioRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["planner_fallback_code"] is None
+    assert update["planner_failure_stage"] is None
+    assert update["search_request"].request_id == "search-controller-recovery"
+    assert update["search_request"].search_type == SearchType.OPTUNA
+    assert update["search_request"].proposal_source == ProposalSource.DETERMINISTIC
+    assert update["errors"] == []
+
+
+def test_campaign_portfolio_compiler_seed_is_stable_and_traceable(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-portfolio-compiler",
+        statement="The controller compiles the next bounded experiment.",
+        rationale="Exercise the deterministic Planner compiler boundary.",
+        predicted_subspace={"unknown_parameter": 1},
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        evidence_references=(contract.contract_id,),
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.CONTRACT_GROUNDED,
+    )
+    state = {
+        "run_id": "run-portfolio-compiler",
+        "thread_id": "thread-portfolio-compiler",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_PassThroughPortfolioTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"campaign_portfolio": {"version": "test-v1"}}
+        ),
+    )
+
+    first = plan_search(state, dependencies)
+    second = plan_search(state, dependencies)
+    request = first["search_request"]
+
+    assert request.request_id.startswith("search-portfolio-compiler-")
+    assert request.request_id == second["search_request"].request_id
+    assert request.hypothesis_id == hypothesis.hypothesis_id
+    assert request.evidence_references == hypothesis.evidence_references
+    assert request.proposal_source == ProposalSource.DETERMINISTIC
+    assert request.agent_call_id is None
+    assert request.prompt_version is None
+    assert first["budget"] == state["budget"]
+    assert first["planner_fallback_code"] is None
+    assert first["planner_failure_stage"] is None
+    assert first["errors"] == []
+
+
+def test_campaign_deadline_replaces_exploration_with_fitting_graduation(
+    contract_factory,
+    deterministic_dependencies,
+):
+    now = deterministic_dependencies.clock()
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-deadline-graduation",
+        statement="A finalist should graduate before the deadline.",
+        rationale="Exercise completion-aware scheduling.",
+        predicted_subspace={
+            "maximum_epochs": 25,
+            "learning_rate": 0.0003,
+            "weight_decay": 0.000003,
+            "dropout": 0.0,
+            "dice_weight": 1.0,
+            "positive_negative_ratio": "1:1",
+            "augmentation_policy": "reference_light",
+        },
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-deadline-graduation",
+        "thread_id": "thread-deadline-graduation",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+            started_at=now,
+            deadline_at=now + timedelta(seconds=4_000),
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=_DeadlineRecoveryTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={
+                "campaign_finalisation_reserve_seconds": 19_800.0,
+                "campaign_reporting_reserve_seconds": 1_800.0,
+            }
+        ),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["search_request"].request_id == "search-protected-graduation"
+    assert update["search_request"].search_type == SearchType.DIRECT
+    assert update["errors"] == []
+
+
+def test_direct_fallback_rejects_an_exact_verified_configuration(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT}),
+        maximum_experiments=4,
+    )
+    configuration = default_synthetic_configuration()
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-duplicate-recovery",
+        statement="The fallback repeats prior work.",
+        rationale="Exercise the pre-execution duplicate guard.",
+        predicted_subspace=configuration,
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    deterministic_dependencies.provenance_store.append_event(
+        DecisionEvent(
+            event_id="prior-duplicate-evidence",
+            run_id="run-duplicate-recovery",
+            cycle=1,
+            event_type=EventType.EVIDENCE_VERIFIED,
+            actor="verifier",
+            input_references=("experiment-prior",),
+            output_references=(
+                "evidence:SUPPORTED",
+                "verified:true",
+                "constraints:true",
+                "score:0.8",
+                "search_type:DIRECT",
+            ),
+            rationale="Verified prior result.",
+            timestamp=deterministic_dependencies.clock(),
+            code_version="test",
+            provenance=ProvenanceKind.REAL,
+            safe_payload={"configuration": configuration},
+        )
+    )
+    state = {
+        "run_id": "run-duplicate-recovery",
+        "thread_id": "thread-duplicate-recovery",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert update["status"] == RunStatus.FAILED
+    assert update["search_request"] is None
+    assert update["stop_reason"] == "planner_fallback_duplicate_configuration"
+    assert update["planner_failure_stage"] == "fallback_deduplication"
+    assert update["planner_fallback_code"] == "agent_context_too_large"
+
+
+def test_unusable_hypothesis_records_specific_safe_planner_failure(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(allowed=frozenset({SearchType.DIRECT}))
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-invalid-fallback",
+        statement="An invalid field cannot become an experiment.",
+        rationale="Exercise the fail-closed boundary.",
+        predicted_subspace={"unknown_parameter": 1},
+        expected_observation="objective_score changes",
+        falsification_condition="objective_score does not change",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.CONTRACT_GROUNDED,
+    )
+    state = {
+        "run_id": "run-invalid-fallback",
+        "thread_id": "thread-invalid-fallback",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 4,
+        "budget": BudgetState(
+            maximum_cycles=12,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=4,
+            experiments_used=3,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedPlannerContext(),
+        planner_agent=_PlannerMustNotRun(),
+        task=FeTAUNetSearchTask(),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert update["status"] == RunStatus.FAILED
+    assert update["stop_reason"] == "agent_context_too_large"
+    assert update["errors"] == ["agent_context_too_large"]
+    record_provenance({**state, **update}, dependencies)
+    stopped = [
+        event
+        for event in dependencies.provenance_store.list_events(state["run_id"])
+        if event.event_type == EventType.RUN_STOPPED
+    ]
+    assert len(stopped) == 1
+    assert stopped[0].output_references == (
+        "error_code:agent_context_too_large",
+        "failure_stage:context_assembly",
+    )
+
+
+def test_invalid_live_planner_request_uses_validated_direct_fallback(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_experiments=4,
+    )
+    configuration = default_synthetic_configuration()
+    hypothesis = Hypothesis(
+        hypothesis_id="hyp-invalid-live-plan",
+        statement="The bounded configuration should remain executable.",
+        rationale="Exercise post-model request validation.",
+        predicted_subspace=configuration,
+        expected_observation="objective_score increases",
+        falsification_condition="objective_score does not increase",
+        prior_weight=0.5,
+        status=HypothesisStatus.OPEN,
+        provenance=ProvenanceKind.MOCK,
+        proposal_source=ProposalSource.MODEL_GENERATED,
+        grounding_status=GroundingStatus.PRIOR_RESULTS_GROUNDED,
+    )
+    state = {
+        "run_id": "run-invalid-live-plan",
+        "thread_id": "thread-invalid-live-plan",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=20,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "active_hypothesis": hypothesis,
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        planner_agent=_InvalidBudgetPlanner(),
+    )
+
+    update = plan_search(state, dependencies)
+
+    assert "status" not in update
+    assert update["errors"] == []
+    assert update["planner_fallback_code"] == "planner_request_invalid"
+    assert update["planner_failure_stage"] == "request_validation"
+    assert update["search_request"].search_type == SearchType.DIRECT
+    assert update["search_request"].experiment_budget == 1
+    assert update["search_request"].search_space == configuration
+
+
+def test_live_hypothesis_failure_reuses_best_verified_prior_result(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT}),
+        maximum_cycles=4,
+        maximum_experiments=4,
+        maximum_cost=50,
+    )
+    configuration = default_synthetic_configuration()
+    deterministic_dependencies.provenance_store.append_event(
+        DecisionEvent(
+            event_id="prior-evidence",
+            run_id="run-hypothesis-fallback",
+            cycle=1,
+            event_type=EventType.EVIDENCE_VERIFIED,
+            actor="verifier",
+            input_references=("experiment-prior",),
+            output_references=(
+                "evidence:SUPPORTED",
+                "verified:true",
+                "constraints:true",
+                "score:0.82",
+                "search_type:DIRECT",
+                "hypothesis:hypothesis-prior",
+            ),
+            rationale="Verified prior result.",
+            timestamp=deterministic_dependencies.clock(),
+            code_version="test",
+            provenance=ProvenanceKind.REAL,
+            safe_payload={"configuration": configuration},
+        )
+    )
+    state = {
+        "run_id": "run-hypothesis-fallback",
+        "thread_id": "thread-hypothesis-fallback",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 2,
+        "budget": BudgetState(
+            maximum_cycles=4,
+            maximum_experiments=4,
+            maximum_cost=50,
+            cycles_used=2,
+            experiments_used=1,
+        ),
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        hypothesis_agent=_FailingLiveHypothesisAgent(),
+    )
+
+    update = generate_hypothesis(state, dependencies)
+
+    hypothesis = update["active_hypothesis"]
+    assert "status" not in update
+    assert update["hypothesis_fallback_code"] == "invalid_structured_output"
+    assert hypothesis.proposal_source == ProposalSource.DETERMINISTIC
+    assert hypothesis.predicted_subspace == configuration
+    assert hypothesis.evidence_references == (
+        "hypothesis-prior",
+        "experiment-prior",
+    )
+    record_provenance({**state, **update}, dependencies)
+    proposed = [
+        event
+        for event in dependencies.provenance_store.list_events(state["run_id"])
+        if event.event_type == EventType.HYPOTHESIS_PROPOSED
+    ]
+    assert "fallback:invalid_structured_output" in proposed[-1].output_references
+
+
+def test_first_cycle_context_failure_uses_configured_incumbent(
+    contract_factory,
+    deterministic_dependencies,
+):
+    contract = contract_factory(
+        allowed=frozenset({SearchType.DIRECT, SearchType.OPTUNA}),
+        maximum_cycles=12,
+        maximum_experiments=30,
+        maximum_cost=50,
+    )
+    incumbent = {
+        "maximum_epochs": 150,
+        "learning_rate": 0.0003,
+        "weight_decay": 0.000003,
+        "dropout": 0.0,
+        "dice_weight": 1.0,
+        "positive_negative_ratio": "1:1",
+        "augmentation_policy": "reference_light",
+    }
+    state = {
+        "run_id": "run-first-cycle-fallback",
+        "thread_id": "thread-first-cycle-fallback",
+        "contract": contract,
+        "status": RunStatus.RUNNING,
+        "cycle": 1,
+        "budget": BudgetState(
+            maximum_cycles=12,
+            maximum_experiments=30,
+            maximum_cost=50,
+            cycles_used=1,
+            experiments_used=0,
+        ),
+        "decision_event_ids": [],
+        "errors": [],
+        "executed_nodes": [],
+    }
+    dependencies = replace(
+        deterministic_dependencies,
+        agent_context_assembler=_OversizedHypothesisContext(),
+        task=FeTAUNetSearchTask(),
+        runtime_context=TaskRuntimeContext(
+            task_options={"initial_incumbent_configuration": incumbent}
+        ),
+    )
+
+    first = generate_hypothesis(state, dependencies)
+    second = generate_hypothesis(state, dependencies)
+
+    hypothesis = first["active_hypothesis"]
+    assert "status" not in first
+    assert first["hypothesis_fallback_code"] == "agent_context_too_large"
+    assert first["hypothesis_failure_stage"] == "context_assembly"
+    assert hypothesis.proposal_source == ProposalSource.DETERMINISTIC
+    assert hypothesis.grounding_status == GroundingStatus.CONTRACT_GROUNDED
+    assert hypothesis.predicted_subspace == normalise_search_configuration(incumbent)
+    assert hypothesis.evidence_references == (contract.contract_id,)
+    assert hypothesis.hypothesis_id == second["active_hypothesis"].hypothesis_id
+
+    record_provenance({**state, **first}, dependencies)
+    proposed = [
+        event
+        for event in dependencies.provenance_store.list_events(state["run_id"])
+        if event.event_type == EventType.HYPOTHESIS_PROPOSED
+    ]
+    assert "fallback:agent_context_too_large" in proposed[-1].output_references

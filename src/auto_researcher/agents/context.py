@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from auto_researcher.agents.models import (
@@ -12,6 +14,8 @@ from auto_researcher.agents.models import (
     HypothesisAgentContext,
     PlannerAgentContext,
     PriorResearchSummary,
+    ResearchDirectorContext,
+    ResearchLandscapeEvidence,
     TaskAgentContext,
 )
 from auto_researcher.contracts.enums import (
@@ -41,6 +45,14 @@ class AgentContextLimits:
     maximum_knowledge_references: int = 20
 
 
+class AgentContextAssemblyError(ValueError):
+    """Safe, closed failure raised before any model request is dispatched."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 def stable_context_hash(payload: dict) -> str:
     encoded = json.dumps(
         payload,
@@ -58,10 +70,80 @@ class AgentContextAssembler:
         *,
         limits: AgentContextLimits | None = None,
         knowledge_retrieval_store: KnowledgeRetrievalStore | None = None,
+        clock: Callable[[], datetime] | None = None,
+        research_landscape: tuple[ResearchLandscapeEvidence, ...] = (),
     ) -> None:
         self._provenance_store = provenance_store
         self._knowledge_store = knowledge_retrieval_store
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._research_landscape = research_landscape
         self.limits = limits or AgentContextLimits()
+
+    @staticmethod
+    def _compact_aggregate_metrics(metrics: dict) -> dict:
+        """Keep useful learning-curve evidence without copying full epoch history."""
+
+        compact = {
+            key: metrics[key]
+            for key in (
+                "primary_score",
+                "per_tissue_dice",
+                "reconstruction_gap",
+                "best_epoch",
+                "training_duration_seconds",
+            )
+            if key in metrics
+        }
+        raw_history = metrics.get("validation_history")
+        if not isinstance(raw_history, (list, tuple)):
+            return compact
+        entries = [item for item in raw_history if isinstance(item, dict)]
+        selected: list[dict] = []
+        interesting = [item for item in entries if item.get("milestone") is True]
+        if entries:
+            interesting.extend((entries[0], entries[-1]))
+        raw_best_epoch = metrics.get("best_epoch")
+        interesting.extend(
+            item for item in entries if item.get("epoch") == raw_best_epoch
+        )
+        seen: set[tuple] = set()
+        for item in sorted(interesting, key=lambda value: value.get("epoch", -1)):
+            summary = {
+                key: item[key]
+                for key in (
+                    "epoch",
+                    "validation_score",
+                    "best_epoch",
+                    "best_validation_score",
+                    "milestone",
+                )
+                if key in item
+            }
+            identity = tuple(sorted(summary.items()))
+            if identity not in seen:
+                seen.add(identity)
+                selected.append(summary)
+        compact["validation_history_summary"] = {
+            "observation_count": len(entries),
+            "selected_entries": selected[-6:],
+        }
+        return compact
+
+    def _bounded_prior(
+        self, prior: tuple[PriorResearchSummary, ...]
+    ) -> tuple[PriorResearchSummary, ...]:
+        """Deterministically retain newest findings within half the context budget."""
+
+        maximum = max(1_000, self.limits.maximum_context_characters // 2)
+        selected: list[PriorResearchSummary] = []
+        used = 2
+        for item in reversed(prior):
+            size = len(item.model_dump_json()) + 1
+            if selected and used + size > maximum:
+                break
+            selected.append(item)
+            used += size
+        return tuple(reversed(selected))
 
     def _knowledge(
         self,
@@ -184,8 +266,16 @@ class AgentContextAssembler:
                     primary_score=None if score in {None, "None"} else float(score),
                     evidence_status=status,
                     constraint_compliant=values.get("constraints") == "true",
-                    concise_verified_finding=event.rationale[:400],
+                    concise_verified_finding=event.rationale[:240],
                     safe_artefact_references=artefacts,
+                    safe_configuration=dict(event.safe_payload.get("configuration", {}))
+                    if isinstance(event.safe_payload.get("configuration"), dict)
+                    else {},
+                    aggregate_metrics=self._compact_aggregate_metrics(
+                        dict(event.safe_payload.get("aggregate_metrics", {}))
+                    )
+                    if isinstance(event.safe_payload.get("aggregate_metrics"), dict)
+                    else {},
                 )
             )
         results.sort(
@@ -194,11 +284,22 @@ class AgentContextAssembler:
                 item.experiment_reference,
             )
         )
-        return tuple(hypotheses), tuple(results[-self.limits.maximum_prior_results :])
+        prior = tuple(results[-self.limits.maximum_prior_results :])
+        return tuple(hypotheses), self._bounded_prior(prior)
+
+    def _recent_failure_codes(self, run_id: str) -> tuple[str, ...]:
+        codes: list[str] = []
+        for event in self._provenance_store.list_events(run_id):
+            if event.event_type != EventType.RUN_STOPPED:
+                continue
+            for reference in event.output_references:
+                if reference.startswith("error_code:"):
+                    codes.append(reference.split(":", 1)[1])
+        return tuple(codes[-8:])
 
     def _ensure_size(self, model) -> None:
         if len(model.model_dump_json()) > self.limits.maximum_context_characters:
-            raise ValueError("agent_context_too_large")
+            raise AgentContextAssemblyError("agent_context_too_large")
 
     def hypothesis_context(
         self,
@@ -246,6 +347,7 @@ class AgentContextAssembler:
             "knowledge_references": knowledge,
             "knowledge_bundle_id": bundle_id,
             "knowledge_bundle_hash": bundle_hash,
+            "research_directive": state.get("active_research_directive"),
         }
         serialisable = {
             key: (
@@ -322,6 +424,12 @@ class AgentContextAssembler:
                 0.0,
                 state["budget"].maximum_cost - state["budget"].cost_used,
             ),
+            "remaining_time_seconds": state["budget"].remaining_seconds(self._clock()),
+            "campaign_deadline_at": (
+                state["budget"].deadline_at.isoformat()
+                if state["budget"].deadline_at is not None
+                else None
+            ),
             "model_calls_used": state["budget"].model_calls_used,
             "approval_requirements": tuple(
                 sorted(
@@ -342,6 +450,8 @@ class AgentContextAssembler:
                 "Parameters may be fixed or narrowed within the registered space.",
                 "Unknown parameters, widening, and fixed-context changes are forbidden.",
             ),
+            "research_directive": state.get("active_research_directive"),
+            "recovered_error_codes": tuple(state.get("recovered_error_codes", ())),
         }
         serialisable = {
             key: (
@@ -359,6 +469,101 @@ class AgentContextAssembler:
             for key, value in payload.items()
         }
         context = PlannerAgentContext(
+            **payload,
+            context_hash=stable_context_hash(serialisable),
+        )
+        self._ensure_size(context)
+        return context
+
+    def research_director_context(
+        self,
+        state: ResearchState,
+        task_context: TaskAgentContext,
+        capabilities: dict[SearchType, SearchCapability],
+        *,
+        trigger: str,
+        finalisation_reserve_seconds: float,
+    ) -> ResearchDirectorContext:
+        _, prior = self._prior(state["run_id"], state["cycle"])
+        references = tuple(
+            sorted(
+                {state["contract"].contract_id}
+                | {item.hypothesis_reference for item in prior}
+                | {item.experiment_reference for item in prior}
+                | {
+                    reference
+                    for item in prior
+                    for reference in item.safe_artefact_references
+                }
+                | {
+                    item.source_reference for item in self._research_landscape
+                }
+                | {
+                    reference
+                    for item in self._research_landscape
+                    for reference in item.reference_ids
+                }
+            )
+        )
+        installed = tuple(
+            sorted(
+                (
+                    search_type
+                    for search_type, capability in capabilities.items()
+                    if capability.available
+                    and search_type in state["contract"].allowed_search_types
+                    and search_type in task_context.available_search_types
+                ),
+                key=lambda item: item.value,
+            )
+        )
+        dimensions = tuple(
+            sorted(
+                set(task_context.direct_configuration_schema)
+                | set(task_context.optuna_space_summary)
+                | set(task_context.openevolve_space_summary)
+            )
+        )
+        payload = {
+            "run_id": state["run_id"],
+            "contract": self._contract_summary(state),
+            "task": task_context,
+            "cycle": state["cycle"],
+            "trigger": trigger,
+            "installed_search_capabilities": installed,
+            "remaining_experiment_budget": max(
+                0,
+                state["budget"].maximum_experiments - state["budget"].experiments_used,
+            ),
+            "remaining_cost_budget": max(
+                0.0,
+                state["budget"].maximum_cost - state["budget"].cost_used,
+            ),
+            "remaining_time_seconds": state["budget"].remaining_seconds(self._clock()),
+            "model_calls_used": state["budget"].model_calls_used,
+            "prior_verified_findings": prior,
+            "research_landscape": self._research_landscape,
+            "recent_failure_codes": self._recent_failure_codes(state["run_id"]),
+            "permitted_evidence_reference_ids": references,
+            "permitted_target_dimensions": dimensions,
+            "finalisation_reserve_seconds": finalisation_reserve_seconds,
+        }
+        serialisable = {
+            key: (
+                value.model_dump(mode="json")
+                if hasattr(value, "model_dump")
+                else [
+                    item.model_dump(mode="json")
+                    if hasattr(item, "model_dump")
+                    else getattr(item, "value", item)
+                    for item in value
+                ]
+                if isinstance(value, tuple)
+                else value
+            )
+            for key, value in payload.items()
+        }
+        context = ResearchDirectorContext(
             **payload,
             context_hash=stable_context_hash(serialisable),
         )

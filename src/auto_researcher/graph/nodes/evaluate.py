@@ -1,12 +1,14 @@
 """Evaluator invocation, durable reuse and budget accounting."""
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import EvaluationResult, ExperimentSpec
 from auto_researcher.graph.state import ResearchState
 from auto_researcher.provenance.reuse import EvaluationReuseRecord
-from auto_researcher.runtime.dependencies import RuntimeDependencies
 from auto_researcher.runtime.identity import payload_hash
 from auto_researcher.tasks.artifacts import (
     ARTEFACT_BUNDLE_SCHEMA_VERSION,
@@ -15,6 +17,11 @@ from auto_researcher.tasks.artifacts import (
     artefact_references,
 )
 from auto_researcher.tasks.scientific_json import SCIENTIFIC_JSON_ENCODING_VERSION
+from auto_researcher.search.optuna.pruning import OptunaPruningAcknowledged
+from auto_researcher.tasks.protocols import IntermediateReportingEvaluator
+
+if TYPE_CHECKING:
+    from auto_researcher.runtime.dependencies import RuntimeDependencies
 
 
 def _evaluator_version(dependencies: RuntimeDependencies) -> str:
@@ -174,7 +181,34 @@ def evaluate_experiment(
 ) -> dict:
     experiment = state["experiment_spec"]
     assert experiment is not None
-    identity_hash, experiment_hash = _evaluation_identity(state, dependencies)
+    request = state.get("search_request")
+    candidate = state.get("openevolve_current_candidate")
+    if (
+        request is not None
+        and request.search_type == SearchType.OPENEVOLVE
+        and candidate is not None
+        and candidate.generation == 0
+    ):
+        # Also canonicalise at the evaluator boundary so a run interrupted
+        # between preparation and evaluation can resume safely after an upgrade.
+        from auto_researcher.graph.nodes.openevolve import (
+            _canonical_generation_zero_experiment,
+        )
+
+        experiment = _canonical_generation_zero_experiment(
+            state,
+            dependencies,
+            candidate,
+            experiment,
+        )
+    identity_state = (
+        state
+        if experiment is state["experiment_spec"]
+        else {**state, "experiment_spec": experiment}
+    )
+    identity_hash, experiment_hash = _evaluation_identity(
+        identity_state, dependencies
+    )
     evaluator_version = _evaluator_version(dependencies)
     existing = dependencies.provenance_store.get_evaluation_reuse(
         state["run_id"],
@@ -194,7 +228,79 @@ def evaluate_experiment(
             raise RuntimeError("conflicting_completed_evaluation_identity")
         result = validate_reused_evaluation(existing, dependencies)
     else:
-        result = dependencies.evaluator.evaluate(experiment, state["contract"])
+        optuna_spec = state.get("optuna_study_spec")
+        optuna_summary = state.get("optuna_study_state")
+        pruning_enabled = bool(
+            optuna_spec is not None
+            and optuna_summary is not None
+            and optuna_summary.current_trial is not None
+            and optuna_spec.pruner.type != "none"
+        )
+        if pruning_enabled:
+            assert (
+                optuna_spec is not None
+                and optuna_summary is not None
+                and optuna_summary.current_trial is not None
+            )
+            if not isinstance(dependencies.evaluator, IntermediateReportingEvaluator):
+                raise RuntimeError(
+                    "optuna_pruner_requires_intermediate_reporting_evaluator"
+                )
+            assert dependencies.optuna_backend is not None
+            try:
+                reporter = dependencies.optuna_backend.intermediate_reporter(
+                    spec=optuna_spec,
+                    reference=optuna_summary.current_trial,
+                )
+            except RuntimeError as exc:
+                if str(exc) != "optuna_intermediate_trial_not_live_after_restart":
+                    raise
+                outcome = (
+                    dependencies.optuna_backend.recover_interrupted_reporting_trial(
+                        spec=optuna_spec,
+                        reference=optuna_summary.current_trial,
+                        reported_at=dependencies.clock(),
+                    )
+                )
+                return {
+                    "evaluation_result": None,
+                    "verification_result": None,
+                    "optuna_trial_outcome": outcome,
+                    "optuna_trial_pruned": (outcome.status.value == "PRUNED"),
+                    "optuna_trial_operational_terminal": True,
+                    "optuna_evaluation_reused": False,
+                    "budget": state["budget"],
+                    "errors": [],
+                    "executed_nodes": ["evaluate_experiment_recovered_terminal"],
+                }
+            try:
+                result = dependencies.evaluator.evaluate_with_intermediate_reporting(
+                    experiment,
+                    state["contract"],
+                    reporter,
+                )
+            except OptunaPruningAcknowledged:
+                outcome = dependencies.optuna_backend.prune_trial(
+                    spec=optuna_spec,
+                    reference=optuna_summary.current_trial,
+                    reported_at=dependencies.clock(),
+                )
+                cost = float(
+                    getattr(dependencies.evaluator, "cost_per_experiment", 0.0)
+                )
+                return {
+                    "evaluation_result": None,
+                    "verification_result": None,
+                    "optuna_trial_outcome": outcome,
+                    "optuna_trial_pruned": True,
+                    "optuna_trial_operational_terminal": True,
+                    "optuna_evaluation_reused": False,
+                    "budget": state["budget"].record_experiment(cost),
+                    "errors": [],
+                    "executed_nodes": ["evaluate_experiment_pruned"],
+                }
+        else:
+            result = dependencies.evaluator.evaluate(experiment, state["contract"])
         if result.success and result.artefact_references:
             if (
                 result.experiment_id != experiment.experiment_id
@@ -225,16 +331,32 @@ def evaluate_experiment(
             )
     cost = float(getattr(dependencies.evaluator, "cost_per_experiment", 0.0))
     budget = state["budget"].record_experiment(cost)
-    request = state.get("search_request")
     is_optuna = request is not None and request.search_type == SearchType.OPTUNA
-    errors = (
-        [] if result.success or is_optuna else [result.error or "evaluation_failed"]
+    continue_after_failed_candidate = (
+        dependencies.runtime_context.task_options.get(
+            "continue_after_failed_candidate",
+            False,
+        )
+        is True
+        and request is not None
+        and request.search_type in {SearchType.DIRECT, SearchType.OPENEVOLVE}
     )
-    return {
+    errors = (
+        []
+        if result.success or is_optuna or continue_after_failed_candidate
+        else [result.error or "evaluation_failed"]
+    )
+    update = {
         "evaluation_result": result,
+        "optuna_trial_pruned": False,
+        "optuna_trial_operational_terminal": False,
+        "optuna_evaluation_reused": reused,
         "budget": budget,
         "errors": errors,
         "executed_nodes": [
             "evaluate_experiment_reused" if reused else "evaluate_experiment"
         ],
     }
+    if experiment is not state["experiment_spec"]:
+        update["experiment_spec"] = experiment
+    return update

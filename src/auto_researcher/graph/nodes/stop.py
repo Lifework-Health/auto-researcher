@@ -2,17 +2,27 @@
 
 from auto_researcher.contracts.enums import RunStatus
 from auto_researcher.graph.state import ResearchState
+from auto_researcher.runtime.dependencies import RuntimeDependencies
 
 
-def supervisor_decide(state: ResearchState) -> dict:
+def supervisor_decide(
+    state: ResearchState, dependencies: RuntimeDependencies | None = None
+) -> dict:
     update: dict = {"executed_nodes": ["supervisor_decide"]}
-    if state["status"] in {RunStatus.STOPPED, RunStatus.FAILED}:
+    if state["status"] in {RunStatus.COMPLETED, RunStatus.STOPPED, RunStatus.FAILED}:
         return update
-    if state["errors"]:
+    recovered = set(state.get("recovered_error_codes", ()))
+    if any(code not in recovered for code in state["errors"]):
         update.update(status=RunStatus.FAILED, stop_reason="fatal_error")
         return update
 
     budget = state["budget"]
+    now = dependencies.clock() if dependencies is not None else None
+    if budget.deadline_at is not None and now is not None and now >= budget.deadline_at:
+        update.update(
+            status=RunStatus.COMPLETED, stop_reason="campaign_deadline_reached"
+        )
+        return update
     if budget.cycles_used >= budget.maximum_cycles:
         update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cycles_reached")
         return update
@@ -25,7 +35,7 @@ def supervisor_decide(state: ResearchState) -> dict:
         update.update(status=RunStatus.COMPLETED, stop_reason="maximum_cost_reached")
         return update
 
-    next_budget = budget.before_cycle()
+    next_budget = budget.before_cycle(now)
     if next_budget.exhausted:
         update.update(
             budget=next_budget,
@@ -53,6 +63,12 @@ def supervisor_decide(state: ResearchState) -> dict:
         diagnostic_evaluation_result=None,
         diagnostic_verification_result=None,
         knowledge_bundle_reference=None,
+        planner_failure_code=None,
+        planner_failure_stage=None,
+        planner_fallback_code=None,
+        hypothesis_failure_code=None,
+        hypothesis_failure_stage=None,
+        hypothesis_fallback_code=None,
         stop_reason=None,
     )
     return update

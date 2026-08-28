@@ -4,11 +4,12 @@ from dataclasses import replace
 
 import pytest
 
-from auto_researcher.contracts.enums import RunStatus
+from auto_researcher.contracts.enums import RunStatus, SearchType
 from auto_researcher.graph.builder import build_graph
 from auto_researcher.runtime.execution import (
     EXECUTION_ERROR_VOCABULARY_VERSION,
     RunExecutionError,
+    can_resume_recoverable_planner_failure,
     inspect_terminal_run,
     resume_run,
     start_run,
@@ -111,6 +112,176 @@ def test_resume_unknown_and_terminal_threads_are_rejected(
     start_run(graph, _input(contract_factory()), _config())
     with pytest.raises(RunExecutionError, match="thread_is_terminal_use_inspect"):
         resume_run(graph, _config())
+
+
+def test_resume_recovers_exact_legacy_planner_failure_without_new_hypothesis(
+    contract_factory,
+    deterministic_dependencies,
+):
+    paused_graph = build_graph(
+        deterministic_dependencies,
+        interrupt_after=["generate_hypothesis"],
+    )
+    state = start_run(paused_graph, _input(contract_factory()), _config())
+    hypothesis_id = state["active_hypothesis"].hypothesis_id
+    paused_graph.update_state(
+        _config(),
+        {
+            "status": RunStatus.FAILED,
+            "stop_reason": "planner_agent_failed",
+            "search_request": None,
+            "errors": ["planner_agent_failed"],
+            "executed_nodes": ["plan_search"],
+        },
+        as_node="plan_search",
+    )
+
+    final = resume_run(build_graph(deterministic_dependencies), _config())
+
+    assert final.get("recovered_error_codes") == ["planner_agent_failed"], final.get(
+        "recovered_error_codes"
+    )
+    assert final["status"] == RunStatus.COMPLETED, final.get("stop_reason")
+    assert final["active_hypothesis"].hypothesis_id == hypothesis_id
+    assert final["recovered_error_codes"] == ["planner_agent_failed"]
+    assert final["last_executed_search_type"] == SearchType.DIRECT
+
+
+def test_research_directive_projection_failure_is_narrowly_recoverable():
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "research_director_openevolve_context_invalid",
+        "errors": ["research_director_openevolve_context_invalid"],
+        "planner_failure_stage": "research_directive_projection",
+        "active_research_directive": object(),
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "planner_failure_stage": "portfolio_policy"}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "active_research_directive": None}
+        )
+        is False
+    )
+    secondary = {
+        **values,
+        "stop_reason": "maximum_agent_calls_per_cycle_reached",
+        "errors": [
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+        ],
+        "planner_failure_stage": "model_call",
+        "recovered_error_codes": [
+            "research_director_openevolve_context_invalid"
+        ],
+    }
+    assert can_resume_recoverable_planner_failure(secondary) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**secondary, "recovered_error_codes": ["planner_agent_failed"]}
+        )
+        is False
+    )
+
+
+def test_invalid_structured_planner_failure_is_narrowly_recoverable():
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "INVALID_STRUCTURED_OUTPUT",
+        "errors": ["INVALID_STRUCTURED_OUTPUT"],
+        "planner_failure_code": "INVALID_STRUCTURED_OUTPUT",
+        "planner_failure_stage": "model_call",
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "planner_failure_stage": "portfolio_policy"}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "errors": [*values["errors"], "unexpected_error"]}
+        )
+        is False
+    )
+
+
+def test_v8_duplicate_portfolio_failure_is_narrowly_recoverable():
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "planner_agent_failed",
+        "errors": [
+            "research_director_openevolve_context_invalid",
+            "maximum_agent_calls_per_cycle_reached",
+            "planner_agent_failed",
+        ],
+        "planner_failure_stage": "portfolio_policy",
+        "active_research_directive": object(),
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "errors": [*values["errors"], "unexpected_error"]}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "planner_failure_stage": "model_call"}
+        )
+        is False
+    )
+
+
+def test_v8_cumulative_directive_projection_failure_is_narrowly_recoverable():
+    historical = [
+        "research_director_openevolve_context_invalid",
+        "maximum_agent_calls_per_cycle_reached",
+        "planner_agent_failed",
+    ]
+    values = {
+        "status": RunStatus.FAILED,
+        "stop_reason": "research_director_openevolve_context_invalid",
+        "errors": [*historical, "planner_agent_failed", historical[0]],
+        "planner_failure_stage": "research_directive_projection",
+        "recovered_error_codes": historical,
+        "active_research_directive": object(),
+        "active_hypothesis": object(),
+        "search_request": None,
+        "executed_nodes": ["plan_search"],
+    }
+
+    assert can_resume_recoverable_planner_failure(values) is True
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "recovered_error_codes": historical[:-1]}
+        )
+        is False
+    )
+    assert (
+        can_resume_recoverable_planner_failure(
+            {**values, "errors": [*values["errors"], "unexpected_error"]}
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(

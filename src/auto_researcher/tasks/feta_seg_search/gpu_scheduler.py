@@ -22,6 +22,19 @@ from pydantic import (
     model_validator,
 )
 
+from auto_researcher.resources import (
+    AdmissionClass,
+    AdmissionOutcome,
+    CourtesyResourceAdmissionPolicy,
+    InvalidResourceState,
+    ResourceBroker,
+    ResourceCandidate,
+    ResourceCapacity,
+    ResourceInspectionError,
+    ResourceOwner,
+    ResourceRequest,
+    ResourceRequirement,
+)
 from auto_researcher.tasks.feta_seg_search.configuration import FIDELITY_LEVELS
 from auto_researcher.tasks.models import TaskRuntimeContext
 
@@ -37,6 +50,7 @@ class GPUSchedulerPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     mode: Literal["disabled", "primary", "opportunistic"] = "disabled"
+    gpu_selection: Literal["exact", "equivalent_pool"] = "exact"
     physical_gpu_index: int | None = Field(default=None, strict=True, ge=0)
     poll_seconds: int = Field(default=20, strict=True, gt=0)
     stable_idle_seconds: int = Field(default=0, strict=True, ge=0)
@@ -85,8 +99,19 @@ class GPUSchedulerPolicy(BaseModel):
     def validate_mode_binding(self) -> "GPUSchedulerPolicy":
         if self.mode == "disabled" and self.physical_gpu_index is not None:
             raise ValueError("disabled scheduler cannot select a GPU")
-        if self.mode != "disabled" and self.physical_gpu_index is None:
+        if self.mode == "disabled" and self.gpu_selection != "exact":
+            raise ValueError("disabled scheduler cannot select a GPU pool")
+        if (
+            self.mode != "disabled"
+            and self.gpu_selection == "exact"
+            and self.physical_gpu_index is None
+        ):
             raise ValueError("enabled scheduler requires physical_gpu_index")
+        if (
+            self.gpu_selection == "equivalent_pool"
+            and self.physical_gpu_index is not None
+        ):
+            raise ValueError("equivalent GPU pool cannot select a physical index")
         return self
 
 
@@ -206,6 +231,91 @@ class NvidiaSmiGPUProbe:
         )
 
 
+class FeTAGPUResourceProvider:
+    """Adapt the physical-card probe to task-neutral resource candidates."""
+
+    def __init__(
+        self,
+        probe: GPUProbe,
+        *,
+        physical_gpu_index: int,
+        current_pid: int,
+    ) -> None:
+        self.probe = probe
+        self.physical_gpu_index = physical_gpu_index
+        self.current_pid = current_pid
+
+    def candidates(self, _request: ResourceRequest) -> tuple[ResourceCandidate, ...]:
+        observed = self.probe.probe(self.physical_gpu_index)
+        foreign = tuple(
+            process
+            for process in observed.compute_processes
+            if process.pid != self.current_pid
+        )
+        owners = tuple(
+            ResourceOwner(
+                namespace="process_pid",
+                owner_id=str(process.pid),
+                display_name=process.username,
+            )
+            for process in foreign
+        )
+        return (
+            ResourceCandidate(
+                resource_id=f"gpu:{self.physical_gpu_index}",
+                resource_type="gpu",
+                quantity=1,
+                capacities=(
+                    ResourceCapacity(name="memory_mib", value=observed.free_memory_mib),
+                ),
+                utilization_percent=observed.utilization_percent,
+                foreign_owners=owners,
+                # The additive generic provider/request path uses this tag. The
+                # legacy exact provider still exposes only the configured card.
+                equivalence_tags=frozenset(
+                    {"cuda-logical-device-0", "nvidia-cuda", "whole-physical-gpu"}
+                ),
+            ),
+        )
+
+
+def gpu_resource_request(
+    policy: GPUSchedulerPolicy,
+    *,
+    request_id: str | None = None,
+) -> ResourceRequest:
+    """Translate FeTA runtime policy without admitting scientific configuration."""
+
+    if policy.mode == "disabled":
+        raise ValueError("disabled gpu scheduler has no resource request")
+    if policy.gpu_selection == "equivalent_pool" and request_id is None:
+        raise ValueError("equivalent_gpu_pool_requires_logical_request_id")
+    logical_request_id = request_id or f"feta-gpu-{policy.physical_gpu_index}"
+    return ResourceRequest(
+        request_id=logical_request_id,
+        requirements=(
+            ResourceRequirement(
+                resource_type="gpu",
+                quantity=1,
+                minimum_capacities=(
+                    ResourceCapacity(
+                        name="memory_mib", value=policy.minimum_free_memory_mib
+                    ),
+                ),
+            ),
+        ),
+        admission_class=AdmissionClass(policy.mode),
+        priority=100 if policy.mode == "primary" else 0,
+        maximum_wait_seconds=None,
+        stable_idle_seconds=policy.stable_idle_seconds,
+        equivalence_requirements=(
+            frozenset({"cuda-logical-device-0"})
+            if policy.gpu_selection == "exact"
+            else frozenset({"nvidia-cuda", "whole-physical-gpu"})
+        ),
+    )
+
+
 def gpu_scheduler_policy(context: TaskRuntimeContext) -> GPUSchedulerPolicy:
     raw = context.task_options.get("gpu_scheduler")
     try:
@@ -221,6 +331,8 @@ def verify_physical_cuda_binding(
 ) -> None:
     if policy.mode == "disabled":
         return
+    if policy.gpu_selection != "exact":
+        raise ValueError("equivalent_gpu_pool_requires_leased_process_binding")
     visible = (environ if environ is not None else os.environ).get(
         "CUDA_VISIBLE_DEVICES"
     )
@@ -250,6 +362,8 @@ def wait_for_gpu_admission(
 
     if policy.mode == "disabled":
         return None
+    if policy.gpu_selection != "exact":
+        raise ValueError("equivalent_gpu_pool_requires_resource_broker_worker")
     verify_physical_cuda_binding(policy, environ=environ)
     if maximum_epochs not in policy.allowed_fidelities:
         raise ValueError("feta_search_gpu_fidelity_disallowed")
@@ -258,9 +372,6 @@ def wait_for_gpu_admission(
     assert physical_gpu_index is not None
     selected_probe = probe or NvidiaSmiGPUProbe()
     own_pid = os.getpid() if current_pid is None else current_pid
-    started = clock()
-    idle_started: float | None = None
-    poll_count = 0
     last_wait_reason: str | None = None
     last_wait_log_time: float | None = None
 
@@ -275,86 +386,85 @@ def wait_for_gpu_admission(
             last_wait_reason = reason
             last_wait_log_time = now
 
-    while True:
-        try:
-            observed = selected_probe.probe(physical_gpu_index)
-        except (RuntimeError, ValueError) as exc:
-            if str(exc) in {
-                "feta_search_gpu_probe_failed",
-                "feta_search_gpu_probe_parse_failed",
-            }:
-                raise
-            raise RuntimeError("feta_search_gpu_probe_failed") from exc
-        except Exception as exc:
-            raise RuntimeError("feta_search_gpu_probe_failed") from exc
-        poll_count += 1
-        now = clock()
-        foreign = tuple(
-            process for process in observed.compute_processes if process.pid != own_pid
-        )
-
-        reason: str | None = None
-        if foreign:
-            reason = "foreign_process"
-        elif observed.free_memory_mib < policy.minimum_free_memory_mib:
-            reason = "low_free_memory"
-        elif observed.utilization_percent > policy.maximum_utilization_percent:
-            reason = "high_utilization"
-
-        if reason is not None:
-            idle_started = None
-            detail = ""
-            if reason == "foreign_process":
-                process = foreign[0]
-                detail = f" pid={process.pid}"
-                if process.username is not None:
-                    detail += f" user={process.username}"
-            elif reason == "low_free_memory":
-                detail = f" free_memory_mib={observed.free_memory_mib}"
-            else:
-                detail = f" utilization_percent={observed.utilization_percent}"
-            log_waiting(
-                reason,
-                "FETA_GPU_SCHEDULER "
-                f"mode={policy.mode} gpu={physical_gpu_index} state=WAITING "
-                f"reason={reason}{detail}",
-                now,
-            )
-            sleeper(policy.poll_seconds)
-            continue
-
-        if idle_started is None:
-            idle_started = now
-        idle_seconds = max(0.0, now - idle_started)
-        if idle_seconds < policy.stable_idle_seconds:
-            log_waiting(
-                "stability_window",
-                "FETA_GPU_SCHEDULER "
-                f"mode={policy.mode} gpu={physical_gpu_index} state=WAITING "
-                f"reason=stability_window idle_seconds={int(idle_seconds)}",
-                now,
-            )
-            sleeper(policy.poll_seconds)
-            continue
-
-        wait_seconds = max(0.0, now - started)
-        logger(
+    def observe(decision, candidate, now: float) -> None:
+        if decision.outcome is AdmissionOutcome.ADMITTED:
+            return
+        reason = {
+            "foreign_owner": "foreign_process",
+            "low_memory_mib": "low_free_memory",
+        }.get(decision.reason, decision.reason)
+        detail = ""
+        if reason == "foreign_process" and candidate.foreign_owners:
+            process = candidate.foreign_owners[0]
+            detail = f" pid={process.owner_id}"
+            if process.display_name is not None:
+                detail += f" user={process.display_name}"
+        elif reason == "low_free_memory":
+            detail = f" free_memory_mib={int(candidate.capacity('memory_mib') or 0)}"
+        elif reason == "high_utilization":
+            detail = f" utilization_percent={int(candidate.utilization_percent or 0)}"
+        elif reason == "stability_window":
+            detail = f" idle_seconds={int(decision.stable_idle_seconds)}"
+        log_waiting(
+            reason,
             "FETA_GPU_SCHEDULER "
-            f"mode={policy.mode} gpu={physical_gpu_index} state=ADMITTED "
-            f"wait_seconds={int(wait_seconds)} "
-            f"free_memory_mib={observed.free_memory_mib} "
-            f"utilization_percent={observed.utilization_percent}"
+            f"mode={policy.mode} gpu={physical_gpu_index} state=WAITING "
+            f"reason={reason}{detail}",
+            now,
         )
-        return GPUAdmissionTelemetry(
-            mode=policy.mode,
-            physical_gpu_index=physical_gpu_index,
-            wait_seconds=wait_seconds,
-            poll_count=poll_count,
-            free_memory_mib=observed.free_memory_mib,
-            utilization_percent=observed.utilization_percent,
-            foreign_process_count=len(foreign),
-            stable_idle_seconds=policy.stable_idle_seconds,
-        )
+
+    provider = FeTAGPUResourceProvider(
+        selected_probe,
+        physical_gpu_index=physical_gpu_index,
+        current_pid=own_pid,
+    )
+    broker = ResourceBroker(
+        provider,
+        CourtesyResourceAdmissionPolicy(
+            maximum_utilization_percent=policy.maximum_utilization_percent
+        ),
+        poll_seconds=policy.poll_seconds,
+        sleeper=sleeper,
+        clock=clock,
+        decision_observer=observe,
+    )
+    try:
+        admission = broker.wait_for_admission(gpu_resource_request(policy))
+    except ResourceInspectionError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, (RuntimeError, ValueError)) and str(cause) in {
+            "feta_search_gpu_probe_failed",
+            "feta_search_gpu_probe_parse_failed",
+        }:
+            raise cause
+        raise RuntimeError("feta_search_gpu_probe_failed") from exc
+    except InvalidResourceState as exc:
+        raise RuntimeError("feta_search_gpu_probe_failed") from exc
+
+    telemetry = admission.telemetry
+    free_memory_mib = next(
+        int(capacity.value)
+        for capacity in telemetry.observed_capacities
+        if capacity.name == "memory_mib"
+    )
+    utilization_percent = int(telemetry.utilization_percent or 0)
+    logger(
+        "FETA_GPU_SCHEDULER "
+        f"mode={policy.mode} gpu={physical_gpu_index} state=ADMITTED "
+        f"wait_seconds={int(telemetry.wait_seconds)} "
+        f"free_memory_mib={free_memory_mib} "
+        f"utilization_percent={utilization_percent}"
+    )
+    return GPUAdmissionTelemetry(
+        mode=policy.mode,
+        physical_gpu_index=physical_gpu_index,
+        wait_seconds=telemetry.wait_seconds,
+        poll_count=telemetry.poll_count,
+        free_memory_mib=free_memory_mib,
+        utilization_percent=utilization_percent,
+        foreign_process_count=telemetry.foreign_owner_count,
+        stable_idle_seconds=policy.stable_idle_seconds,
+    )
 
 
 def scheduler_telemetry_is_valid(

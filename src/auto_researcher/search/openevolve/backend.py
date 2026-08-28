@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from auto_researcher.contracts.enums import SearchType
 from auto_researcher.contracts.models import ResearchContract, SearchRequest
@@ -30,6 +31,7 @@ from auto_researcher.search.openevolve.models import (
     SelectionPolicy,
 )
 from auto_researcher.search.openevolve.protocols import (
+    CampaignAwareEvolvableComponent,
     EvolvableComponent,
     MutationOperator,
 )
@@ -55,6 +57,9 @@ class OpenEvolveBackend:
         self.verifier_identity = verifier_identity
         self.mutation_operator = mutation_operator
         self.sandbox_runner = sandbox_runner
+        self.development_allow_verified_infeasible_parents = False
+        self._seed_configuration_by_request: dict[str, dict] = {}
+        self._campaign_context_by_request: dict[str, dict] = {}
 
     @property
     def interface_hash(self) -> str:
@@ -83,9 +88,41 @@ class OpenEvolveBackend:
             raise ValueError("OpenEvolve requires an OPENEVOLVE SearchRequest")
         if request.search_type not in contract.allowed_search_types:
             raise ValueError("OpenEvolve is not permitted by the research contract")
-        raw = request.search_space.get("openevolve")
-        if not isinstance(raw, dict):
+        if isinstance(self.component, CampaignAwareEvolvableComponent):
+            self._seed_configuration_by_request[request.request_id] = (
+                self.component.seed_configuration_for_request(request)
+            )
+            self._campaign_context_by_request[request.request_id] = (
+                self.component.campaign_context_for_request(request)
+            )
+        raw_payload = request.search_space.get("openevolve")
+        if not isinstance(raw_payload, dict):
             raise ValueError("openevolve_finite_configuration_required")
+        raw: dict[str, Any] = dict(raw_payload)
+        runner_id = getattr(self.sandbox_runner, "runner_id", "")
+        expected_sandbox = (
+            "openevolve-hardened-executor-v2"
+            if runner_id == "openevolve-hardened-executor-v2"
+            else "openevolve-sandbox-v1"
+        )
+        if raw.get("native_controller") is True:
+            raw.setdefault("maximum_failed_candidates", 3)
+            raw.setdefault("maximum_consecutive_failures", 2)
+            raw.setdefault("maximum_artefact_bytes", 20_000_000)
+            raw.setdefault("sandbox_policy_id", expected_sandbox)
+            raw.setdefault("evaluator_identity", self.evaluator_identity)
+            raw.setdefault("verifier_identity", self.verifier_identity)
+        development_relaxation = raw.get(
+            "development_allow_verified_infeasible_parents", False
+        )
+        if type(development_relaxation) is not bool:
+            raise ValueError("openevolve_development_relaxation_must_be_boolean")
+        if development_relaxation and (
+            expected_sandbox != "openevolve-sandbox-v1"
+            or self.mutation_operator.provenance != "LIVE_MODEL"
+        ):
+            raise ValueError("openevolve_development_relaxation_unavailable")
+        self.development_allow_verified_infeasible_parents = development_relaxation
         required = {
             "population_size",
             "maximum_generations",
@@ -102,12 +139,6 @@ class OpenEvolveBackend:
         }
         if not required.issubset(raw):
             raise ValueError("openevolve_finite_configuration_required")
-        runner_id = getattr(self.sandbox_runner, "runner_id", "")
-        expected_sandbox = (
-            "openevolve-hardened-executor-v2"
-            if runner_id == "openevolve-hardened-executor-v2"
-            else "openevolve-sandbox-v1"
-        )
         if raw["sandbox_policy_id"] != expected_sandbox:
             raise ValueError("openevolve_sandbox_policy_unavailable")
         if raw["evaluator_identity"] != self.evaluator_identity:
@@ -228,6 +259,45 @@ class OpenEvolveBackend:
     ) -> MutationReservation:
         generation = population.generation + 1
         birth_index = population.budget.candidate_proposals + 1
+        outcome = next(
+            (
+                item
+                for item in population.outcomes
+                if item.candidate_id == parent.candidate_id
+            ),
+            None,
+        )
+        parent_feedback: dict[str, Any] = {}
+        if outcome is not None:
+            metric_names = self.component_spec.task_mutation_context.get(
+                "metric_names", ()
+            )
+            metrics = (
+                dict(outcome.evaluation.metrics)
+                if outcome.evaluation is not None
+                else {}
+            )
+            parent_feedback = {
+                "objective_value": outcome.objective_value,
+                "constraint_compliant": outcome.constraint_compliant,
+                "verified": outcome.verified,
+                "evidence_status": (
+                    outcome.evidence_status.value
+                    if outcome.evidence_status is not None
+                    else None
+                ),
+                "aggregate_metrics": {
+                    name: metrics[name]
+                    for name in metric_names
+                    if isinstance(name, str) and name in metrics
+                },
+            }
+        campaign_context = dict(
+            self._campaign_context_by_request.get(
+                search_contract.search_request_id,
+                {},
+            )
+        )
         request_hash = openevolve_hash(
             "openevolve-mutation-request-v1",
             {
@@ -237,6 +307,8 @@ class OpenEvolveBackend:
                 "generation": generation,
                 "birth_index": birth_index,
                 "operator": self.mutation_operator.operator_id,
+                "campaign_context": campaign_context,
+                "parent_feedback": parent_feedback,
             },
         )
         return MutationReservation(
@@ -248,6 +320,8 @@ class OpenEvolveBackend:
             mutation_operator=self.mutation_operator.operator_id,
             input_source_hash=parent.source_hash,
             mutation_request_hash=request_hash,
+            campaign_context=campaign_context,
+            parent_feedback=parent_feedback,
         )
 
     def mutate_candidate(
@@ -296,11 +370,15 @@ class OpenEvolveBackend:
     def prepare(
         self, candidate: OpenEvolveCandidate, search_contract: OpenEvolveSearchContract
     ):
+        seed_configuration = self._seed_configuration_by_request.get(
+            candidate.search_request_id,
+            self.component.seed_configuration(),
+        )
         return self.sandbox_runner.prepare(
             candidate,
             self.component_spec,
             search_contract.sandbox_policy,
-            self.component.seed_configuration(),
+            seed_configuration,
         )
 
     @staticmethod
@@ -316,20 +394,22 @@ class OpenEvolveBackend:
             outcome.candidate_id,
         )
 
-    @staticmethod
-    def parent_eligible(outcome: CandidateOutcome) -> bool:
+    def parent_eligible(self, outcome: CandidateOutcome) -> bool:
         """Return whether an outcome may be active, best-known, or a parent."""
 
         return (
             outcome.status == CandidateStatus.VERIFIED
-            and outcome.constraint_compliant is True
+            and (
+                outcome.constraint_compliant is True
+                or self.development_allow_verified_infeasible_parents
+            )
             and outcome.verified is True
             and outcome.objective_value is not None
             and math.isfinite(outcome.objective_value)
         )
 
-    @staticmethod
     def selection_disposition(
+        self,
         *,
         verified: bool,
         constraint_compliant: bool,
@@ -346,6 +426,12 @@ class OpenEvolveBackend:
         ):
             return "ranked", "eligible_for_bounded_population", None
         if verified and not constraint_compliant:
+            if self.development_allow_verified_infeasible_parents:
+                return (
+                    "development_ranked_scientifically_ineligible",
+                    "development_population_only",
+                    next(iter(reasons), "candidate_constraints_not_compliant"),
+                )
             return (
                 "scientifically_ineligible",
                 "archive_only",
