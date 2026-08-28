@@ -2,7 +2,7 @@
 
 ## Prepare the environment
 
-Keep `auto_researcherv2.1` and `auto_agent_v2` as sibling repositories. Install
+Keep `auto-researcher` and `auto_agent_v2` as sibling repositories. Install
 the scientific reference package into the Auto Researcher environment:
 
 ```bash
