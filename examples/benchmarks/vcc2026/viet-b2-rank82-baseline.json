@@ -1,0 +1,73 @@
+{
+  "schema_version": "vcc2026-baseline-fixture-v1",
+  "challenge_id": "arc-virtual-cell-2026",
+  "source_repository": "https://github.com/v-iettran/vcc2026",
+  "source_commit": "dfb906d135f7b962350004b179107ef1101be353",
+  "baseline_id": "viet-b2-shared-delta-rank82",
+  "files": [
+    {"path": "README.md", "sha256": "691d9f29a5893421d965d168353383f9911ebfa027332d0dae0b248eccc438b2"},
+    {"path": "requirements.txt", "sha256": "0610e8f7e3a6d3f51573a9b81fa8c63b15ff27055aadba5db4f2f45a725375be"},
+    {"path": "spec/vcc2026_baseline_spec.md", "sha256": "27896a79d2c36412cbf9d801bc0c5b7eafeeba595b32d1e8287c8a4df3feb7ad"},
+    {"path": "src/config.py", "sha256": "0d955f576c65080cf2def1f7af4567a2fca3b24c482e8793e2914871e909a78a"},
+    {"path": "src/eval/score.py", "sha256": "a49047fedb21e49650838784807540969d40c14e4eed7bd533737e2836886f67"},
+    {"path": "results/README.md", "sha256": "2276f2c9834b811a2d40b300eaf35ff8a34150cf6c6c10a33e16a528e3d7183f"},
+    {"path": "results/decisions.md", "sha256": "f4fae9437f4d1f79ac3e3b5ce364d264aa7106a69c430206d99c4ff9b1f24bd2"},
+    {"path": "results/guardrails.json", "sha256": "227ecb935322b860751b87f44543e9fa8bd65a42c1858b51914ffbb245d9c822"},
+    {"path": "results/submission/submission_B2_report.json", "sha256": "6f01a8a8a6bcc98ecf8b5a2cf6f39d38dba6e9e88edf6c61a538d76cb6f2f69c"}
+  ],
+  "scorer": {
+    "distribution": "cell-eval2",
+    "version": "0.16.0",
+    "source_repository": "https://github.com/ArcInstitute/cell-eval2",
+    "source_commit": "5e64833518a6603a0301cbe28185d49c30f4a986",
+    "profile": "vcc2026",
+    "scored_metrics": [
+      "pds_cosine",
+      "expr_mse_unbiased_capped_norm",
+      "de_wilcoxon_lfc_nmae",
+      "de_wilcoxon_direction_fidelity_yield_raw",
+      "de_wilcoxon_direction_reach_raw",
+      "de_wilcoxon_sig_jaccard"
+    ]
+  },
+  "submission": {
+    "baseline": "B2",
+    "alpha": 1.0,
+    "contexts": ["A", "B", "C"],
+    "perturbations_per_context": 300,
+    "cells_per_perturbation": 400,
+    "n_cells": 360000,
+    "n_genes": 18533,
+    "has_control_rows": false,
+    "vcc_prep_required": true
+  },
+  "runtime_bindings": {
+    "dataset_manifest_sha256": null,
+    "submission_h5ad_sha256": null,
+    "submission_vcc_sha256": null
+  },
+  "leaderboard_event": {
+    "rank": 82,
+    "evidence_status": "user_reported",
+    "submitted_baseline": "B2",
+    "tuning_signal_allowed": false,
+    "receipt_sha256": null
+  },
+  "required_guardrails": [
+    "13.1_never_tune_on_leaderboard",
+    "13.2_no_target_perturbed_data",
+    "13.3_no_crispra",
+    "13.4_dispersion_source",
+    "13.5_no_single_aggregate",
+    "13.6_d1_gate",
+    "13.7_collapse_canary"
+  ],
+  "expected_archival_blockers": [
+    "runtime_dataset_manifest_unbound",
+    "scientific_decisions_uncomputed",
+    "scientific_guardrails_unresolved",
+    "scorer_dependency_not_pinned",
+    "stale_scorer_reporting",
+    "submission_payload_unbound"
+  ]
+}

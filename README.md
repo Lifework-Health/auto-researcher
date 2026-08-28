@@ -1,4 +1,4 @@
-# Auto Researcher v2.1
+# Auto Researcher
 
 Auto Researcher is a typed, resumable LangGraph control plane for bounded
 scientific research. Scientific domains plug into the same graph through a
@@ -94,3 +94,8 @@ and secret-rotation safety are documented in
 The real-data, non-patient Iris weighted k-NN benchmark runs fully offline in
 DIRECT, Optuna, and OpenEvolve modes. See
 [IRIS_KNN_BENCHMARK.md](docs/runbooks/IRIS_KNN_BENCHMARK.md).
+
+The ARC Virtual Cell 2026 foundation freezes Viet's submitted B2 baseline,
+official scorer identity and known readiness blockers without copying private
+data or large submission payloads. See
+[VCC2026_BASELINE_FOUNDATION.md](docs/runbooks/VCC2026_BASELINE_FOUNDATION.md).
