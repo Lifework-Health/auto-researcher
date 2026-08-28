@@ -5,6 +5,10 @@ scientific research. Scientific domains plug into the same graph through a
 `ResearchTask` contract; the core owns lifecycle, budgets, orchestration,
 structural verification, checkpoints, provenance, and approval.
 
+Repository: [Lifework-Health/auto-researcher](https://github.com/Lifework-Health/auto-researcher)
+
+Issues: [report a problem or propose an enhancement](https://github.com/Lifework-Health/auto-researcher/issues)
+
 PR 5 includes:
 
 - an offline deterministic `synthetic` task;
